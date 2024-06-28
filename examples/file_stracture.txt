@@ -1,0 +1,32 @@
+This is the data-stracture that is required to use our pipeline.
+See demo.json for the corresponding 
+.
+└── ezfish/
+    └── jonna/
+        └── JSA012/
+            ├── 2P/
+            │   ├── JSA012_241226_001
+            │   ├── JSA012_241226_002
+            │   └── JSA012_241226_003
+            └── HCR/
+                ├── JSA012_HCR01
+                ├── JSA012_HCR02
+                └── JSA012_HCR03
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+https://tree.nathanfriend.io/?s=(%27options!(%27fancy7~fullPath!false~trailingSlash7~rootDot7)~9(%279%27ezfish5jonna5BE2P.1.2.3EHCR818283%27)~version!%271%27)*EB_-%20%20.*241226_005%5Cn-7!true8*HCR09source!B-JSA012E5--%01EB9875.-*
