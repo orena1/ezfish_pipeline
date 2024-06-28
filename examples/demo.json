@@ -5,10 +5,10 @@
         "sessions":[
             {"date":"241226",
             "functional_runs":["001","002","003"],
-            "anatomical_runs_lowres_green":["004"],
-            "anatomical_runs_lowres_red":["008"],
-            "anatomical_runs_hires_green":["010","012","013"],
-            "anatomical_runs_hires_red":["011","017","018"]}
+            "anatomical_lowres_green_runs":["004"],
+            "anatomical_lowres_red_runs":["008"],
+            "anatomical_hires_green_runs":["010","012","013"],
+            "anatomical_hires_red_runs":["011","017","018"]}
         ]
     },
     "HCR_confocal_imaging":{
@@ -25,3 +25,8 @@
         ]
     }
 }
+
+
+
+
+"anatomical_hires_green_runs":["010","012","013"], has to be left, center, right

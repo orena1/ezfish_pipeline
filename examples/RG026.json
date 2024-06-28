@@ -1,0 +1,28 @@
+{
+    "base_path":"//bananas/data/ezfish/jonna/",
+    "mouse_name":"RG026",
+    "two_photons_imaging":{
+        "sessions":[
+            {"date":"240308",
+            "functional_runs":["001"],
+            "anatomical_lowres_green_runs":[],
+            "anatomical_lowres_red_runs":[],
+            "anatomical_hires_green_runs":["003", "004", "005"],
+            "anatomical_hires_red_runs":["003", "004", "005"]}
+        ]
+    },
+    "HCR_confocal_imaging":{
+        "rounds":[
+            {"round":"01",
+            "channels":["dapi","calca","chrimson"],
+            "reference":true},
+            {"round":"02",
+            "channels":["dapi","calca","chrimson"],
+            "reference":false},
+            {"round":"03",
+            "channels":["dapi","calca","chrimson"],
+            "reference":false}
+        ]
+    }
+}
+

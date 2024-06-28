@@ -23,7 +23,7 @@ def main_pipeline_manifest(json_file):
     
     # ToDo, add more checks here
 
-
+    return manifest
 
 
 
