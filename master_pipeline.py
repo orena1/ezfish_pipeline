@@ -12,8 +12,6 @@ def parse_input_args(args):
         return args
     argparser = argparse.ArgumentParser(description='Master pipeline for processing data')
     argparser.add_argument('manifest', help='Path to the pipeline manifest file')
-    argparser.add_argument('unwarp_file', help='Path to the file containing the unwarping parameters')
-    argparser.add_argument('unwarp_steps', type=int, help='how many steps for unwarping')
 
 
 
@@ -50,11 +48,19 @@ def main(args = None):
 
     # step 1: parse the manifest file
     manifest = main_pipeline_manifest(args['manifest'])
+    assert len(manifest['two_photons_imaging']['sessions'])==1, 'only support one 2P sessions'
 
-    tl.process_session_sbx(manifest, manifest['two_photons_imaging']['sessions'][0])
+    session = manifest['two_photons_imaging']['sessions'][0]
+    tl.process_session_sbx(manifest, session)
 
     # step 2: unwarp 2P anatomical_runs
-    tl.unwarp_tile(manifest['anatomical_runs']['input'], args.unwarp_file, args.unwarp_steps, manifest['anatomical_runs']['output'])
+    for i in range(1,1+len(session['anatomical_hires_green_runs'])):
+        warp_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'warped' / f'stack_warped_C12_{i:03}.tiff'
+        unwarp_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'unwarped' / f'stack_unwarped_C12_{i:03}.tiff'   
+        tl.unwarp_tile(warp_path, 
+                       session['unwarp_config'], 
+                       session['unwarp_steps'], 
+                       unwarp_path)
     
     # step 2: create the base directories
     #?dsdf

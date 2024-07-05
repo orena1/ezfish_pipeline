@@ -23,7 +23,6 @@ def unwarp_tile(image_path: Path, unwarp_config: Path, steps: int, output_path: 
 
     # load warpping parameters
     vals = np.load(unwarp_config)
-    steps = 28
     poly_vals = np.poly1d(vals)(np.arange(src.shape[3])/src.shape[3]*steps)
 
     # create remap map
