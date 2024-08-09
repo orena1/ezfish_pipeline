@@ -1,0 +1,37 @@
+{
+    "base_path":"/mnt/bananas/data/ezfish/jonna/",
+    "mouse_name":"RG026",
+    "two_photons_imaging":{
+        "sessions":[
+            {"date":"240308",
+            "functional_runs":["001"],
+            // only one plane is currenlty supported
+            "functional_plane":["2"], 
+            "anatomical_lowres_green_runs":[],
+            "anatomical_lowres_red_runs":[],
+            "anatomical_hires_green_runs":["003", "004", "005"],
+            "anatomical_hires_red_runs":["003", "004", "005"],
+            "unwarp_config":"/mnt/bananas/data/ezfish/jonna/Calibration_files_for_unwarping/hutch_unwarp_values_051223_3p4_mag.npy",
+            "unwarp_steps":28}
+        ]
+    },
+    "HCR_confocal_imaging":{
+        "rounds":[
+            {"round":"01",
+            "channels":["DAPI", "GCAMP", "CCK", "CHRIMSON", "PDYN"],
+            "resolution":[1.515,1.515,5.0]
+            },
+            {"round":"02",
+            "channels":["DAPI", "GLP1R", "CHAT", "TAC1"],
+            "resolution":[1.515,1.515,5.0]
+            },
+            {"round":"03",
+            "channels":["DAPI", "RORB", "NPR3", "VGAT"],
+            "resolution":[1.515,1.515,5.0]
+            }
+        ],
+        'reference_round':"01", // the round that everything will be registered to
+    }
+    "HCR_model":dadsadasd
+    parameters:
+}

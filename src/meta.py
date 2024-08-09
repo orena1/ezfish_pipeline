@@ -1,4 +1,4 @@
-import json
+import hjson
 from pathlib import Path
 
 
@@ -7,7 +7,7 @@ def parse_json(json_file):
     Parse a json file and return a dictionary object
     """
     with open(json_file, 'r') as f:
-        return json.load(f)
+        return hjson.load(f)
 
 
 

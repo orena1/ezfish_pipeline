@@ -8,9 +8,9 @@ ezfish/
         │   ├── 241226_JSA012_002
         │   └── 241226_JSA012_003
         ├── HCR/
-        │   ├── JSA012_HCR01
-        │   ├── JSA012_HCR02
-        │   └── JSA012_HCR03
+        │   ├── JSA012_HCR01.tif
+        │   ├── JSA012_HCR02_To_HCR01.tif
+        │   └── JSA012_HCR03_To_HCR01.tif
         └── OUTPUT/
             ├── 2P/
             │   └── tile

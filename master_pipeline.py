@@ -6,6 +6,8 @@ from src.meta import main_pipeline_manifest
 from src import tiling as tl
 from pathlib import Path
 
+# supported HCR probs
+HCR_probs = ['CCK', 'CHAT', 'CHRIMSON', 'DAPI', 'GCAMP', 'GLP1R', 'NPR3', 'PDYN', 'RORB', 'TAC1', 'VGAT']
 
 def parse_input_args(args):
     if args is not None:
@@ -33,9 +35,26 @@ def parse_input_args(args):
 #     base_path / mn['mouse_name'] / '2P' / ses_date / f'{date}_{m_name}_{session['']}
 
 
-
-
-
+def verify_manifest(manifest):
+    '''
+    Verify that the json file is valid
+    '''
+    #test that only one 2P session is present
+    assert len(manifest['two_photons_imaging']['sessions'])==1, 'only support one 2P sessions'
+    
+    #test that reference round exists
+    reference_round = manifest['HCR_confocal_imaging']['reference_round']
+    for i in manifest['HCR_confocal_imaging']['rounds']:
+        if i['round'] == reference_round:
+            break
+    else:
+        raise Exception(f"reference round was not found {reference_round} is not un rounds")
+    
+    # verify that all probs are supported
+    for i in manifest['HCR_confocal_imaging']['rounds']:
+        for channel in i['channels']:
+            assert channel in HCR_probs, f"Probe {channel} not supported"
+    return {'reference_round':reference_round}
 def main(args = None):
     '''
     We can either start main with arguments or from command line 
@@ -46,24 +65,22 @@ def main(args = None):
 
     args = parse_input_args(args)
 
-    # step 1: parse the manifest file
+    # step 1-A: parse the manifest file
     manifest = main_pipeline_manifest(args['manifest'])
-    assert len(manifest['two_photons_imaging']['sessions'])==1, 'only support one 2P sessions'
+    specs = verify_manifest(manifest)
 
     session = manifest['two_photons_imaging']['sessions'][0]
     tl.process_session_sbx(manifest, session)
 
-    # step 2: unwarp 2P anatomical_runs
-    for i in range(1,1+len(session['anatomical_hires_green_runs'])):
-        warp_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'warped' / f'stack_warped_C12_{i:03}.tiff'
-        unwarp_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'unwarped' / f'stack_unwarped_C12_{i:03}.tiff'   
-        tl.unwarp_tile(warp_path, 
-                       session['unwarp_config'], 
-                       session['unwarp_steps'], 
-                       unwarp_path)
+    # step 2-A: unwarp 2P anatomical_runs
+    tl.unwarp_tiles(manifest, session)
+
+    # step 3-M: stitch the tiles
+    tl.stitch_tiles(manifest, session)
+
+    # step 4-AM: register the HCR data round to round
+    tl.register_rounds(manifest)
     
-    # step 2: create the base directories
-    #?dsdf
 
 
 
@@ -74,7 +91,7 @@ def main(args = None):
 
 
 if __name__ == "__main__":
-    args = {'manifest': 'examples/RG026.json',
+    args = {'manifest': 'examples/RG026.hjson',
             'unwarp_file': 'examples/unwarp_config.json',
             'unwarp_steps': 10}
     main(args)
