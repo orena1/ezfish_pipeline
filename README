@@ -1,4 +1,10 @@
 Pipeline steps:
+PreProcessing - Manually:
+- create a copy of examples/demo.json and change the variable to match the new experiment, save it as mouse_name.json
+- copy the relevant files (HCR/2P) to the relevant folder (look at examples/file_structure.txt)
+- run the pipeline with the new json file
+
+
 1. parse manifest
 2. validate manifest
 3. process sbx files (A):

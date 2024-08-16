@@ -1,12 +1,16 @@
-import cv2
-import numpy as np
-from tifffile import imwrite as tif_imwrite
-from tifffile import imread as tif_imread
-from sbxreader import sbx_get_metadata, sbx_memmap
-import numpy as np
 import os
-from pathlib import Path
 import time
+from pathlib import Path
+
+import cv2
+import hjson
+import numpy as np
+from rich import print as rprint
+from sbxreader import sbx_get_metadata, sbx_memmap
+from tifffile import imread as tif_imread
+from tifffile import imwrite as tif_imwrite
+from .registrations_funcs import verify_rounds
+from skimage.transform import rotate
 
 def update_map(map_x, map_y, poly_vals, src):
     for i in range(map_x.shape[0]):
@@ -54,6 +58,8 @@ def unwarp_tiles(manifest: dict, session: dict):
     for i in range(1,1+len(session['anatomical_hires_green_runs'])):
         warp_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'warped' / f'stack_warped_C12_{i:03}.tiff'
         unwarp_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'unwarped' / f'stack_unwarped_C12_{i:03}.tiff'   
+        if os.path.exists(unwarp_path):
+            continue
         unwarp_path.parent.mkdir(exist_ok=True, parents=True)
         unwarp_tile(warp_path, 
                        session['unwarp_config'], 
@@ -105,27 +111,39 @@ def process_session_sbx(manifest: dict , session:dict):
 
 
 
-def stitch_tiles(manifest: dict, session: dict):
+def stitch_tiles_and_rotate(manifest: dict, session: dict):
     '''
     stitch the tiles of the session
     '''
     tile_to_num = {'left':'001', 'center':'002', 'right':'003'}
     plane = session['functional_plane'][0]
-    stitched_file_C0  = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'stitched' / f'stack_stitched_C0_plane{plane}.tif' 
-    stitched_file_C1  = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'stitched' / f'stack_stitched_C1_plane{plane}.tif' 
-    os.makedirs(stitched_file_C0.parent, exist_ok=True)
+    stitched_file_C01  = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'stitched' / f'stack_stitched_C01_plane{plane}.tif' 
+    rotation_file = stitched_file_C01.parent / 'rotation.txt'
+    os.makedirs(stitched_file_C01.parent, exist_ok=True)
     unwarped_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'warped'
-    while 1:
-        if not stitched_file_C0.exists():
+
+    reference_HCR_round = verify_rounds(manifest, registered_paths = None)[1]['image_path']
+    while not stitched_file_C01.exists() or not rotation_file.exists():
             output_string = f'''
             need to stitch the files using bigstitcher or other software, 
-            input unwarped files are - {unwarped_path}
-            output file is - {stitched_file_C0}
+            input unwarped files are - [red]{unwarped_path}[/red]
+            output file is - [green]{stitched_file_C01}[/green]
+            we also need a rotation file [blue]{rotation_file}[/blue] that contains the rotation to fit {reference_HCR_round}
             we did not detect the file yet, once you create it we will continue the process
             press enter to continue
             '''
-            print(output_string)
+            rprint(output_string)
             input()
-        else:
-            print(f"Found stitched file {stitched_file_C0}")
-            break
+    rprint(f"Found stitched file {stitched_file_C01} and rotation file {rotation_file}")
+
+    rotation_config = hjson.load(open(rotation_file,'r'))
+    data = tif_imread(stitched_file_C01)
+    from IPython import embed; embed()
+    for k in rotation_config:
+        if k == 'rotation':
+            data = np.stack([rotate(data[0], rotation_config['rotation']),rotate(data[1], rotation_config['rotation'])])
+        if k == 'fliplr':
+            data = data[:,::-1,:]
+        if k == 'flipud':
+            data =data[:,:,::-1]
+    tif_imwrite(stitched_file_C01.parent / f'{stitched_file_C01.stem}_rotated.tiff', data.astype(np.float32), imagej=True, metadata={'axes': 'CYX'})

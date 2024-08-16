@@ -1,0 +1,46 @@
+{
+    "base_path":"/mnt/bananas/data/ezfish/jonna/",
+    "mouse_name":"CIM132",
+    "two_photons_imaging":{
+        "sessions":[
+            {"date":"240408",
+            "functional_runs":["002"],
+            // only one plane is currenlty supported
+            "functional_plane":["1"],  //plane notation is 0 1 2mnjhjhnjhnjnh opoa
+            "anatomical_lowres_green_runs":[],
+            "anatomical_lowres_red_runs":[],
+            "anatomical_hires_green_runs":["004", "005", "006"],
+            "anatomical_hires_red_runs":["004", "005", "006"],
+            "unwarp_config":"andromeda_unwarp_values_240412_3p4_mag.npy", // make sure config is in \\bananas\data\ezfish\jonna\Calibration_files_for_unwarping
+            "unwarp_steps":28}
+        ]
+    },
+    "HCR_confocal_imaging":{
+        "rounds":[
+            {"round":"01",
+            "channels":["DAPI", "GCAMP", "PDYN", "CHRIMSON", "VGAT"],
+            "resolution":[1.515,1.515,5.0]
+            },
+            {"round":"02",
+            "channels":["DAPI", "FOXP2", "CCK", "SST"],
+            "resolution":[1.515,1.515,5.0]
+            },
+            {"round":"03",
+            "channels":["DAPI", "CALCA", "TAC1"],
+            "resolution":[1.515,1.515,5.0]
+            },
+			{"round":"04",
+            "channels":["DAPI", "GRP", "SYT10", "CHAT"],
+            "resolution":[1.515,1.515,5.0]
+            }
+        ],
+        "reference_round":"01", // the round that everything will be registered to
+    }
+    "HCR_to_HCR_params":{
+        "red_mut_x" : 3,
+        "red_mut_y" : 3,
+        "red_mut_z" : 2,
+    }
+    "HCR_model":"dadsadasd"
+    "parameters":"asd"
+}

@@ -4,9 +4,9 @@ ezfish/
 └── jonna/
     └── RG026/
         ├── 2P/
-        │   ├── 241226_RG026_001
-        │   ├── 241226_RG026_002
-        │   └── 241226_RG026_003
+        │   ├── RG026_241226_001/RG026_241226_001.sbx
+        │   ├── RG026_241226_002/RG026_241226_002.sbx
+        │   └── RG026_241226_003/RG026_241226_003.sbx
         ├── HCR/
         │   ├── RG026_HCR01.tif
         │   ├── RG026_HCR02_To_HCR01.tif
@@ -15,6 +15,9 @@ ezfish/
             ├── params.hjson
             ├── 2P/
             │   └── tile
+            |       ├── stitched
+            |       ├── unwarped
+            |       └── warped
             └── HCR
                 ├── registrations
                 │   ├── HCR02_to_HCR01
