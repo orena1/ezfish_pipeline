@@ -32,6 +32,11 @@
         ],
         'reference_round':"01", // the round that everything will be registered to
     }
+    HCR_to_HCR_params:{
+        red_mut_x : 2,
+        red_mut_y : 2,
+        red_mut_z : 2,
+    }
     "HCR_model":dadsadasd
-    parameters:
+    parameters:'asd'
 }

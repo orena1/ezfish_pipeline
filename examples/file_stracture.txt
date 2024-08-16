@@ -2,20 +2,29 @@ This is the data-stracture that is required to use our pipeline.
 See demo.json for the corresponding 
 ezfish/
 └── jonna/
-    └── JSA012/
+    └── RG026/
         ├── 2P/
-        │   ├── 241226_JSA012_001
-        │   ├── 241226_JSA012_002
-        │   └── 241226_JSA012_003
+        │   ├── 241226_RG026_001
+        │   ├── 241226_RG026_002
+        │   └── 241226_RG026_003
         ├── HCR/
-        │   ├── JSA012_HCR01.tif
-        │   ├── JSA012_HCR02_To_HCR01.tif
-        │   └── JSA012_HCR03_To_HCR01.tif
+        │   ├── RG026_HCR01.tif
+        │   ├── RG026_HCR02_To_HCR01.tif
+        │   └── RG026_HCR03_To_HCR01.tif
         └── OUTPUT/
+            ├── params.hjson
             ├── 2P/
             │   └── tile
             └── HCR
-
+                ├── registrations
+                │   ├── HCR02_to_HCR01
+                │   │  ├── global_parms_scan
+                │   │  └── local_params_scan
+                │   ├── HCR02_to_HCR01
+                │   │
+                │
+                └── full_registered_stacks
+                    ├── HCR02_to_HCR01.tiff
 
 
 

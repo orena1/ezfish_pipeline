@@ -1,16 +1,21 @@
-import SimpleITK as sitk
-import numpy as np
 import os
-from pathlib import Path
 import sys
+import hjson
+import numpy as np
+from pathlib import Path
+import SimpleITK as sitk
+from tifffile import imwrite as tif_imwrite
+from tifffile import imread as tif_imread
+from functools import lru_cache
 # Path for bigstream unless you did pip install
 sys.path = [fr"\\nasquatch\data\2p\jonna\Code_Python\Notebooks_Jonna\BigStream\bigstream_github"] + sys.path 
 sys.path = [fr"C:\Users\jonna\Notebooks_Jonna\BigStream\bigstream_github"] + sys.path 
 sys.path = [fr'{os.getcwd()}/bigstream_github'] + sys.path
+sys.path = ["/mnt/nasquatch/data/2p/jonna/Code_Python/Notebooks_Jonna/BigStream/bigstream_github"] + sys.path 
 
-# from bigstream.align import feature_point_ransac_affine_align
-# from bigstream.application_pipelines import easifish_registration_pipeline
-# from bigstream.transform import apply_transform
+from bigstream.align import feature_point_ransac_affine_align
+from bigstream.application_pipelines import easifish_registration_pipeline
+from bigstream.transform import apply_transform
 
 def get_registration_score(fixed, mov):
     fixed_image = sitk.GetImageFromArray(fixed.astype(np.float32))
@@ -25,6 +30,7 @@ def get_registration_score(fixed, mov):
     out = irm.MetricEvaluate(fixed_image,registered_image)
     return out
 
+# @lru_cache(maxsize=128)
 def register_lowres(
     fix_lowres,
     mov_lowres,
@@ -112,3 +118,32 @@ def HCR_confocal_imaging(manifest, only_paths=False):
     if only_paths:
         return reference_round, mov_rounds
     # register the rounds
+
+
+def verify_rounds(manifest, registered_paths = None):
+
+    # verify that all rounds exists.
+    reference_round_path, mov_rounds_path = HCR_confocal_imaging(manifest, only_paths=True)
+    reference_round_number = manifest['HCR_confocal_imaging']['reference_round']
+    if registered_paths is None: print("Rounds available for register:")
+    round_to_rounds = {}
+    j=0
+    for i in manifest['HCR_confocal_imaging']['rounds']:
+        if i['round'] != reference_round_number:
+            if registered_paths is None: print(i['round'],i['channels'])
+            round_to_rounds[i['round']] = i
+            round_to_rounds[i['round']]['image_path'] = mov_rounds_path[j]
+            j+=1
+        else:
+            reference_round = i
+            reference_round['image_path'] = reference_round_path
+
+    if registered_paths:
+        print("Rounds available for registerion apply:", end=' ')
+        params = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'params.hjson'
+        selected_registrations = hjson.load(open(params, 'r'))
+        for i in selected_registrations['HCR_selected_registrations']['rounds']:
+            assert i['round'] in round_to_rounds, f"Round {i['round']} not defined in manifest!"
+            round_to_rounds[i['round']]['registrations'] = i['selected_registrations']
+            print(i['round'], end=' ')
+    return round_to_rounds, reference_round
