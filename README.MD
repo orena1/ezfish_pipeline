@@ -21,6 +21,11 @@ PreProcessing - Manually:
     - run 1_scan_lowres_parameters.ipynb with the correct hjson file
     - find the correct paramters that are good for lowres
     - run_2_scan_highres_parameters.ipynb with the correct hjson file
+    - find the correct paramters that are good for highres
+    - create a new hjson file with the correct parameters OUTPUT/params.hjson
+    - run 3_apply_registration.ipynb with the correct hjson file
+7. register 2P to HCR refernce round (M)
+    
 
 
 

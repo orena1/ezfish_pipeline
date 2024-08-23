@@ -12,7 +12,7 @@ ezfish/
         │   ├── RG026_HCR02_To_HCR01.tif
         │   └── RG026_HCR03_To_HCR01.tif
         └── OUTPUT/
-            ├── params.hjson
+            ├── params.hjson # contains the selected registrations &
             ├── 2P/
             │   └── tile
             |       ├── stitched
@@ -24,7 +24,11 @@ ezfish/
                 │   │  ├── global_parms_scan
                 │   │  └── local_params_scan
                 │   ├── HCR02_to_HCR01
-                │   │
+                │   │  ├── global_parms_scan
+                │   │  └── local_params_scan
+                |   .
+                |   .
+                |   .
                 │
                 └── full_registered_stacks
                     ├── HCR02_to_HCR01.tiff

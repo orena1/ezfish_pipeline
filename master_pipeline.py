@@ -9,6 +9,7 @@ from rich import print as rprint
 from rich.prompt import Prompt
 
 from src import tiling as tl
+from src import registrations_funcs as rf
 from src.meta import main_pipeline_manifest
 
 # supported HCR probs
@@ -118,7 +119,7 @@ def main(args = None):
     tl.stitch_tiles_and_rotate(manifest, session)
 
     # step 4-AM: register the HCR data round to round
-    tl.register_rounds(manifest)
+    rf.register_rounds(manifest, manifest_path=args['manifest'])
     
 
 

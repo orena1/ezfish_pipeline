@@ -138,7 +138,6 @@ def stitch_tiles_and_rotate(manifest: dict, session: dict):
 
     rotation_config = hjson.load(open(rotation_file,'r'))
     data = tif_imread(stitched_file_C01)
-    from IPython import embed; embed()
     for k in rotation_config:
         if k == 'rotation':
             data = np.stack([rotate(data[0], rotation_config['rotation']),rotate(data[1], rotation_config['rotation'])])

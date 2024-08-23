@@ -4,6 +4,7 @@ import hjson
 import numpy as np
 from pathlib import Path
 import SimpleITK as sitk
+from rich import print as rprint
 from tifffile import imwrite as tif_imwrite
 from tifffile import imread as tif_imread
 from functools import lru_cache
@@ -75,7 +76,7 @@ def register_lowres(
         fix_lowres_spacing, mov_lowres_spacing,
         transform_list=[affine],
     )
-#     from IPython import embed; embed()
+
     reg_score = get_registration_score(aligned,fix_lowres)
     reg_score_text = str(np.round(reg_score,3)).replace('-','m')
     print(f'{write_directory}/{reg_score_text}_{fname}_both.tiff',flush=True)
@@ -125,12 +126,12 @@ def verify_rounds(manifest, registered_paths = None):
     # verify that all rounds exists.
     reference_round_path, mov_rounds_path = HCR_confocal_imaging(manifest, only_paths=True)
     reference_round_number = manifest['HCR_confocal_imaging']['reference_round']
-    if registered_paths is None: print("Rounds available for register:")
+    if registered_paths is not None: print("Rounds available for register:")
     round_to_rounds = {}
     j=0
     for i in manifest['HCR_confocal_imaging']['rounds']:
         if i['round'] != reference_round_number:
-            if registered_paths is None: print(i['round'],i['channels'])
+            if registered_paths is not None: print(i['round'],i['channels'])
             round_to_rounds[i['round']] = i
             round_to_rounds[i['round']]['image_path'] = mov_rounds_path[j]
             j+=1
@@ -138,12 +139,37 @@ def verify_rounds(manifest, registered_paths = None):
             reference_round = i
             reference_round['image_path'] = reference_round_path
 
-    if registered_paths:
-        print("Rounds available for registerion apply:", end=' ')
+    if registered_paths is not None:
+        txt_to_rich = "[green]Rounds available for registerion apply [/green]:"
         params = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'params.hjson'
         selected_registrations = hjson.load(open(params, 'r'))
         for i in selected_registrations['HCR_selected_registrations']['rounds']:
             assert i['round'] in round_to_rounds, f"Round {i['round']} not defined in manifest!"
             round_to_rounds[i['round']]['registrations'] = i['selected_registrations']
-            print(i['round'], end=' ')
+            txt_to_rich+= f" {i['round']}"
+        rprint(txt_to_rich)
     return round_to_rounds, reference_round
+
+
+
+def register_rounds(manifest, manifest_path):
+    """
+    Register the rounds in the manifest
+    """
+    
+    rprint("[green]Registering rounds: [/green]")
+    rprint(f"There are {len(manifest['HCR_confocal_imaging']['rounds'])} HCR rounds in the manifest, registartion is done round to round using juptyer notebooks")
+
+    rprint("\n[green]Step A:[/green]")
+    rprint("Open the notebook ezfish_pipeline/src/processing_notebooks/HCR_rounds/1_scan_lowres_parameters.ipynb")
+    rprint(f"Change the manifest path to this = {manifest_path}")
+
+    rprint("\n[green]Step B:[/green]")
+    rprint("Open the notebook ezfish_pipeline/src/processing_notebooks/HCR_rounds/2_scan_highres_parameters.ipynb")
+    rprint(f"Change the manifest path to this = {manifest_path}")
+    
+    
+    rprint("\n[green]Step C:[/green]")
+    rprint("Open the notebook ezfish_pipeline/src/processing_notebooks/HCR_rounds/3_apply_registration.ipynb")
+    rprint(f"Change the manifest path to this = {manifest_path}")
+    input("\nPress enter to continue")
