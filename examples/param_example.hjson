@@ -1,0 +1,11 @@
+HCR_selected_registrations:{
+    "rounds":[
+       {"round":"02",
+        "selected_registrations":["local_params_scan_nodeform/rz1_rxy25_bs2to20_mt0.3/bs100_100_25_1_25_bs5to50_mt0.2"]
+        },
+        {"round":"03",
+        "selected_registrations":["local_params_scan_nodeform/rz1_rxy25_bs3to30_mt0.2/bs150_150_15_4_4_bs60to70_mt0.5"]
+        }
+
+    ]
+}
