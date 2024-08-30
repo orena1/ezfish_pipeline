@@ -5,13 +5,13 @@ Pipeline steps:
 PreProcessing - Manually:
 - create a copy of examples/demo.json and change the variable to match the new experiment, save it as mouse_name.json
 - copy the relevant files (HCR/2P) to the relevant folder (look at examples/file_structure.txt)
-- run the pipeline with the new json file. Running everything on colab00 - in terminal run python master_pipeline.py examples/CIM132.hjson
+- run the pipeline with the new json file. Running everything on colab00 - in terminal run python -- manifest master_pipeline.py examples/CIM132.hjson
 
 A - Automatic
 M - Manual
 SA - Semi-Automatic
 
-1. parse manifest
+1. parse manifest. I.e: python master_pipeline.py  --manifest examples/CIM130.hjson
 2. validate manifest
 3. process sbx files (A):
     - transform sbx to tiff
