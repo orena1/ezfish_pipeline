@@ -168,8 +168,10 @@ def register_rounds(manifest, manifest_path):
     rprint("Open the notebook ezfish_pipeline/src/processing_notebooks/HCR_rounds/2_scan_highres_parameters.ipynb")
     rprint(f"Change the manifest path to this = {manifest_path}")
     
-    
     rprint("\n[green]Step C:[/green]")
+    rprint("Modify the OUTPUT/params.hjson file to select the rounds you want to register")
+
+    rprint("\n[green]Step D:[/green]")
     rprint("Open the notebook ezfish_pipeline/src/processing_notebooks/HCR_rounds/3_apply_registration.ipynb")
     rprint(f"Change the manifest path to this = {manifest_path}")
     input("\nPress enter to continue")

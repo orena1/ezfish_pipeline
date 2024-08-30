@@ -120,7 +120,7 @@ def stitch_tiles_and_rotate(manifest: dict, session: dict):
     stitched_file_C01  = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'stitched' / f'stack_stitched_C01_plane{plane}.tif' 
     rotation_file = stitched_file_C01.parent / 'rotation.txt'
     os.makedirs(stitched_file_C01.parent, exist_ok=True)
-    unwarped_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'warped'
+    unwarped_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'unwarped'
 
     reference_HCR_round = verify_rounds(manifest, registered_paths = None)[1]['image_path']
     while not stitched_file_C01.exists() or not rotation_file.exists():
@@ -129,8 +129,7 @@ def stitch_tiles_and_rotate(manifest: dict, session: dict):
             input unwarped files are - [red]{unwarped_path}[/red]
             output file is - [green]{stitched_file_C01}[/green]
             we also need a rotation file [blue]{rotation_file}[/blue] that contains the rotation to fit {reference_HCR_round}
-            we did not detect the file yet, once you create it we will continue the process
-            press enter to continue
+            we did not detect the file yet, once you create these files press enter
             '''
             rprint(output_string)
             input()
