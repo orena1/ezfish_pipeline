@@ -255,7 +255,7 @@ def register_rounds(manifest, manifest_path):
     """
     Register the rounds in the manifest
     """
-    round_to_rounds, reference_round, ready_to_apply = verify_rounds(manifest, parse_registered=True)
+    round_to_rounds, reference_round, ready_to_apply = verify_rounds(manifest)
     rprint("[green]Registering rounds: [/green]")
     rprint(f"There are {len(manifest['HCR_confocal_imaging']['rounds'])} HCR rounds in the manifest, registartion is done round to round using juptyer notebooks")
 
