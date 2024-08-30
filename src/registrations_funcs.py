@@ -1,13 +1,17 @@
+import re
 import os
 import sys
 import hjson
+import zarr
 import numpy as np
 from pathlib import Path
+from tqdm.auto import trange, tqdm
 import SimpleITK as sitk
 from rich import print as rprint
 from tifffile import imwrite as tif_imwrite
 from tifffile import imread as tif_imread
 from functools import lru_cache
+
 # Path for bigstream unless you did pip install
 sys.path = [fr"\\nasquatch\data\2p\jonna\Code_Python\Notebooks_Jonna\BigStream\bigstream_github"] + sys.path 
 sys.path = [fr"C:\Users\jonna\Notebooks_Jonna\BigStream\bigstream_github"] + sys.path 
@@ -17,6 +21,7 @@ sys.path = ["/mnt/nasquatch/data/2p/jonna/Code_Python/Notebooks_Jonna/BigStream/
 from bigstream.align import feature_point_ransac_affine_align
 from bigstream.application_pipelines import easifish_registration_pipeline
 from bigstream.transform import apply_transform
+from bigstream.piecewise_transform import distributed_apply_transform
 
 def get_registration_score(fixed, mov):
     fixed_image = sitk.GetImageFromArray(fixed.astype(np.float32))
@@ -120,35 +125,129 @@ def HCR_confocal_imaging(manifest, only_paths=False):
         return reference_round, mov_rounds
     # register the rounds
 
+def registarion_apply(manifest):
+    """
+    Register the rounds in the manifest that was selected in params.hjson
+    """
 
-def verify_rounds(manifest, registered_paths = None):
+    round_to_rounds, reference_round, register_rounds = verify_rounds(manifest, parse_registered = True, print_rounds = True, print_registered = True)
+
+    for HCR_round_to_register in register_rounds:
+        mov_round = round_to_rounds[HCR_round_to_register]
+        # File names
+        HCR_fix_image_path = reference_round['image_path'] # The fix image that all other rounds will be registerd to (include all channels!)
+        HCR_mov_image_path = mov_round['image_path'] # The image that will be registered to the fix image (include all channels!)
+
+        round_folder_name = f"HCR{HCR_round_to_register}_to_HCR{reference_round['round']}"
+        
+        reg_path =  Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'registrations'/ round_folder_name / round_to_rounds[HCR_round_to_register]['registrations'][0]
+        full_stack_path =  Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
+        if full_stack_path.exists():
+            print(f"Round {HCR_round_to_register} already registered")
+            continue
+        full_stack_path.parent.mkdir(exist_ok=True, parents=True)
+        rprint(f"[bold]Applying Registering to round - {HCR_round_to_register}[/bold]")
+
+
+        # resolution of the images
+        fix_image_spacing = np.array(reference_round['resolution']) # Y,X,Z
+        mov_image_spacing = np.array(mov_round['resolution']) # Y,X,Z
+
+
+        # spatial downsampling, probably no need to test. (Changed x and y from 3 to 2 for CIM round 5)
+        red_mut_x = manifest['HCR_to_HCR_params']['red_mut_x']
+        red_mut_y = manifest['HCR_to_HCR_params']['red_mut_y']
+        red_mut_z = manifest['HCR_to_HCR_params']['red_mut_z']
+
+        fix_lowres_spacing = fix_image_spacing * np.array([red_mut_y,red_mut_x,red_mut_z])
+        mov_lowres_spacing = mov_image_spacing * np.array([red_mut_y,red_mut_x,red_mut_z])
+
+
+        # get block size from the registration file
+        blocksize_match = re.findall(r'bs(\d+)_(\d+)_(\d+)', Path(round_to_rounds[HCR_round_to_register]['registrations'][0]).name)
+        blocksize = [int(num) for num in blocksize_match[0]]
+
+        print("Loding images")
+        HCR_fix_round = tif_imread(HCR_fix_image_path)[:,0]
+        HCR_mov_round = tif_imread(HCR_mov_image_path)
+
+        # load the registration files
+        affine = np.loadtxt(fr"{reg_path}/_affine.mat")
+        deform = zarr.load(fr"{reg_path}/deform.zarr")
+        data_paths = []
+        fix_highres = HCR_fix_round.transpose(2,1,0) # from Z,X,Y to Y,X,Z
+
+        #Loop through channels starting with 1, which ignores the first channel which has already been registered
+        for channel in trange(1,HCR_mov_round.shape[1], desc="Registering channels"):
+            output_channel_path = Path(fr"{reg_path}/out_c{channel}.zarr")
+            if os.path.exists(output_channel_path):
+                print(f"Channel {channel} already registered")
+                data_paths.append(output_channel_path)
+                continue
+
+            HCR_mov_round_C = HCR_mov_round[:,channel]
+            
+            # mov Image
+            mov_highres = HCR_mov_round_C.transpose(2,1,0)
+            
+            # register the images
+            local_aligned = distributed_apply_transform(
+                fix_highres, mov_highres,
+                fix_image_spacing, mov_image_spacing,
+                transform_list=[affine, deform],
+                blocksize=blocksize,
+                write_path=output_channel_path)
+            print(fr'saved output {output_channel_path}')
+
+            data = zarr.load(output_channel_path)
+            data_paths.append(output_channel_path)
+
+            tif_imwrite(output_channel_path.parent / output_channel_path.name.replace('.zarr','.tiff')
+                        ,data.transpose(2,1,0))
+        
+        print(f"Saving full stack -{full_stack_path}")
+        full_stack = [] 
+        for path in data_paths:
+            full_stack.append(zarr.load(path))
+        full_stack = np.stack(full_stack)
+
+        tif_imwrite(full_stack_path, full_stack.transpose(3,2,1,0))
+
+def verify_rounds(manifest, parse_registered = False, print_rounds = False, print_registered = False):
+    '''
+    if parse_registered is True, return the rounds that have been registered
+    
+    '''
 
     # verify that all rounds exists.
     reference_round_path, mov_rounds_path = HCR_confocal_imaging(manifest, only_paths=True)
     reference_round_number = manifest['HCR_confocal_imaging']['reference_round']
-    if registered_paths is not None: print("Rounds available for register:")
+    if print_rounds: print("Rounds available for register:")
+
     round_to_rounds = {}
     j=0
     for i in manifest['HCR_confocal_imaging']['rounds']:
         if i['round'] != reference_round_number:
-            if registered_paths is not None: print(i['round'],i['channels'])
+            if print_rounds: print(i['round'],i['channels'])
             round_to_rounds[i['round']] = i
             round_to_rounds[i['round']]['image_path'] = mov_rounds_path[j]
             j+=1
         else:
             reference_round = i
             reference_round['image_path'] = reference_round_path
-
-    if registered_paths is not None:
-        txt_to_rich = "[green]Rounds available for registerion apply [/green]:"
+    
+    ready_to_apply = []
+    if parse_registered:
+        txt_to_rich = "[green]Rounds available for registerion-apply [/green]:"
         params = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'params.hjson'
         selected_registrations = hjson.load(open(params, 'r'))
         for i in selected_registrations['HCR_selected_registrations']['rounds']:
             assert i['round'] in round_to_rounds, f"Round {i['round']} not defined in manifest!"
             round_to_rounds[i['round']]['registrations'] = i['selected_registrations']
             txt_to_rich+= f" {i['round']}"
-        rprint(txt_to_rich)
-    return round_to_rounds, reference_round
+            ready_to_apply.append(i['round'])
+        if print_registered: rprint(txt_to_rich)
+    return round_to_rounds, reference_round, ready_to_apply
 
 
 
@@ -156,7 +255,7 @@ def register_rounds(manifest, manifest_path):
     """
     Register the rounds in the manifest
     """
-    
+    round_to_rounds, reference_round, ready_to_apply = verify_rounds(manifest, parse_registered=True)
     rprint("[green]Registering rounds: [/green]")
     rprint(f"There are {len(manifest['HCR_confocal_imaging']['rounds'])} HCR rounds in the manifest, registartion is done round to round using juptyer notebooks")
 
@@ -170,8 +269,9 @@ def register_rounds(manifest, manifest_path):
     
     rprint("\n[green]Step C:[/green]")
     rprint("Modify the OUTPUT/params.hjson file to select the rounds you want to register")
+    rprint(f"Currenlty registartion that are ready to apply are: {ready_to_apply}")
 
-    rprint("\n[green]Step D:[/green]")
-    rprint("Open the notebook ezfish_pipeline/src/processing_notebooks/HCR_rounds/3_apply_registration.ipynb")
-    rprint(f"Change the manifest path to this = {manifest_path}")
-    input("\nPress enter to continue")
+
+    rprint(f"Press Enter to register {ready_to_apply}")
+    input()
+    registarion_apply(manifest)

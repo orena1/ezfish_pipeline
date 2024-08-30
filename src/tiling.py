@@ -122,7 +122,7 @@ def stitch_tiles_and_rotate(manifest: dict, session: dict):
     os.makedirs(stitched_file_C01.parent, exist_ok=True)
     unwarped_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'unwarped'
 
-    reference_HCR_round = verify_rounds(manifest, registered_paths = None)[1]['image_path']
+    reference_HCR_round = verify_rounds(manifest)[1]['image_path']
     while not stitched_file_C01.exists() or not rotation_file.exists():
             output_string = f'''
             need to stitch the files using bigstitcher or other software, 
