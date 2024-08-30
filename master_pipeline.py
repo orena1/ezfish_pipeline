@@ -13,7 +13,7 @@ from src import registrations_funcs as rf
 from src.meta import main_pipeline_manifest
 
 # supported HCR probs
-HCR_probs = ['CALCA', 'CCK', 'CHAT', 'CHRIMSON', 'DAPI', 'FOXP2', 'GCAMP', 'GLP1R', 'GRP', 'NPR3', 'PDYN', 'RORB', 'SST', 'SYT10', 'TAC1', 'VGAT']
+HCR_probs = ['CALCA', 'CCK', 'CHAT', 'CHRIMSON', 'DAPI', 'FOXP2', 'GCAMP', 'GLP1R', 'GRP', 'NPR3', 'PDYN', 'RORB', 'SST', 'SYT10', 'TAC1', 'VGAT', 'SYT10', 'CD24A', 'GPR101','PDE11A','MC4R','TH','RUNX1','RUNX4']
 
 def parse_input_args(args):
     if args is not None:
