@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-
+import argparse
 import numpy as np
 from rich import print as rprint
 from rich.prompt import Prompt
@@ -106,7 +106,7 @@ def main(args = None):
     args = parse_input_args(args)
 
     # step 1-A: parse the manifest file
-    manifest = main_pipeline_manifest(args['manifest'])
+    manifest = main_pipeline_manifest(args.manifest)
     specs = verify_manifest(manifest)
 
     session = manifest['two_photons_imaging']['sessions'][0]
@@ -119,7 +119,7 @@ def main(args = None):
     tl.stitch_tiles_and_rotate(manifest, session)
 
     # step 4-AM: register the HCR data round to round
-    rf.register_rounds(manifest, manifest_path=args['manifest'])
+    rf.register_rounds(manifest, manifest_path=args.manifest)
     
 
 
@@ -131,6 +131,9 @@ def main(args = None):
 
 
 if __name__ == "__main__":
-    args = {'manifest': 'examples/CIM132.hjson'}
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--manifest', required=True, help='Path to the pipeline manifest file e.g. examples/CIM132.hjson')
+    args = parser.parse_args()
+    #args = {'manifest': 'examples/CIM132.hjson'}
     main(args)
     
