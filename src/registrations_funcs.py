@@ -178,7 +178,7 @@ def registarion_apply(manifest):
         fix_highres = HCR_fix_round.transpose(2,1,0) # from Z,X,Y to Y,X,Z
 
         #Loop through channels starting with 1, which ignores the first channel which has already been registered
-        for channel in trange(1,HCR_mov_round.shape[1], desc="Registering channels"):
+        for channel in trange(0,HCR_mov_round.shape[1], desc="Registering channels"):
             output_channel_path = Path(fr"{reg_path}/out_c{channel}.zarr")
             if os.path.exists(output_channel_path):
                 print(f"Channel {channel} already registered")
@@ -243,6 +243,9 @@ def verify_rounds(manifest, parse_registered = False, print_rounds = False, prin
         selected_registrations = hjson.load(open(params, 'r'))
         for i in selected_registrations['HCR_selected_registrations']['rounds']:
             assert i['round'] in round_to_rounds, f"Round {i['round']} not defined in manifest!"
+            selected_registration_path =  Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'registrations'/ f"HCR{i['round']}_to_HCR{reference_round_number}" / i['selected_registrations'][0]
+            assert os.path.exists(selected_registration_path), f"Registration {selected_registration_path} not found although params.hjson says it should be there"
+
             round_to_rounds[i['round']]['registrations'] = i['selected_registrations']
             txt_to_rich+= f" {i['round']}"
             ready_to_apply.append(i['round'])

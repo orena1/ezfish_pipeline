@@ -44,11 +44,12 @@ def parse_input_args(args):
 def user_input_missing(check_results, message):
     if  (np.array(check_results)[:,1]==False).any():
         print("Missing 2P runs:")
-        for i in check_results[check_results[:,1]==False]:
-            print(i[0])
-        out = Prompt.ask("\n[italic red]Some 2p runs are missing, do you whish to continue?[/italic red]", choices=["y", "n"])
-        if out=='n':
-            sys.exit()
+        while True:
+            for i in check_results[check_results[:,1]==False]:
+                print(i[0])
+            out = Prompt.ask("\n[italic red]Some 2p runs are missing, do you whish to continue?[/italic red]", choices=["y", "n", "check-again"])
+            if out=='n':
+                sys.exit()
 
 def verify_manifest(manifest):
     '''
