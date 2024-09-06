@@ -40,7 +40,6 @@ ezfish/
             |        ├── lowres_meanImg_C0_plane1_rotated_TO_stack_stitched_C01_plane1.tiff
             |        ├── lowres_meanImg_C0_plane1_rotated_TO_stack_stitched_C01_plane1_landmarks.csv
             |        ├── lowres_meanImg_C0_plane1_rotated_TO_stack_stitched_C01_plane1.settings.xml
-            |        ├── lowres_meanImg_C0_plane1_masks.tiff
             |        ├── lowres_meanImg_C0_plane1_masks_rotated.tiff
             |        ├── lowres_meanImg_C0_plane1_masks_rotated_TO_stack_stitched_C01_plane1.tiff
             |        ├── lowres_meanImg_C0_plane1_masks_rotated_TO_stack_stitched_C01_plane1_TO_HCR1.tiff
