@@ -24,6 +24,8 @@ def user_input_missing(check_results, message):
             out = Prompt.ask("\n[italic red]Some 2p runs are missing, do you whish to continue?[/italic red]", choices=["y", "n", "check-again"])
             if out=='n':
                 sys.exit()
+            if out=='y':
+                return
 
 def verify_manifest(manifest):
     '''
