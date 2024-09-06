@@ -9,7 +9,7 @@ from rich import print as rprint
 from sbxreader import sbx_get_metadata, sbx_memmap
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imwrite
-from .registrations_funcs import verify_rounds
+from .registrations import verify_rounds
 from skimage.transform import rotate
 
 def update_map(map_x, map_y, poly_vals, src):
@@ -69,7 +69,7 @@ def unwarp_tiles(manifest: dict, session: dict):
 
 def process_session_sbx(manifest: dict , session:dict):
     '''
-    extract the mean of analomical hires green and red runs to tiff file in the correct pathways.
+    extract the mean of analtomical hires green and red runs to tiff file in the correct pathways.
     manifest: json dict
     session: the session to process, extracted from the manifest 
     '''
@@ -118,21 +118,24 @@ def stitch_tiles_and_rotate(manifest: dict, session: dict):
     tile_to_num = {'left':'001', 'center':'002', 'right':'003'}
     plane = session['functional_plane'][0]
     stitched_file_C01  = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'stitched' / f'stack_stitched_C01_plane{plane}.tif' 
-    rotation_file = stitched_file_C01.parent / 'rotation.txt'
-    os.makedirs(stitched_file_C01.parent, exist_ok=True)
     unwarped_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'unwarped'
+    save_path_registered = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered'
+    save_path_registered.mkdir(exist_ok=True, parents=True)
+    stitched_file_C01.parent.mkdir(exist_ok=True, parents=True)
 
+    rotation_file = stitched_file_C01.parent / 'rotation.txt'
+    
     reference_HCR_round = verify_rounds(manifest)[1]['image_path']
     while not stitched_file_C01.exists() or not rotation_file.exists():
-            output_string = f'''
-            need to stitch the files using bigstitcher or other software, 
-            input unwarped files are - [red]{unwarped_path}[/red]
-            output file is - [green]{stitched_file_C01}[/green]
-            we also need a rotation file [blue]{rotation_file}[/blue] that contains the rotation to fit {reference_HCR_round}
-            we did not detect the file yet, once you create these files press enter
-            '''
-            rprint(output_string)
-            input()
+        output_string = f'''
+        need to stitch the files using bigstitcher or other software, 
+        input unwarped files are - [red]{unwarped_path}[/red]
+        output file is - [green]{stitched_file_C01}[/green]
+        we also need a rotation file [blue]{rotation_file}[/blue] that contains the rotation to fit {reference_HCR_round}
+        we did not detect the file yet, once you create these files press enter
+        '''
+        rprint(output_string)
+        input()
     rprint(f"Found stitched file {stitched_file_C01} and rotation file {rotation_file}")
 
     rotation_config = hjson.load(open(rotation_file,'r'))
@@ -145,3 +148,4 @@ def stitch_tiles_and_rotate(manifest: dict, session: dict):
         if k == 'flipud':
             data =data[:,:,::-1]
     tif_imwrite(stitched_file_C01.parent / f'{stitched_file_C01.stem}_rotated.tiff', data.astype(np.float32), imagej=True, metadata={'axes': 'CYX'})
+    tif_imwrite(save_path_registered / f'{stitched_file_C01.stem}_rotated.tiff', data.astype(np.float32), imagej=True, metadata={'axes': 'CYX'})

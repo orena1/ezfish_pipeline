@@ -11,6 +11,8 @@ A - Automatic
 M - Manual
 SA - Semi-Automatic
 
+
+# Steps of the pipeline, will be instructed to the manual stesps 
 1. parse manifest. I.e: python master_pipeline.py  --manifest examples/CIM130.hjson
 2. validate manifest
 3. process sbx files (A):
@@ -27,3 +29,7 @@ SA - Semi-Automatic
     - run 1_scan_lowres_parameters.ipynb with the correct hjson file
     - find the correct paramters that are good for lowres
     - run_2_scan_highres_parameters.ipynb with the correct hjson file
+    - find the correct paramters that are good for highres
+    - set the correct parameters in the OUTPUT/params.hjson file
+    - apply registration to all channels in rounds
+7. 

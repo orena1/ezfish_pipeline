@@ -5,12 +5,11 @@ import hjson
 import zarr
 import numpy as np
 from pathlib import Path
-from tqdm.auto import trange, tqdm
+from rich.progress import track
 import SimpleITK as sitk
 from rich import print as rprint
 from tifffile import imwrite as tif_imwrite
 from tifffile import imread as tif_imread
-from functools import lru_cache
 
 # Path for bigstream unless you did pip install
 sys.path = [fr"\\nasquatch\data\2p\jonna\Code_Python\Notebooks_Jonna\BigStream\bigstream_github"] + sys.path 
@@ -48,7 +47,7 @@ def register_lowres(
     write_only_aligned=True,
 ):
     """
-
+    Function to register lowres images in paramters scan, this function is used by 1_scan_lowres_parameters.ipynb
     """
 
     # ensure lowres datasets are in memory
@@ -60,8 +59,7 @@ def register_lowres(
     blob_min = int(round(np.min(fix_lowres_spacing)*4))
     blob_max = int(round(np.min(fix_lowres_spacing)*16))
     print(f'1, {blob_min=} , {blob_max=}')
-    a = {'alignment_spacing':alignment_spacing,
-         'blob_sizes':[blob_min, blob_max]}
+    a = {'alignment_spacing':alignment_spacing,'blob_sizes':[blob_min, blob_max]}
     
     #numberOfIterations = 10 instead of 100
     global_ransac_kwargs_full = {**a, **global_ransac_kwargs}
@@ -178,7 +176,7 @@ def registarion_apply(manifest):
         fix_highres = HCR_fix_round.transpose(2,1,0) # from Z,X,Y to Y,X,Z
 
         #Loop through channels starting with 1, which ignores the first channel which has already been registered
-        for channel in trange(0,HCR_mov_round.shape[1], desc="Registering channels"):
+        for channel in track(range(HCR_mov_round.shape[1]), description="Registering channels"):
             output_channel_path = Path(fr"{reg_path}/out_c{channel}.zarr")
             if os.path.exists(output_channel_path):
                 print(f"Channel {channel} already registered")
@@ -271,10 +269,13 @@ def register_rounds(manifest, manifest_path):
     rprint(f"Change the manifest path to this = {manifest_path}")
     
     rprint("\n[green]Step C:[/green]")
-    rprint("Modify the OUTPUT/params.hjson file to select the rounds you want to register")
-    rprint(f"Currenlty registartion that are ready to apply are: {ready_to_apply}")
+    rprint("Create the OUTPUT/params.hjson file to select the rounds you want to register (see example in examples/param_example.hjson)")
+    rprint(f"Once files is created Press Enter to load  the params.hjson file")
+    input()
 
-
-    rprint(f"Press Enter to register {ready_to_apply}")
+    round_to_rounds, reference_round, ready_to_apply = verify_rounds(manifest, parse_registered = True)
+    rprint("\n[green]Step D:[/green]")
+    rprint(f"Currenlty registartion that are ready to apply are {ready_to_apply}")
+    rprint(f"Press Enter to apply registerion matrix to these rounds {ready_to_apply}")
     input()
     registarion_apply(manifest)

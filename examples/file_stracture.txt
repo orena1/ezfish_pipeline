@@ -14,10 +14,26 @@ ezfish/
         └── OUTPUT/
             ├── params.hjson # contains the selected registrations &
             ├── 2P/
-            │   └── tile
-            |       ├── stitched
-            |       ├── unwarped
-            |       └── warped
+            │   ├── tile
+            |   |    ├── stitched
+            |   |    ├── unwarped
+            |   |    |   ├── rotation.txt #<-- maybe more to params.hjson???
+            |   |    |   ├──
+            |   |    |   |
+            |   |    └── warped
+            |   ├── suite2p
+            |   |    ├── mean_over_time_C01_plane0.tiff
+            |   |    ├── mean_over_time_C01_plane1.tiff
+            |   |
+            |   └── registrated
+            |        ├── stack_stitched_CO1_plane1_rotated.tiff
+            |        ├── stack_stitched_CO1_plane1_to_HCR1_landmarks.csv
+            |        ├── stack_stitched_CO1_plane1_to_HCR1_landmarks.settings
+            |        ├── 
+            |        ├──
+            |        ├──
+            |
+            |
             └── HCR
                 ├── registrations
                 │   ├── HCR02_to_HCR01
@@ -26,7 +42,7 @@ ezfish/
                 │   ├── HCR02_to_HCR01
                 │   │  ├── global_parms_scan
                 │   │  └── local_params_scan
-                |   .
+                |   . 
                 |   .
                 |   .
                 │

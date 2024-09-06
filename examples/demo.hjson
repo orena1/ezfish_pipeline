@@ -4,7 +4,7 @@
     "two_photons_imaging":{
         "sessions":[
             {"date":"240408",
-            "functional_run":["002"], // the run in which suite2p folder exists
+            "functional_runs":["002"], // the run in which suite2p folder exists
             // only one plane is currenlty supported
             "functional_plane":["1"],  //plane notation is 0 1 2mnjhjhnjhnjnh opoa
             "anatomical_lowres_green_runs":[],
