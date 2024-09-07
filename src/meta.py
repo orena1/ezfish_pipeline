@@ -15,13 +15,13 @@ def parse_json(json_file):
     with open(json_file, 'r') as f:
         return hjson.load(f)
     
-def user_input_missing(check_results, message):
+def user_input_missing(check_results, message, color):
     if  (np.array(check_results)[:,1]==False).any():
         print("Missing 2P runs:")
         while True:
             for i in check_results[check_results[:,1]==False]:
                 print(i[0])
-            out = Prompt.ask("\n[italic red]Some 2p runs are missing, do you whish to continue?[/italic red]", choices=["y", "n", "check-again"])
+            out = Prompt.ask(f"\n[italic {color}]Some 2p runs are missing, do you whish to continue?[/italic {color}]", choices=["y", "n", "check-again"])
             if out=='n':
                 sys.exit()
             if out=='y':
@@ -59,7 +59,12 @@ def verify_manifest(manifest):
                 run_path_sbx = base_path / mouse_name / '2P' /  f'{mouse_name}_{date_two_photons}_{run}' / f'{mouse_name}_{date_two_photons}_{run}.sbx'
                 check_results.append([run_path_sbx,os.path.exists(run_path_sbx)])
     check_results = np.array(check_results)
-    user_input_missing(check_results, 'Some 2p runs are missing, do you whish to continue?')
+    user_input_missing(check_results, 'Some 2p runs are missing, do you whish to continue?', color='red')
+
+    # verify that functional run exists.
+    suite2p_run = session['functional_run'][0]
+    suite2p_path = base_path / mouse_name / '2P' /  f'{mouse_name}_{date}_{suite2p_run}' / 'suite2p' /'plane0/ops.npy'
+    user_input_missing([suite2p_path], 'Suite2p path is missing, do you whish to continue?', color='pink')
 
     # verify that unwarp_config exists
     if not os.path.exists(manifest['two_photons_imaging']['sessions'][0]['unwarp_config']):
