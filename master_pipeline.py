@@ -8,6 +8,8 @@ from src import functional as fc
 from src import tiling as tl
 from src import registrations as rf
 from src import meta as mt
+from src import segmentation as sg
+
 
 def parse_input_args(args):
     if args is not None:
@@ -41,9 +43,7 @@ def parse_input_args(args):
 def main(args = None):
     '''
     We can either start main with arguments or from command line 
-    The following steps are conducted:
-    1. Parse the manifest file
-    2. unwarp 2P anatomical_runs
+    See README.md for more information
     '''
 
     args = parse_input_args(args)
@@ -68,14 +68,11 @@ def main(args = None):
     ### move to the start!!! fix also the README after you do that!
     fc.extract_suite2p_registered_planes(manifest, session)
     
+    # Run cellpose
+    #sg.TBD
 
-
-
-
-
-
-
-
+    # extract probs values from cellpose segmentation
+    sg.extract_intensities(manifest)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

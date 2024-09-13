@@ -17,7 +17,7 @@ ezfish/
             │   ├── tile
             |   |    ├── stitched
             |   |    ├── unwarped
-            |   |    |   ├── rotation.txt #<-- maybe more to params.hjson???
+            |   |    |   ├── rotation.txt #<-- maybe move to params.hjson???
             |   |    |   ├──
             |   |    |   |
             |   |    └── warped
@@ -52,15 +52,18 @@ ezfish/
                 │   │  ├── global_parms_scan
                 │   │  └── local_params_scan
                 |   . 
+                |     
                 ├── cellpose
                 |    ├── HCR02_to_HCR01_seg.npy
                 |    ├── HCR02_to_HCR01_masks.tiff
                 |    ├── HCR03_to_HCR01_seg.npy
                 |    ├── HCR03_to_HCR01_masks.tiff
+                |    . 
+                |      
                 └── full_registered_stacks
-                    ├── HCR02_to_HCR01_reg.tiff
-                    ├── HCR03_to_HCR01_reg.tiff
-                    ├── HCR04_to_HCR01_reg.tiff
+                    ├── HCR02_to_HCR01.tiff
+                    ├── HCR03_to_HCR01.tiff
+                    ├── HCR04_to_HCR01.tiff
 
 
 

@@ -30,10 +30,24 @@ def extract_suite2p_registered_planes(manifest: dict , session: dict):
     functional_plane = session['functional_plane'][0]
 
     ops = np.load(suite2p_path / 'plane0/ops.npy',allow_pickle=True).item()
+    
     planes = ops['nplanes']
 
     for plane in track(range(planes), description='Extracting suite2p registered planes'):
         
+
+        ##
+        ##
+        ## Extract the mean of the registered plane
+        ops = np.load(suite2p_path / f'plane{plane}/ops.npy',allow_pickle=True).item()
+        for img_key in ['meanImg', 'meanImgE', 'max_proj']:
+            save_filename = save_path / f'{img_key}_C01_plane{plane}.tiff'
+            if save_filename.exists():
+                continue
+            img = ops[img_key]
+            tif_imwrite(save_filename, img)
+        ## Jonna check if needed.
+
         save_filename = save_path / f'mean_over_time_C01_plane{plane}.tiff'
         if save_filename.exists():
             continue
@@ -56,14 +70,14 @@ def extract_suite2p_registered_planes(manifest: dict , session: dict):
     rotation_file =  Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'stitched' / 'rotation.txt'
     rotation_config = hjson.load(open(rotation_file,'r'))
     data = tif_imread(save_filename_C01)
-    from IPython import embed; embed()
+    assert data.ndim == 2, 'suite2p binary files should be 2D, not 3D!, can fix but not implemented yet'
     for k in rotation_config:
         if k == 'rotation':
-            data = np.stack([rotate(data[0], rotation_config['rotation']),rotate(data[1], rotation_config['rotation'])])
+            data = rotate(data, rotation_config['rotation'])
         if k == 'fliplr':
-            data = data[:,::-1,:]
+            data = data[::-1,:]
         if k == 'flipud':
-            data =data[:,:,::-1]
+            data =data[:,::-1]
     
 
-    tif_imwrite(save_path_registered / f'{save_filename_C01.stem}_rotated.tiff', data.astype(np.float32), imagej=True, metadata={'axes': 'CYX'})
+    tif_imwrite(save_path_registered / f'{save_filename_C01.stem}_rotated.tiff', data.astype(np.float32), imagej=True, metadata={'axes': 'YX'})

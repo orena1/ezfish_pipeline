@@ -270,7 +270,7 @@ def register_rounds(manifest, manifest_path):
     
     rprint("\n[green]Step C:[/green]")
     rprint("Create the OUTPUT/params.hjson file to select the rounds you want to register (see example in examples/param_example.hjson)")
-    rprint(f"Once files is created Press Enter to load  the params.hjson file")
+    rprint(f"Once files is created Press [bold]Enter[/bold] to load the params.hjson file")
     input()
 
     round_to_rounds, reference_round, ready_to_apply = verify_rounds(manifest, parse_registered = True)
