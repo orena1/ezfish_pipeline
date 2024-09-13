@@ -209,7 +209,7 @@ def registarion_apply(manifest):
             full_stack.append(zarr.load(path))
         full_stack = np.stack(full_stack)
 
-        tif_imwrite(full_stack_path, full_stack.transpose(3,2,1,0))
+        tif_imwrite(full_stack_path, full_stack.transpose(3,2,1,0), imagej=True, metadata={'axes': 'ZCYX'})
 
 def verify_rounds(manifest, parse_registered = False, print_rounds = False, print_registered = False):
     '''
