@@ -63,8 +63,8 @@ def verify_manifest(manifest):
 
     # verify that functional run exists.
     suite2p_run = session['functional_run'][0]
-    suite2p_path = base_path / mouse_name / '2P' /  f'{mouse_name}_{date}_{suite2p_run}' / 'suite2p' /'plane0/ops.npy'
-    user_input_missing([suite2p_path], 'Suite2p path is missing, do you whish to continue?', color='pink')
+    suite2p_path = base_path / mouse_name / '2P' /  f'{mouse_name}_{date_two_photons}_{suite2p_run}' / 'suite2p' /'plane0/ops.npy'
+    user_input_missing(np.array([[suite2p_path, os.path.exists(suite2p_path)]]), 'Suite2p path is missing, do you wish to continue?', color='pink')
 
     # verify that unwarp_config exists
     if not os.path.exists(manifest['two_photons_imaging']['sessions'][0]['unwarp_config']):
