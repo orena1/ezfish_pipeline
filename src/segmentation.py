@@ -10,7 +10,7 @@ from scipy.sparse import csr_matrix
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imsave
 from tqdm.auto import tqdm
-from registrations import verify_rounds
+from .registrations import verify_rounds
 
 def compute_M(data):
     cols = np.arange(data.size)
