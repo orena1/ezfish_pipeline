@@ -1,17 +1,23 @@
 import sys
 from collections import defaultdict
 from pathlib import Path
-import skimage
+
+import cellpose
 import numpy as np
 import pandas as pd
+import scipy.io as sio
+import skimage
+import pickle as pkl
+from suite2p.io import binary
 from IPython.display import HTML, display
 from scipy.ndimage import gaussian_filter
 from scipy.sparse import csr_matrix
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imsave
 from tqdm.auto import tqdm
+
 from .registrations import verify_rounds
-import cellpose
+
 
 # CellposeModelWrapper class
 # This class encapsulates the Cellpose model and its configuration.
@@ -43,8 +49,7 @@ def run_cellpose(manifest):
                                                                       print_rounds=True, print_registered=True)
     
     model_wrapper = CellposeModelWrapper(manifest)
-    processed_rounds = 0
-
+    print(f"Running cellpose for {register_rounds}")
     for HCR_round_to_register in register_rounds:
         round_folder_name = f"HCR{HCR_round_to_register}_to_HCR{reference_round['round']}"
         
@@ -113,7 +118,7 @@ def get_neuropil_mask_square(volume, radius, bound, inds):
 
 
 
-def extract_intensities(manifest):
+def extract_probs_intensities(manifest):
     round_to_rounds, reference_round, register_rounds = verify_rounds(manifest, parse_registered = True, 
                                                                       print_rounds = True, print_registered = True)
     
@@ -188,3 +193,49 @@ def extract_intensities(manifest):
         df.to_pickle(output_folder / f"{round_folder_name}_probs_intensities.pkl")
         print(f"Intensities extracted and saved for {round_folder_name} - {output_folder}/{round_folder_name}_probs_intensities.csv")
         
+
+
+
+def extract_electrophysiology_intensities(manifest: dict , session: dict):
+    #Edited dictionary version
+
+    mouse_name = manifest['mouse_name']
+    date = session['date']
+    suite2p_run = session['functional_run'][0]
+
+    suite2p_path = Path(manifest['base_path']) / manifest['mouse_name'] / '2P' /  f'{mouse_name}_{date}_{suite2p_run}' / 'suite2p'
+    save_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'suite2p'
+    cellpose_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'cellpose'
+    save_path.mkdir(exist_ok=True, parents=True)
+    functional_plane = session['functional_plane'][0]
+
+    ops = np.load(suite2p_path / 'plane0/ops.npy',allow_pickle=True).item()
+
+    planes = ops['nplanes']
+    # Assuming `planes`, `suite2p_path`, `savepath`, `mouse`, `run`, and `ops` are defined
+    for plane in range(planes):
+        # Set up binary file
+        bin_file = binary.BinaryFile(filename=suite2p_path / f'plane{plane}' / 'data.bin', Lx=ops['Lx'], Ly=ops['Ly'])
+        # Move data to a numpy array
+        all_data = bin_file.data
+        # Load masks
+        stats = np.load(cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg.npy', allow_pickle=True).item()
+        masks_locs = get_indices_sparse(stats['masks'])  # Get (x, y) indices per mask
+    
+        # Process each mask to get mean values
+        mean_frames = []
+        for mask_loc in tqdm(masks_locs[1:]):
+            mean_frames.append(all_data[:, mask_loc[0], mask_loc[1]].mean(axis=1))
+        
+        mean_frames = np.array(mean_frames)
+        # Save masks_locs as a dictionary
+        masks_locs_dict = {f'cell_{i}': masks_locs[i] for i in range(len(masks_locs))}
+
+        # Save data to .mat files
+        sio.savemat(save_path / f'lowres_meanImg_C0_plane{plane}_locs.mat', {'masks_locs': masks_locs_dict})
+        sio.savemat(save_path / f'lowres_meanImg_C0_plane{plane}_traces.mat', {'mean_frames': mean_frames})
+
+        # Save data to .pkl files
+        pkl.dump({'masks_locs': masks_locs_dict,
+                  'mean_frames': mean_frames}, 
+                  open(save_path / f'lowres_meanImg_C0_plane{plane}.pkl', 'wb'))

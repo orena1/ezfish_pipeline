@@ -15,6 +15,7 @@
             "unwarp_steps":28}
         ]
     },
+
     "HCR_confocal_imaging":{
         "rounds":[
             {"round":"01",
@@ -40,8 +41,19 @@
         "red_mut_x" : 3,
         "red_mut_y" : 3,
         "red_mut_z" : 2,
+    }
+
+    "HCR_prob_intenisty_extraction":{
+        "neuropil_radius": 25
+        "neuropil_boundary": 1
+        'neuroupil_pooling': ['mean', 'median', 'percentile-20']
 
     }
-    "HCR_model":"dadsadasd"
-    "parameters":"asd"
+    "HCR_cellpose":{
+        "model_path": "/home/oamsalem/code/Projects/EZfish/ezfish_pipeline/examples/Model_JSACIM",
+        "diameter": 20,
+        "gpu": true,
+        "flow_threshold": 2,
+        "cellprob_threshold": -1.5,
+    }
 }

@@ -24,7 +24,7 @@ def extract_suite2p_registered_planes(manifest: dict , session: dict):
     suite2p_run = session['functional_run'][0]
 
     suite2p_path = Path(manifest['base_path']) / manifest['mouse_name'] / '2P' /  f'{mouse_name}_{date}_{suite2p_run}' / 'suite2p'
-    save_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'suite2p'
+    save_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'cellpose'
     save_path_registered = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered'
     save_path.mkdir(exist_ok=True, parents=True)
     functional_plane = session['functional_plane'][0]
@@ -80,4 +80,7 @@ def extract_suite2p_registered_planes(manifest: dict , session: dict):
             data =data[:,::-1]
     
 
-    tif_imwrite(save_path_registered / f'{save_filename_C01.stem}_rotated.tiff', data.astype(np.float32), imagej=True, metadata={'axes': 'YX'})
+    tif_imwrite(save_path_registered / f'{save_filename_C01.stem}_rotated.tiff', 
+                data.astype(np.float32), 
+                imagej=True, 
+                metadata={'axes': 'YX'})

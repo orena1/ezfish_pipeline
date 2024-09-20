@@ -39,6 +39,7 @@ def parse_input_args(args):
 
 
 
+# https://drive.google.com/file/d/1HZNh7aqJr-vTsLsSGlFmi11HuEvYlgZ-/view?usp=sharing
 
 def main(args = None):
     '''
@@ -68,13 +69,16 @@ def main(args = None):
     ### move to the start!!! fix also the README after you do that!
     fc.extract_suite2p_registered_planes(manifest, session)
     
-    # Run cellpose
-    #sg.TBD
+    # Run cellpose on HCR rounds
+    sg.run_cellpose(manifest)
 
     # extract probs values from cellpose segmentation
-    sg.extract_intensities(manifest)
+    sg.extract_probs_intensities(manifest)
+
+    sg.extract_electrophysiology_intensities(manifest)
 
 if __name__ == "__main__":
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--manifest', required=True, help='Path to the pipeline manifest file e.g. examples/CIM132.hjson')
     args = parser.parse_args()

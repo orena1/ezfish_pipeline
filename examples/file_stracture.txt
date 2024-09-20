@@ -16,20 +16,28 @@ ezfish/
             ├── 2P/
             │   ├── tile
             |   |    ├── stitched
-            |   |    ├── unwarped
             |   |    |   ├── rotation.txt #<-- maybe move to params.hjson???
             |   |    |   ├──
             |   |    |   |
+            |   |    ├── unwarped
             |   |    └── warped
-            |   ├── suite2p
-            |   |    ├── lowres_meanImg_C0_plane0.tiff
-            |   |    ├── lowres_meanImg_C0_plane1.tiff
             |   |
             |   ├── cellpose
+            |   |    ├── lowres_meanImg_C0_plane0.tiff
+            |   |    ├── lowres_meanImg_C0_plane0_seg.npy
+            |   |    ├── lowres_meanImg_C0_plane0_masks.tiff
+            |   |    ├── lowres_meanImg_C0_plane1.tiff
             |   |    ├── lowres_meanImg_C0_plane1_seg.npy
             |   |    ├── lowres_meanImg_C0_plane1_masks.tiff
-            |   |    
-            |   |
+            |   |    ├── lowres_meanImg_C0_plane2.tiff
+            |   |    ├── lowres_meanImg_C0_plane2_seg.npy
+            |   |    ├── lowres_meanImg_C0_plane2_masks.tiff
+            |   |    └── ...
+            |   ├── suite2p
+            |   |    ├── lowres_meanImg_C0_plane0_traces.mat
+            |   |    ├── lowres_meanImg_C0_plane0_locs.mat
+            |   |    ├── lowres_meanImg_C0_plane0.pkl
+            |   |    └── ...
             |   └── registered
             |        ├── stitched_C01_plane1_rotated.tiff
             |        ├── stitched_C01_plane1_rotated_TO_HCR1.tiff
@@ -43,6 +51,7 @@ ezfish/
             |        ├── lowres_meanImg_C0_plane1_masks_rotated.tiff
             |        ├── lowres_meanImg_C0_plane1_masks_rotated_TO_stack_stitched_C01_plane1.tiff
             |        ├── lowres_meanImg_C0_plane1_masks_rotated_TO_stack_stitched_C01_plane1_TO_HCR1.tiff
+            |        └── ...
             └── HCR
                 ├── registrations
                 │   ├── HCR02_to_HCR01
@@ -51,20 +60,20 @@ ezfish/
                 │   ├── HCR02_to_HCR01
                 │   │  ├── global_parms_scan
                 │   │  └── local_params_scan
-                |   . 
+                |   └── ...
                 |     
                 ├── cellpose
                 |    ├── HCR02_to_HCR01_seg.npy
                 |    ├── HCR02_to_HCR01_masks.tiff
                 |    ├── HCR03_to_HCR01_seg.npy
                 |    ├── HCR03_to_HCR01_masks.tiff
-                |    . 
+                |    └── ...
                 |      
                 |── full_registered_stacks
                 |   ├── HCR02_to_HCR01.tiff
                 |   ├── HCR03_to_HCR01.tiff
                 |   ├── HCR04_to_HCR01.tiff
-                |
+                |   └── ...
                 |
                 └── extract_intensities
                     ├── HCR02_to_HCR01_probs_intensities.csv
@@ -73,7 +82,7 @@ ezfish/
                     ├── HCR03_to_HCR01_probs_intensities.pkl
                     ├── HCR04_to_HCR01_probs_intensities.csv
                     ├── HCR04_to_HCR01_probs_intensities.pkl
-
+                    └── ...
 
                 
 
