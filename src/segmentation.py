@@ -186,5 +186,5 @@ def extract_intensities(manifest):
         df.attrs['HCR_round_number'] = HCR_round_to_register
         df.to_csv(output_folder / f"{round_folder_name}_probs_intensities.csv")
         df.to_pickle(output_folder / f"{round_folder_name}_probs_intensities.pkl")
-        print(f"Intensities extracted and saved for {round_folder_name} - {output_folder / f"{round_folder_name}_probs_intensities.csv"}")
+        print(f"Intensities extracted and saved for {round_folder_name} - {output_folder}/{round_folder_name}_probs_intensities.csv")
         
