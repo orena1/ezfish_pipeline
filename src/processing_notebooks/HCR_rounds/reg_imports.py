@@ -13,7 +13,7 @@ from tifffile import imwrite as tif_imwrite
 from tqdm.auto import tqdm, trange
 
 sys.path.append("../../")
-from registrations_funcs import (HCR_confocal_imaging, register_lowres,
+from registrations import (HCR_confocal_imaging, register_lowres,
                                  verify_rounds)
 
 # Path for bigstream unless you did pip install
@@ -30,5 +30,5 @@ from bigstream.align import feature_point_ransac_affine_align
 from bigstream.application_pipelines import easifish_registration_pipeline
 from bigstream.piecewise_transform import distributed_apply_transform
 from bigstream.transform import apply_transform
-from registrations_funcs import (HCR_confocal_imaging, register_lowres,
+from registrations import (HCR_confocal_imaging, register_lowres,
                                  verify_rounds)
