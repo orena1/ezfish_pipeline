@@ -58,15 +58,17 @@ def register_lowres(
     alignment_spacing = np.min(fix_lowres_spacing)*4
     blob_min = int(round(np.min(fix_lowres_spacing)*4))
     blob_max = int(round(np.min(fix_lowres_spacing)*16))
-    print(f'1, {blob_min=} , {blob_max=}')
+    #print(f'1, {blob_min=} , {blob_max=}')
     a = {'alignment_spacing':alignment_spacing,'blob_sizes':[blob_min, blob_max]}
     
     #numberOfIterations = 10 instead of 100
     global_ransac_kwargs_full = {**a, **global_ransac_kwargs}
 
     affine = feature_point_ransac_affine_align(fix_lowres, mov_lowres, 
-                                                fix_lowres_spacing, mov_lowres_spacing, safeguard_exceptions=False,
+                                                fix_lowres_spacing, mov_lowres_spacing, 
+                                                safeguard_exceptions=False,
                                                 **global_ransac_kwargs_full)
+
     
     if write_only_aligned:
         # if affine is not a solution, return None
@@ -80,7 +82,7 @@ def register_lowres(
         transform_list=[affine],
     )
 
-    reg_score = get_registration_score(aligned,fix_lowres)
+    reg_score = get_registration_score(aligned, fix_lowres)
     reg_score_text = str(np.round(reg_score,3)).replace('-','m')
     print(f'{write_directory}/{reg_score_text}_{fname}_both.tiff',flush=True)
     tif_imwrite(f'{write_directory}/{reg_score_text}_{fname}_both.tiff', np.swapaxes(np.array([ aligned.transpose(2,1,0), 

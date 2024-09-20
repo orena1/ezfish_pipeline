@@ -60,21 +60,48 @@ ezfish/
                 |    ├── HCR03_to_HCR01_masks.tiff
                 |    . 
                 |      
-                └── full_registered_stacks
-                    ├── HCR02_to_HCR01.tiff
-                    ├── HCR03_to_HCR01.tiff
-                    ├── HCR04_to_HCR01.tiff
+                |── full_registered_stacks
+                |   ├── HCR02_to_HCR01.tiff
+                |   ├── HCR03_to_HCR01.tiff
+                |   ├── HCR04_to_HCR01.tiff
+                |
+                |
+                └── extract_intensities
+                    ├── HCR02_to_HCR01_probs_intensities.csv
+                    ├── HCR02_to_HCR01_probs_intensities.pkl
+                    ├── HCR03_to_HCR01_probs_intensities.csv
+                    ├── HCR03_to_HCR01_probs_intensities.pkl
+                    ├── HCR04_to_HCR01_probs_intensities.csv
+                    ├── HCR04_to_HCR01_probs_intensities.pkl
+
+
+                
 
 
 
+1. Consider using more descriptive names for some folders, e.g., "raw_data" instead of just "2P" and "HCR" at the top level.
+
+2. The rotation.txt file in OUTPUT/2P/tile/unwarped could indeed be moved to params.hjson for better centralization of parameters.
+
+3. Consider adding a README.md file in each major directory to explain the contents and purpose of that directory.
+
+4. For the registered files, consider using a more consistent naming convention. For example, instead of mixing "TO" and "to" in filenames, stick to one case.
+
+5. In the extract_intensities folder, consider adding subfolders for each HCR round or analysis type for better organization.
+
+6. Add a version control file (e.g., version.txt) in the OUTPUT folder to track changes in the pipeline or data structure over time.
+
+7. Consider adding a logs folder in OUTPUT to store any processing logs, which can be helpful for debugging and tracking progress.
 
 
 
-
-
-
-
-
+                    ├── combined_probs_intensities.csv
+                    ├── combined_probs_intensities.pkl
+                    ├── metadata.json
+                    └── analysis_results
+                        ├── correlation_analysis.png
+                        ├── gene_expression_heatmap.png
+                        └── cell_type_clustering.png
 
 
 https://tree.nathanfriend.io/?s=(%27options!(%27fancy!true~fullPath!false~trailingSlash!true~rootDot!false)~9(%279%27ezfish8jonna8*7-2P.1.2.3-E515253-OUTPUTB2PB*tileB**BE%27)~version!%271%27)*%20%20-8**.B241226_7_005B7_E07JSA0128%5Cn*9source!B-*EHCR%01EB9875.-*
