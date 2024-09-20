@@ -75,7 +75,7 @@ def main(args = None):
     # extract probs values from cellpose segmentation
     sg.extract_probs_intensities(manifest)
 
-    sg.extract_electrophysiology_intensities(manifest)
+    sg.extract_electrophysiology_intensities(manifest, session)
 
 if __name__ == "__main__":
 
