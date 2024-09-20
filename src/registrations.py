@@ -103,9 +103,9 @@ def HCR_confocal_imaging(manifest, only_paths=False):
     reference_round_number = manifest['HCR_confocal_imaging']['reference_round']
     for i in manifest['HCR_confocal_imaging']['rounds']:
         if i['round'] == reference_round_number:
-            reference_round = Path(manifest['base_path']) / manifest['mouse_name'] / 'HCR' / f"{manifest['mouse_name']}_HCR{reference_round_number}.tif"
+            reference_round = Path(manifest['base_path']) / manifest['mouse_name'] / 'HCR' / f"{manifest['mouse_name']}_HCR{reference_round_number}.tiff"
         else:
-            mov_rounds.append(Path(manifest['base_path']) / manifest['mouse_name'] / 'HCR' / f"{manifest['mouse_name']}_HCR{i['round']}_To_HCR{reference_round_number}.tif")
+            mov_rounds.append(Path(manifest['base_path']) / manifest['mouse_name'] / 'HCR' / f"{manifest['mouse_name']}_HCR{i['round']}_To_HCR{reference_round_number}.tiff")
     
     missing = False
     while 1:

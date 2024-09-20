@@ -117,7 +117,7 @@ def stitch_tiles_and_rotate(manifest: dict, session: dict):
     '''
     tile_to_num = {'left':'001', 'center':'002', 'right':'003'}
     plane = session['functional_plane'][0]
-    stitched_file_C01  = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'stitched' / f'stack_stitched_C01_plane{plane}.tif' 
+    stitched_file_C01  = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'stitched' / f'stack_stitched_C01_plane{plane}.tiff' 
     unwarped_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'unwarped'
     save_path_registered = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered'
     save_path_registered.mkdir(exist_ok=True, parents=True)
