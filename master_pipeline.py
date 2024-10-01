@@ -56,6 +56,10 @@ def main(args = None):
     session = manifest['two_photons_imaging']['sessions'][0]
     tl.process_session_sbx(manifest, session)
 
+    ### moved temporarily to generate mean image from suite2p
+    fc.extract_suite2p_registered_planes(manifest, session)
+    
+
     # step 2-A: unwarp 2P anatomical_runs
     tl.unwarp_tiles(manifest, session)
 
@@ -66,9 +70,7 @@ def main(args = None):
     rf.register_rounds(manifest, manifest_path=args.manifest)
 
 
-    ### move to the start!!! fix also the README after you do that!
-    fc.extract_suite2p_registered_planes(manifest, session)
-    
+
     # Run cellpose on HCR rounds
     sg.run_cellpose(manifest)
 
