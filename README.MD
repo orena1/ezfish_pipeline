@@ -15,10 +15,12 @@ SA - Semi-Automatic
 # Steps of the pipeline, will be instructed to the manual stesps 
 1. parse manifest. I.e: python master_pipeline.py  --manifest examples/CIM130.hjson
 2. validate manifest
-3. process sbx files (A):
+2. generate mean images from low res functional video 
+    -extract meanE, meanOverTime, and meanImg from suite2p files. 
+3. process high res tile sbx files (A):
     - transform sbx to tiff
     - output files:
-        - currently outputs all planes (Warped)
+        - currently outputs all planes (Warped),
 4. unwarp tiff files (A):
     - take each plane and use remap & unwarp_config to fix the x axis stretch from the resonant
     - output files:
