@@ -210,6 +210,7 @@ def registarion_apply(manifest):
         for path in data_paths:
             full_stack.append(zarr.load(path))
         full_stack = np.stack(full_stack)
+        print(full_stack.shape)
 
         tif_imwrite(full_stack_path, full_stack.transpose(1, 0, 2, 3), imagej=True, metadata={'axes': 'ZCYX'})
 
