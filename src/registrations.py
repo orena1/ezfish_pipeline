@@ -212,7 +212,7 @@ def registarion_apply(manifest):
         full_stack = np.stack(full_stack)
         print(full_stack.shape)
 
-        tif_imwrite(full_stack_path, full_stack.transpose(1, 0, 2, 3), imagej=True, metadata={'axes': 'ZCYX'})
+        tif_imwrite(full_stack_path, full_stack.transpose(3, 0, 2, 1), imagej=True, metadata={'axes': 'ZCYX'})
 
 
 def verify_rounds(manifest, parse_registered = False, print_rounds = False, print_registered = False):
