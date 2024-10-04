@@ -180,7 +180,8 @@ def registarion_apply(manifest):
         #Loop through channels starting with 1, which ignores the first channel which has already been registered
         for channel in track(range(HCR_mov_round.shape[1]), description="Registering channels"):
             output_channel_path = Path(fr"{reg_path}/out_c{channel}.zarr")
-            if os.path.exists(output_channel_path):
+            output_channel_tiff_path =output_channel_path.parent / output_channel_path.name.replace('.zarr','.tiff')
+            if os.path.exists(output_channel_path) and os.path.exists(output_channel_tiff_path):
                 print(f"Channel {channel} already registered")
                 data_paths.append(output_channel_path)
                 continue
@@ -202,7 +203,7 @@ def registarion_apply(manifest):
             data = zarr.load(output_channel_path)
             data_paths.append(output_channel_path)
 
-            tif_imwrite(output_channel_path.parent / output_channel_path.name.replace('.zarr','.tiff')
+            tif_imwrite(output_channel_tiff_path
                         ,data.transpose(2,1,0))
         
         print(f"Saving full stack -{full_stack_path}")
