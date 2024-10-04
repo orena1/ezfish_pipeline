@@ -55,17 +55,16 @@ def main(args = None):
 
     session = manifest['two_photons_imaging']['sessions'][0]
     tl.process_session_sbx(manifest, session)
-
-    ### moved temporarily to generate mean image from suite2p
-    fc.extract_suite2p_registered_planes(manifest, session)
-    
-
+  
     # step 2-A: unwarp 2P anatomical_runs
     tl.unwarp_tiles(manifest, session)
 
     # step 3-M: stitch the tiles
     tl.stitch_tiles_and_rotate(manifest, session)
 
+    ### moved temporarily to generate mean image from suite2p
+    fc.extract_suite2p_registered_planes(manifest, session)
+    
     # step 4-AM: register the HCR data round to round
     rf.register_rounds(manifest, manifest_path=args.manifest)
 
