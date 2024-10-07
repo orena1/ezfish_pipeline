@@ -2,7 +2,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-import cellpose
+from cellpose import models
 import numpy as np
 import pandas as pd
 import scipy.io as sio
@@ -32,7 +32,7 @@ class CellposeModelWrapper:
 
     def eval(self, raw_image):
         if self.model is None:
-            self.model = cellpose.models.CellposeModel(
+            self.model = models.CellposeModel(
                 pretrained_model=self.manifest['HCR_cellpose']['model_path'],
                 gpu=self.manifest['HCR_cellpose']['gpu']
             )
