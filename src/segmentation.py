@@ -55,7 +55,7 @@ def run_cellpose(manifest):
         
         full_stack_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
         output_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
-        
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         if output_path.exists():
             print(f"Cellpose segmentation already exists for {round_folder_name} - skipping")
             continue
