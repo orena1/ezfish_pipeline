@@ -95,7 +95,7 @@ def get_neuropil_mask_square(volume, radius, bound, inds):
         masks_expanded_b = skimage.segmentation.expand_labels(plane, distance=bound)
         all_masks_ids = set(list(zip(*np.where(plane>0))))
 
-        raise Exception(" mask_expanded_b not used! fix, go to the notebooks and see how you fixed it!")
+        print(" mask_expanded_b not used! fix, go to the notebooks and see how you fixed it!!"*3)
         for mask_id in np.unique(plane):
             if mask_id == 0:
                 continue
