@@ -39,9 +39,11 @@ class CellposeModelWrapper:
         
         return self.model.eval(
             raw_image,
+            channels=[0,0],
             diameter=self.manifest['HCR_cellpose']['diameter'],
             flow_threshold=self.manifest['HCR_cellpose']['flow_threshold'],
-            cellprob_threshold=self.manifest['HCR_cellpose']['cellprob_threshold']
+            cellprob_threshold=self.manifest['HCR_cellpose']['cellprob_threshold'],
+            do_3D=True,
         )
 
 def run_cellpose(manifest):
