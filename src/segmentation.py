@@ -129,7 +129,7 @@ def extract_probs_intensities(manifest):
     # neuropil parameters
     neuropil_radius = manifest['HCR_prob_intenisty_extraction']['neuropil_radius']
     neuropil_boundary = manifest['HCR_prob_intenisty_extraction']['neuropil_boundary']
-    neuropil_pooling = manifest['HCR_prob_intenisty_extraction']['neuroupil_pooling']
+    neuropil_pooling = manifest['HCR_prob_intenisty_extraction']['neuropil_pooling']
     
     for HCR_round_to_register in register_rounds:
 
