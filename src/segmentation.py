@@ -49,7 +49,7 @@ class CellposeModelWrapper:
 
 def run_cellpose(manifest):
     round_to_rounds, reference_round, register_rounds = verify_rounds(manifest, parse_registered=True, 
-                                                                      print_rounds=True, print_registered=True)
+                                                                      print_rounds=True, print_registered=True, func='cellpose')
     
     model_wrapper = CellposeModelWrapper(manifest)
     print(f"Running cellpose for {register_rounds}")
@@ -67,7 +67,7 @@ def run_cellpose(manifest):
             continue
         
         raw_image = tif_imread(full_stack_path)
-        
+        print(f"Running cellpose for {round_folder_name}, please wait")
         masks, _, _ = model_wrapper.eval(raw_image)
         
         tif_imsave(output_path, masks)
@@ -290,13 +290,41 @@ def match_masks(stack1_masks_path: np.ndarray, stack2_masks_path: np.ndarray) ->
     
     return df_removed_dups
 
+## All dimensions must match, all must be 1 channel, all mask files must have 1 value per mask
+## MAKE SURE TO ALWAYS LEAVE ONE CONSTANT AS HCR 1, DON'T SWITCH THE IDENTITIES
+#Output dataframes (dfs) saved in the HCR round folder in NASQUATCH for now
 
-def extract_aligned_masks(manifest: dict, session: dict):
-    functional_plane = session['functional_plane'][0]
-
-    registarted_2P = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered' / f'lowres_meanImg_C0_plane{functional_plane}_masks_rotated_TO_stack_stitched_C01_plane{functional_plane}_TO_HCR1.tiff'
-
+def align_masks(manifest: dict, session: dict):
     round_to_rounds, reference_round, register_rounds = verify_rounds(manifest, parse_registered = True, 
                                                                     print_rounds = False, print_registered = False)
     
+    reference_round_tiff = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
+    reference_round_masks = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'cellpose' / f"HCR{reference_round['round']}_masks.tiff"
+
+    output_folder = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'MERGED' / 'aligned_masks'
+    output_folder.mkdir(parents=True, exist_ok=True)
     
+    for HCR_round_to_register in register_rounds:
+        round_folder_name = f"HCR{HCR_round_to_register}_to_HCR{reference_round['round']}"
+
+        mov_stack_masks = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
+
+        save_path = output_folder / f"{round_folder_name}.csv"
+        if save_path.exists():
+            print(f"Mask alignment already exists for {round_folder_name} - skipping")
+            continue
+        # calculate the matching masks and the overlap
+        mask1_to_mask2_df = match_masks(mov_stack_masks, reference_round_masks)
+        mask1_to_mask2_df.to_csv(save_path)
+
+        # TODO: Add visualization code here
+        # # filter only overlaps above min_overlap
+        # mask1_to_mask2 = mask1_to_mask2_df.query(f'overlap>@min_overlap')[['mask1','mask2']].astype('int').set_index('mask1')['mask2'].to_dict()
+
+        # # creating visualization files
+        # visualize_match(stack1_image_path, stack1_masks_path, stack2_image_path, stack2_masks_path,
+        #                 mask1_to_mask2, output_base_filename)
+
+    
+    
+

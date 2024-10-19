@@ -39,6 +39,7 @@ def extract_suite2p_registered_planes(manifest: dict , session: dict):
         for img_key in ['meanImg', 'meanImgE', 'max_proj']:
             save_filename = save_path / f'{img_key}_C01_plane{plane}.tiff'
             if save_filename.exists():
+                print(f'{save_filename} already exists')
                 continue
             ops = np.load(suite2p_path / f'plane{plane}/ops.npy',allow_pickle=True).item()
             img = ops[img_key]
@@ -46,7 +47,9 @@ def extract_suite2p_registered_planes(manifest: dict , session: dict):
         ## Jonna check if needed.
 
         save_filename = save_path / f'mean_over_time_C01_plane{plane}.tiff'
+        print(save_filename)
         if save_filename.exists():
+            print(f'{save_filename} already exists')
             continue
         # set up binary file
         bin_file = binary.BinaryFile(filename=suite2p_path / f'plane{plane}/data.bin', Lx=ops['Lx'],Ly=ops['Ly'])
@@ -62,8 +65,11 @@ def extract_suite2p_registered_planes(manifest: dict , session: dict):
 
     # rotate and flip the selected functional plane
     save_filename_C01  = save_path / f'mean_over_time_C01_plane{functional_plane}.tiff'
-   
+    save_filename_rotated = save_path_registered / f'{save_filename_C01.stem}_rotated.tiff'
 
+    if save_filename_rotated.exists():
+        return
+    
     rotation_file =  Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'stitched' / 'rotation.txt'
     rotation_config = hjson.load(open(rotation_file,'r'))
     data = tif_imread(save_filename_C01)
@@ -77,7 +83,7 @@ def extract_suite2p_registered_planes(manifest: dict , session: dict):
             data =data[:,::-1]
     
 
-    tif_imwrite(save_path_registered / f'{save_filename_C01.stem}_rotated.tiff', 
+    tif_imwrite(save_filename_rotated, 
                 data.astype(np.float32), 
                 imagej=True, 
                 metadata={'axes': 'YX'})

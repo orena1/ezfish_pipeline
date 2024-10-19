@@ -68,8 +68,6 @@ def main(args = None):
     # step 4-AM: register the HCR data round to round
     rf.register_rounds(manifest, manifest_path=args.manifest)
 
-
-
     # Run cellpose on HCR rounds
     sg.run_cellpose(manifest)
 
@@ -77,6 +75,8 @@ def main(args = None):
     sg.extract_probs_intensities(manifest)
 
     sg.extract_electrophysiology_intensities(manifest, session)
+
+    sg.align_masks(manifest, session)
 
 if __name__ == "__main__":
 

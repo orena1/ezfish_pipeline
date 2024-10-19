@@ -215,14 +215,15 @@ def registarion_apply(manifest):
 
         tif_imwrite(full_stack_path, full_stack.transpose(3, 0, 2, 1), imagej=True, metadata={'axes': 'ZCYX'})
 
-        # Now let's also copy the reference_round to the full_registered_stacks folder
-        reference_round_full_stack_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
-        if not reference_round_full_stack_path.exists():
-            shutil.copy(HCR_fix_image_path, reference_round_full_stack_path)
-            
+    # Now let's also copy the reference_round to the full_registered_stacks folder
+    reference_round_full_stack_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
+    if not reference_round_full_stack_path.exists():
+        print(f"Copying reference round {reference_round['round']} to full_registered_stacks")
+        shutil.copy(HCR_fix_image_path, reference_round_full_stack_path)
+        
             
 
-def verify_rounds(manifest, parse_registered = False, print_rounds = False, print_registered = False):
+def verify_rounds(manifest, parse_registered = False, print_rounds = False, print_registered = False, func='registerion-apply'):
     '''
     if parse_registered is True, return the rounds that have been registered
     
@@ -247,7 +248,7 @@ def verify_rounds(manifest, parse_registered = False, print_rounds = False, prin
     
     ready_to_apply = []
     if parse_registered:
-        txt_to_rich = "[green]Rounds available for registerion-apply [/green]:"
+        txt_to_rich = f"[green]Rounds available for {func} [/green]:"
         params = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'params.hjson'
         selected_registrations = hjson.load(open(params, 'r'))
         for i in selected_registrations['HCR_selected_registrations']['rounds']:
