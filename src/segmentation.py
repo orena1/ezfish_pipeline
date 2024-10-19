@@ -6,6 +6,7 @@ from cellpose import models
 import numpy as np
 import pandas as pd
 import scipy.io as sio
+import scipy
 import skimage
 import pickle as pkl
 from suite2p.io import binary
@@ -52,8 +53,11 @@ def run_cellpose(manifest):
     
     model_wrapper = CellposeModelWrapper(manifest)
     print(f"Running cellpose for {register_rounds}")
-    for HCR_round_to_register in register_rounds:
-        round_folder_name = f"HCR{HCR_round_to_register}_to_HCR{reference_round['round']}"
+    for HCR_round_to_register in register_rounds + [reference_round['round']]:
+        if HCR_round_to_register == reference_round['round']:
+            round_folder_name = f"HCR{HCR_round_to_register}"
+        else:
+            round_folder_name = f"HCR{HCR_round_to_register}_to_HCR{reference_round['round']}"
         
         full_stack_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
         output_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
@@ -131,9 +135,11 @@ def extract_probs_intensities(manifest):
     neuropil_boundary = manifest['HCR_prob_intenisty_extraction']['neuropil_boundary']
     neuropil_pooling = manifest['HCR_prob_intenisty_extraction']['neuropil_pooling']
     
-    for HCR_round_to_register in register_rounds:
-
-        round_folder_name = f"HCR{HCR_round_to_register}_to_HCR{reference_round['round']}"
+    for HCR_round_to_register in register_rounds + [reference_round['round']]:
+        if HCR_round_to_register == reference_round['round']:
+            round_folder_name = f"HCR{HCR_round_to_register}"
+        else:
+            round_folder_name = f"HCR{HCR_round_to_register}_to_HCR{reference_round['round']}"
         
         full_stack_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
         full_stack_masks_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
@@ -241,3 +247,56 @@ def extract_electrophysiology_intensities(manifest: dict , session: dict):
         pkl.dump({'masks_locs': masks_locs_dict,
                   'mean_frames': mean_frames}, 
                   open(save_path / f'lowres_meanImg_C0_plane{plane}.pkl', 'wb'))
+
+
+
+def match_masks(stack1_masks_path: np.ndarray, stack2_masks_path: np.ndarray) -> dict:
+    '''
+    Input should be 2 stacks of masks where stack1 is registered to stack2.
+    '''
+
+    stack1_masks = tif_imread(stack1_masks_path)
+    stack2_masks= tif_imread(stack2_masks_path)
+    
+    stack1_masks_inds = get_indices_sparse(stack1_masks.astype(np.uint16))
+
+    #collect mask to mask values with overlap and put in pandas dataframe
+
+    to_pandas = {'mask1':[], 'mask2':[], 'overlap':[]}
+    for mask1_inds in stack1_masks_inds[1:]: #skip the first one because it is background
+        if len(mask1_inds[0]) == 0: #skip if there are no pixels in the mask
+            continue
+
+        mask1 = stack1_masks[mask1_inds]
+        assert len(set(mask1)) == 1, 'mask1_inds should only have 1 value, it means that you have floats instead of ints for masks'
+
+        mask2_at_mask1 = stack2_masks[mask1_inds]
+
+        # get the mode of the mask2_at_mask1
+        most_overlapped_mask_in_s1 = scipy.stats.mode(mask2_at_mask1[mask2_at_mask1>0],keepdims=False).mode
+
+        # How many pixel in the overlap have the same value out of all overlap pixels 
+        overlap = sum(mask2_at_mask1 == most_overlapped_mask_in_s1)/len(mask2_at_mask1)
+        to_pandas['mask1'].append(mask1[0])
+        to_pandas['mask2'].append(most_overlapped_mask_in_s1)
+        to_pandas['overlap'].append(overlap)
+
+    df = pd.DataFrame(to_pandas)
+    # keep the mask with the higher overlap
+    df_removed_dups = df.sort_values('overlap', ascending=False).drop_duplicates('mask2', keep='first')
+    
+    ##3<-- Add a print on the number of masks that where removed
+
+    
+    return df_removed_dups
+
+
+def extract_aligned_masks(manifest: dict, session: dict):
+    functional_plane = session['functional_plane'][0]
+
+    registarted_2P = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered' / f'lowres_meanImg_C0_plane{functional_plane}_masks_rotated_TO_stack_stitched_C01_plane{functional_plane}_TO_HCR1.tiff'
+
+    round_to_rounds, reference_round, register_rounds = verify_rounds(manifest, parse_registered = True, 
+                                                                    print_rounds = False, print_registered = False)
+    
+    

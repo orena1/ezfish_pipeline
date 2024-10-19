@@ -35,15 +35,12 @@ def extract_suite2p_registered_planes(manifest: dict , session: dict):
 
     for plane in track(range(planes), description='Extracting suite2p registered planes'):
         
-
-        ##
-        ##
         ## Extract the mean of the registered plane
-        ops = np.load(suite2p_path / f'plane{plane}/ops.npy',allow_pickle=True).item()
         for img_key in ['meanImg', 'meanImgE', 'max_proj']:
             save_filename = save_path / f'{img_key}_C01_plane{plane}.tiff'
             if save_filename.exists():
                 continue
+            ops = np.load(suite2p_path / f'plane{plane}/ops.npy',allow_pickle=True).item()
             img = ops[img_key]
             tif_imwrite(save_filename, img)
         ## Jonna check if needed.

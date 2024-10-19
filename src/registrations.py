@@ -3,6 +3,7 @@ import os
 import sys
 import hjson
 import zarr
+import shutil
 import numpy as np
 from pathlib import Path
 from rich.progress import track
@@ -214,6 +215,12 @@ def registarion_apply(manifest):
 
         tif_imwrite(full_stack_path, full_stack.transpose(3, 0, 2, 1), imagej=True, metadata={'axes': 'ZCYX'})
 
+        # Now let's also copy the reference_round to the full_registered_stacks folder
+        reference_round_full_stack_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
+        if not reference_round_full_stack_path.exists():
+            shutil.copy(HCR_fix_image_path, reference_round_full_stack_path)
+            
+            
 
 def verify_rounds(manifest, parse_registered = False, print_rounds = False, print_registered = False):
     '''
