@@ -125,6 +125,12 @@ def stitch_tiles_and_rotate(manifest: dict, session: dict):
 
     rotation_file = stitched_file_C01.parent / 'rotation.txt'
     
+    save_path_registered_rotated = save_path_registered / f'{stitched_file_C01.stem}_rotated.tiff'
+    if save_path_registered_rotated.exists():
+        print(f'already rotated {save_path_registered_rotated}')
+        return
+    
+
     reference_HCR_round = verify_rounds(manifest)[1]['image_path']
     while not stitched_file_C01.exists() or not rotation_file.exists():
         output_string = f'''
@@ -148,4 +154,4 @@ def stitch_tiles_and_rotate(manifest: dict, session: dict):
         if k == 'flipud':
             data =data[:,:,::-1]
     tif_imwrite(stitched_file_C01.parent / f'{stitched_file_C01.stem}_rotated.tiff', data.astype(np.float32), imagej=True, metadata={'axes': 'CYX'})
-    tif_imwrite(save_path_registered / f'{stitched_file_C01.stem}_rotated.tiff', data.astype(np.float32), imagej=True, metadata={'axes': 'CYX'})
+    tif_imwrite(save_path_registered_rotated, data.astype(np.float32), imagej=True, metadata={'axes': 'CYX'})
