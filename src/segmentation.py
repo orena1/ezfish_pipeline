@@ -336,8 +336,7 @@ def align_masks(manifest: dict, session: dict):
     # 2p masks alignment
 
     # Rotate the masks
-
-
+    
     plane = session['functional_plane'][0]
     stitched_file_C01  = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'stitched' / f'stack_stitched_C01_plane{plane}.tiff' 
     rotation_file = stitched_file_C01.parent / 'rotation.txt'
@@ -345,14 +344,12 @@ def align_masks(manifest: dict, session: dict):
 
     cellpose_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'cellpose'
     stats = np.load(cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg.npy', allow_pickle=True).item()
-    
     masks_2p = np.array(stats['masks'])  # Get (x, y) indices per mask
+    
     # Check the shape and type of masks_2p before rotation
     print(f"'masks_2p' type: {type(masks_2p)}, shape: {masks_2p.shape}")
     
     # Check the shape of individual masks
-    print(f"'masks_2p[0]' shape: {masks_2p[0].shape}")
-    print(f"'masks_2p[1]' shape: {masks_2p[1].shape}")
 
     for k in rotation_config:
         if k == 'rotation' and rotation_config[k]:
@@ -364,17 +361,18 @@ def align_masks(manifest: dict, session: dict):
 
 
     masks_2p_rotated = masks_2p
-    masks_2p_rotated_path = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_11.tiff'
+    masks_2p_rotated_path = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated.tiff'
     tif_imsave(masks_2p_rotated_path,  masks_2p_rotated)
 
-    masks_2p_rotated_to_HCR1 = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_to_HCR.tiff'
+    masks_2p_rotated_to_HCR1 = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_bigwarped_to_HCR1.tiff'
+    
     # saved rotated masks_2p
     while not masks_2p_rotated_to_HCR1.exists():
         output_string = f'''
-        Please bigwarp {masks_2p_rotated_path} to HCR1, this requires two bigwarp steps,
-        step 1 - ???
-        setp 2 - ???
-        once you are done save the file here {masks_2p_rotated_to_HCR1}
+        Please apply bigwarp on masks in {masks_2p_rotated_path}, two steps required
+        step 1 - low res to high res transform
+        setp 2 - high res to HCR Round 1 transform
+        once you are done save the file as {masks_2p_rotated_to_HCR1}
         '''
         rprint(output_string)
         input()
