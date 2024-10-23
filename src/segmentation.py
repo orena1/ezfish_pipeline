@@ -346,9 +346,6 @@ def align_masks(manifest: dict, session: dict):
     cellpose_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'cellpose'
     stats = np.load(cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg.npy', allow_pickle=True).item()
     
-    from IPython import embed; embed()
-    stats = np.load(cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg.npy', allow_pickle=True).item()
-
     masks_2p = np.array(stats['masks'])  # Get (x, y) indices per mask
     # Check the shape and type of masks_2p before rotation
     print(f"'masks_2p' type: {type(masks_2p)}, shape: {masks_2p.shape}")
