@@ -1,7 +1,7 @@
 import sys
 from collections import defaultdict
 from pathlib import Path
-
+import hjson
 from cellpose import models
 import numpy as np
 import pandas as pd
@@ -16,7 +16,8 @@ from scipy.sparse import csr_matrix
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imsave
 from tqdm.auto import tqdm
-
+from skimage.transform import rotate
+from rich import print as rprint
 from .registrations import verify_rounds
 
 
@@ -306,6 +307,8 @@ def match_masks(stack1_masks_path: np.ndarray, stack2_masks_path: np.ndarray) ->
 #Output dataframes (dfs) saved in the HCR round folder in NASQUATCH for now
 
 def align_masks(manifest: dict, session: dict):
+
+    print("### HCR masks alignment - start")
     round_to_rounds, reference_round, register_rounds = verify_rounds(manifest, parse_registered = True, 
                                                                     print_rounds = False, print_registered = False)
     
@@ -327,6 +330,58 @@ def align_masks(manifest: dict, session: dict):
         # calculate the matching masks and the overlap
         mask1_to_mask2_df = match_masks(mov_stack_masks, reference_round_masks)
         mask1_to_mask2_df.to_csv(save_path)
+
+    print("### HCR masks alignment - finish")
+
+    # 2p masks alignment
+
+    # Rotate the masks
+
+
+    plane = session['functional_plane'][0]
+    stitched_file_C01  = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'stitched' / f'stack_stitched_C01_plane{plane}.tiff' 
+    rotation_file = stitched_file_C01.parent / 'rotation.txt'
+    rotation_config = hjson.load(open(rotation_file,'r'))
+
+    cellpose_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'cellpose'
+    stats = np.load(cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg.npy', allow_pickle=True).item()
+    masks_2p = stats['masks']  # Get (x, y) indices per mask
+
+    for k in rotation_config:
+        if k == 'rotation':
+            masks_2p = np.stack([rotate(masks_2p[0], rotation_config['rotation']),rotate(masks_2p[1], rotation_config['rotation'])])
+        if k == 'fliplr':
+            masks_2p = masks_2p[:,::-1,:]
+        if k == 'flipud':
+            masks_2p =masks_2p[:,:,::-1]
+
+
+    masks_2p_rotated = masks_2p
+    masks_2p_rotated_path = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated.tiff'
+    tif_imsave(masks_2p_rotated_path,  masks_2p_rotated)
+
+    masks_2p_rotated_to_HCR1 = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_to_HCR.tiff'
+    # saved rotated masks_2p
+    while not masks_2p_rotated_to_HCR1.exists():
+        output_string = f'''
+        Please bigwarp {masks_2p_rotated_path} to HCR1, this requires two bigwarp steps,
+        step 1 - ???
+        setp 2 - ???
+        once you are done save the file here {masks_2p_rotated_to_HCR1}
+        '''
+        rprint(output_string)
+        input()
+
+    save_path = output_folder / f"twop_to_HCR{reference_round['round']}.csv"
+
+    mask1_to_mask2_df = match_masks(masks_2p_rotated_to_HCR1, reference_round_masks)
+    mask1_to_mask2_df.to_csv(save_path)
+
+
+
+
+
+
 
         # TODO: Add visualization code here
         # # filter only overlaps above min_overlap

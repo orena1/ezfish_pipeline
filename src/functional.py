@@ -28,9 +28,9 @@ def extract_suite2p_registered_planes(manifest: dict , session: dict):
     save_path_registered = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered'
     save_path.mkdir(exist_ok=True, parents=True)
     functional_plane = session['functional_plane'][0]
-
+    print('1232 loading ops')
     ops = np.load(suite2p_path / 'plane0/ops.npy',allow_pickle=True).item()
-    
+    print('12d32 finish - loading ops')
     planes = ops['nplanes']
 
     for plane in track(range(planes), description='Extracting suite2p registered planes'):
