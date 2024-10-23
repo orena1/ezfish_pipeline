@@ -347,6 +347,13 @@ def align_masks(manifest: dict, session: dict):
     stats = np.load(cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg.npy', allow_pickle=True).item()
     masks_2p = stats['masks']  # Get (x, y) indices per mask
 
+    # Check the shape and type of masks_2p before rotation
+    print(f"'masks_2p' type: {type(masks_2p)}, shape: {masks_2p.shape}")
+    
+    # Check the shape of individual masks
+    print(f"'masks_2p[0]' shape: {masks_2p[0].shape}")
+    print(f"'masks_2p[1]' shape: {masks_2p[1].shape}")
+
     for k in rotation_config:
         if k == 'rotation':
             masks_2p = np.stack([rotate(masks_2p[0], rotation_config['rotation']),rotate(masks_2p[1], rotation_config['rotation'])])
