@@ -140,12 +140,18 @@ def extract_probs_intensities(manifest):
             round_folder_name = f"HCR{HCR_round_to_register}"
         else:
             round_folder_name = f"HCR{HCR_round_to_register}_to_HCR{reference_round['round']}"
-        
+
         full_stack_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
         full_stack_masks_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
         output_folder = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'extract_intensities'
         output_folder.mkdir(parents=True, exist_ok=True)
+        csv_output_path = output_folder / f"{round_folder_name}_probs_intensities.csv"
+        pkl_output_path = output_folder / f"{round_folder_name}_probs_intensities.pkl"
+        if pkl_output_path.exists():
+            print(f"Intensities already extracted for {round_folder_name} - skipping")
+            continue
 
+        
         # Load images and verify sizes
         raw_image = tif_imread(full_stack_path)
         masks = tif_imread(full_stack_masks_path)
@@ -197,9 +203,9 @@ def extract_probs_intensities(manifest):
         df.attrs['raw_image_path'] = str(full_stack_path)
         df.attrs['masks_path'] = str(full_stack_masks_path)
         df.attrs['HCR_round_number'] = HCR_round_to_register
-        df.to_csv(output_folder / f"{round_folder_name}_probs_intensities.csv")
-        df.to_pickle(output_folder / f"{round_folder_name}_probs_intensities.pkl")
-        print(f"Intensities extracted and saved for {round_folder_name} - {output_folder}/{round_folder_name}_probs_intensities.csv")
+        df.to_csv(csv_output_path)
+        df.to_pickle(pkl_output_path)
+        print(f"Intensities extracted and saved for {round_folder_name} - {pkl_output_path}_probs_intensities.csv")
         
 
 
@@ -222,6 +228,11 @@ def extract_electrophysiology_intensities(manifest: dict , session: dict):
     planes = ops['nplanes']
     # Assuming `planes`, `suite2p_path`, `savepath`, `mouse`, `run`, and `ops` are defined
     for plane in range(planes):
+        pkl_save_path = save_path / f'lowres_meanImg_C0_plane{plane}.pkl'
+        if pkl_save_path.exists():
+            print(f"Intensities already extracted for plane {plane} - skipping")
+            continue
+
         # Set up binary file
         bin_file = binary.BinaryFile(filename=suite2p_path / f'plane{plane}' / 'data.bin', Lx=ops['Lx'], Ly=ops['Ly'])
         # Move data to a numpy array
@@ -246,7 +257,7 @@ def extract_electrophysiology_intensities(manifest: dict , session: dict):
         # Save data to .pkl files
         pkl.dump({'masks_locs': masks_locs_dict,
                   'mean_frames': mean_frames}, 
-                  open(save_path / f'lowres_meanImg_C0_plane{plane}.pkl', 'wb'))
+                  open(pkl_save_path, 'wb'))
 
 
 
