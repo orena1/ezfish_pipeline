@@ -372,7 +372,7 @@ def align_masks(manifest: dict, session: dict):
         Please apply bigwarp on masks in {masks_2p_rotated_path}, two steps required
         step 1 - low res to high res transform
         setp 2 - high res to HCR Round 1 transform
-        once you are done save the file as {masks_2p_rotated_to_HCR1}
+        once you are done save the file in the cellpose directory as {masks_2p_rotated_to_HCR1}
         '''
         rprint(output_string)
         input()
