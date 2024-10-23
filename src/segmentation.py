@@ -227,7 +227,7 @@ def extract_electrophysiology_intensities(manifest: dict , session: dict):
 
     planes = ops['nplanes']
     # Assuming `planes`, `suite2p_path`, `savepath`, `mouse`, `run`, and `ops` are defined
-    for plane in range(planes):
+    for plane in [functional_plane]:
         pkl_save_path = save_path / f'lowres_meanImg_C0_plane{plane}.pkl'
         if pkl_save_path.exists():
             print(f"Intensities already extracted for plane {plane} - skipping")
