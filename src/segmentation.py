@@ -160,7 +160,7 @@ def extract_probs_intensities(manifest):
 
         # acceleration step
         inds = get_indices_sparse(masks)
-        neuropil_masks_inds = get_neuropil_mask_square(masks, neuropil_radius, neuropil_boundary, inds)
+        neuropil_masks_inds = get_neuropil_mask_square(masks, neuropil_radius, neuropil_boundary, inds) #Confirm whether the neuropil_boundary is being used currently JSA
 
         number_of_channels = int(raw_image.shape[1])
         to_pnd = defaultdict(list)
