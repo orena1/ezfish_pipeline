@@ -147,11 +147,11 @@ def stitch_tiles_and_rotate(manifest: dict, session: dict):
     rotation_config = hjson.load(open(rotation_file,'r'))
     data = tif_imread(stitched_file_C01)
     for k in rotation_config:
-        if k == 'rotation':
+        if k == 'rotation' and rotation_config[k]:
             data = np.stack([rotate(data[0], rotation_config['rotation']),rotate(data[1], rotation_config['rotation'])])
-        if k == 'fliplr':
-            data = data[:,::-1,:]
-        if k == 'flipud':
-            data =data[:,:,::-1]
+        if k == 'fliplr' and rotation_config[k]:
+            data = data[:, :, ::-1]
+        if k == 'flipud' and rotation_config[k]:
+            data =data[:, ::-1, :]
     tif_imwrite(stitched_file_C01.parent / f'{stitched_file_C01.stem}_rotated.tiff', data.astype(np.float32), imagej=True, metadata={'axes': 'CYX'})
     tif_imwrite(save_path_registered_rotated, data.astype(np.float32), imagej=True, metadata={'axes': 'CYX'})

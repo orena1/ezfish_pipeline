@@ -149,7 +149,7 @@ def extract_probs_intensities(manifest):
         csv_output_path = output_folder / f"{round_folder_name}_probs_intensities.csv"
         pkl_output_path = output_folder / f"{round_folder_name}_probs_intensities.pkl"
         if pkl_output_path.exists():
-            print(f"Intensities already extracted for {round_folder_name} - skipping")
+            print(f"HCR - Intensities already extracted for {round_folder_name} - skipping")
             continue
 
         
@@ -231,7 +231,7 @@ def extract_electrophysiology_intensities(manifest: dict , session: dict):
     for plane in [functional_plane]:
         pkl_save_path = save_path / f'lowres_meanImg_C0_plane{plane}.pkl'
         if pkl_save_path.exists():
-            print(f"Intensities already extracted for plane {plane} - skipping")
+            print(f"2p activity already extracted for plane {plane} - skipping")
             continue
 
         # Set up binary file
@@ -345,19 +345,22 @@ def align_masks(manifest: dict, session: dict):
 
     cellpose_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'cellpose'
     stats = np.load(cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg.npy', allow_pickle=True).item()
-    masks_2p = stats['masks']  # Get (x, y) indices per mask
+    
+    from IPython import embed; embed()
+    stats = np.load(cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg.npy', allow_pickle=True).item()
 
+    masks_2p = np.array(stats['masks'])  # Get (x, y) indices per mask
     for k in rotation_config:
-        if k == 'rotation':
-            masks_2p = np.stack([rotate(masks_2p[0], rotation_config['rotation']),rotate(masks_2p[1], rotation_config['rotation'])])
-        if k == 'fliplr':
-            masks_2p = masks_2p[:,::-1,:]
-        if k == 'flipud':
-            masks_2p =masks_2p[:,:,::-1]
+        if k == 'rotation' and rotation_config[k]:
+            masks_2p = rotate(masks_2p, rotation_config['rotation'])
+        if k == 'fliplr' and rotation_config[k]:
+            masks_2p = masks_2p[:,::-1]
+        if k == 'flipud' and rotation_config[k]:
+            masks_2p = masks_2p[::-1,:]
 
 
     masks_2p_rotated = masks_2p
-    masks_2p_rotated_path = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated.tiff'
+    masks_2p_rotated_path = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_11.tiff'
     tif_imsave(masks_2p_rotated_path,  masks_2p_rotated)
 
     masks_2p_rotated_to_HCR1 = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_to_HCR.tiff'
