@@ -12,6 +12,10 @@ ezfish/
         │   ├── RG026_HCR02_To_HCR01.tif
         │   └── RG026_HCR03_To_HCR01.tif
         └── OUTPUT/
+            ├── MERGED
+            |    ├── aligned_masks
+            |    ├── aligned_extracted_features
+            |         ├── 
             ├── params.hjson # contains the selected registrations &
             ├── 2P/
             │   ├── tile

@@ -56,27 +56,30 @@ def main(args = None):
     session = manifest['two_photons_imaging']['sessions'][0]
     tl.process_session_sbx(manifest, session)
   
-    # step 2-A: unwarp 2P anatomical_runs
+    # # step 2-A: unwarp 2P anatomical_runs
     tl.unwarp_tiles(manifest, session)
 
-    # step 3-M: stitch the tiles
+    # # step 3-M: stitch the tiles
     tl.stitch_tiles_and_rotate(manifest, session)
 
-    ### moved temporarily to generate mean image from suite2p
+    # ### moved temporarily to generate mean image from suite2p
     fc.extract_suite2p_registered_planes(manifest, session)
     
-    # step 4-AM: register the HCR data round to round
+    # # step 4-AM: register the HCR data round to round
     rf.register_rounds(manifest, manifest_path=args.manifest)
 
-    # Run cellpose on HCR rounds
+    # # Run cellpose on HCR rounds
     sg.run_cellpose(manifest)
 
-    # extract probs values from cellpose segmentation
+    # # extract probs values from cellpose segmentation
     sg.extract_probs_intensities(manifest)
 
     sg.extract_electrophysiology_intensities(manifest, session)
 
     sg.align_masks(manifest, session)
+
+    # merge aligned masks to single files
+    sg.merge_masks(manifest, session)
 
 if __name__ == "__main__":
 

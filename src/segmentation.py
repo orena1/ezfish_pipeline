@@ -88,7 +88,7 @@ def get_indices_sparse(data):
 
 
 
-def get_neuropil_mask_square(volume, radius, bound, inds):
+def get_neuropil_mask_square_old(volume, radius, bound, inds):
     '''
     Get the neuropil mask square for each mask in the volume
     '''
@@ -99,8 +99,8 @@ def get_neuropil_mask_square(volume, radius, bound, inds):
     for i,plane in enumerate(tqdm(volume)):
         masks_expanded_b = skimage.segmentation.expand_labels(plane, distance=bound)
         all_masks_ids = set(list(zip(*np.where(plane>0))))
-
-        print(" mask_expanded_b not used! fix, go to the notebooks and see how you fixed it!!"*3)
+        if i<3:
+            print(" mask_expanded_b not used! fix, go to the notebooks and see how you fixed it!!"*3)
         for mask_id in np.unique(plane):
             if mask_id == 0:
                 continue
@@ -124,10 +124,62 @@ def get_neuropil_mask_square(volume, radius, bound, inds):
     return all_masks_locs
 
 
+def get_neuropil_mask_square(volume, radius, bound, inds):
+    '''
+    Get the neuropil mask square for each mask in the volume using vectorized operations
+    '''
+    all_masks_locs = {}
+    x_max, y_max = volume.shape[1], volume.shape[2]
+    
+    # Pre-compute unique mask IDs excluding background (0)
+    unique_masks = np.unique(volume)
+    unique_masks = unique_masks[unique_masks != 0]
+    
+    # Create meshgrid once
+    x_grid, y_grid = np.meshgrid(np.arange(x_max), np.arange(y_max), indexing='ij')
+    
+    for mask_id in tqdm(unique_masks):
+        mask_coords = []
+        
+        # Get all z-planes where this mask appears
+        z_planes = np.unique(inds[mask_id][0])
+        if mask_id<3:
+            print(" mask_expanded_b not used! fix, go to the notebooks and see how you fixed it!!"*3)
+        for z in z_planes:
+            # Get mask center for this z-plane
+            mask_points = (inds[mask_id][0] == z)
+            if not np.any(mask_points):
+                continue
+                
+            mx = int(inds[mask_id][1][mask_points].mean())
+            my = int(inds[mask_id][2][mask_points].mean())
+            
+            # Create square mask using broadcasting
+            x_min, x_max_local = max(mx-radius, 0), min(mx+radius, x_max)
+            y_min, y_max_local = max(my-radius, 0), min(my+radius, y_max)
+            
+            # Get all points in square that aren't part of any cell
+            square_mask = (x_grid[x_min:x_max_local, y_min:y_max_local] >= x_min) & \
+                         (x_grid[x_min:x_max_local, y_min:y_max_local] < x_max_local) & \
+                         (y_grid[x_min:x_max_local, y_min:y_max_local] >= y_min) & \
+                         (y_grid[x_min:x_max_local, y_min:y_max_local] < y_max_local)
+            
+            neuropil_points = (volume[z, x_min:x_max_local, y_min:y_max_local] == 0) & square_mask
+            
+            if np.any(neuropil_points):
+                x_coords, y_coords = np.where(neuropil_points)
+                z_coords = np.full_like(x_coords, z)
+                mask_coords.append(np.stack([z_coords, x_coords + x_min, y_coords + y_min]))
+        
+        if mask_coords:
+            all_masks_locs[mask_id] = np.hstack(mask_coords).astype(np.int32)
+    
+    return all_masks_locs
+
 
 def extract_probs_intensities(manifest):
     round_to_rounds, reference_round, register_rounds = verify_rounds(manifest, parse_registered = True, 
-                                                                      print_rounds = True, print_registered = True)
+                                                                      print_rounds = True, print_registered = True, func='intensities-extraction')
     
     HCR_fix_image_path = reference_round['image_path'] # The fix image that all other rounds will be registerd to (include all channels!)
 
@@ -139,8 +191,10 @@ def extract_probs_intensities(manifest):
     for HCR_round_to_register in register_rounds + [reference_round['round']]:
         if HCR_round_to_register == reference_round['round']:
             round_folder_name = f"HCR{HCR_round_to_register}"
+            channels_names =  reference_round['channels']
         else:
             round_folder_name = f"HCR{HCR_round_to_register}_to_HCR{reference_round['round']}"
+            channels_names = round_to_rounds[HCR_round_to_register]['channels']
 
         full_stack_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
         full_stack_masks_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
@@ -163,6 +217,7 @@ def extract_probs_intensities(manifest):
         neuropil_masks_inds = get_neuropil_mask_square(masks, neuropil_radius, neuropil_boundary, inds) #Confirm whether the neuropil_boundary is being used currently JSA
 
         number_of_channels = int(raw_image.shape[1])
+        
         to_pnd = defaultdict(list)
         for mask_id, mask_inds in enumerate(tqdm(inds)):
             if mask_id == 0:
@@ -175,7 +230,7 @@ def extract_probs_intensities(manifest):
             
             to_pnd['mask_id'].extend([mask_id]*number_of_channels)
             to_pnd['channel'].extend(list(range(number_of_channels)))
-            
+            to_pnd['channel_name'].extend(channels_names)
             to_pnd['mean'].extend(list(vals_per_mask_per_channel.mean(axis=0)))
             
             # add X,Y,Z 
@@ -396,6 +451,104 @@ def align_masks(manifest: dict, session: dict):
         # visualize_match(stack1_image_path, stack1_masks_path, stack2_image_path, stack2_masks_path,
         #                 mask1_to_mask2, output_base_filename)
 
+def merge_masks(manifest: dict, session: dict):
+    print("\n### HCR masks merging - start ##")
+    
+    round_to_rounds, reference_round, register_rounds = verify_rounds(manifest, parse_registered = True, 
+                                                                    print_rounds = False, print_registered = False)
+    HCR_intensities_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'extract_intensities'
+    HCR_mapping_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'MERGED' / 'aligned_masks'
+    merged_table_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'MERGED' / 'aligned_extracted_features'
+    merged_table_path.mkdir(parents=True, exist_ok=True)
     
     
+    # get available features to create merged table for
+    neuropil_radius = manifest['HCR_prob_intenisty_extraction']['neuropil_radius']
+    neuropil_boundary = manifest['HCR_prob_intenisty_extraction']['neuropil_boundary']
+    neuropil_pooling = manifest['HCR_prob_intenisty_extraction']['neuropil_pooling']
+    # Use the neuropil_pooling list to extract the correct values
+    features_to_extract = ['mean']
+    for pooling_method in neuropil_pooling:
+        if pooling_method == 'mean':
+            features_to_extract.append(f'neuropil_mean_nr{neuropil_radius}_nb_{neuropil_boundary}')
+        elif pooling_method == 'median':
+            features_to_extract.append(f'neuropil_median_nr{neuropil_radius}_nb_{neuropil_boundary}')
+        elif pooling_method.startswith('percentile-'):
+            percentile = int(pooling_method.split('-')[1])
+            features_to_extract.append(f'neuropil_{percentile}pct_nr{neuropil_radius}_nb_{neuropil_boundary}')
+        else:
+            raise ValueError(f"Unsupported pooling method: {pooling_method}")
+    
+    
+    for feature in features_to_extract:
+        merged_table_file_path = merged_table_path / f'full_table_{feature}.pkl'
+        if merged_table_file_path.exists():
+            print(f"Feature extraction already merged for {feature} - skipping")
+            continue
+        print(f"Extracting feature: {feature}")
+        # load 2p mapping
+        towP_to_reference_mapping = pd.read_csv(HCR_mapping_path / f"twop_to_HCR{reference_round['round']}.csv")
+        twoP_mapping_dict = {mask_2:mask_1 for mask_1,mask_2 in towP_to_reference_mapping[['mask1','mask2']].values}
 
+        # load reference round intensities
+        reference_round_intensities = pd.read_pickle(HCR_intensities_path / f"HCR{reference_round['round']}_probs_intensities.pkl")
+        reference_round_intensities_pivot = pd.pivot(reference_round_intensities, index='mask_id', columns=['channel_name'], values=[feature]).reset_index()
+        reference_round_intensities_pivot.rename(columns={'mask_id':'mask_id_main'},inplace=True)
+        # load HCR rounds intensities and matching files
+        HCR_rounds_mapping_tables = []
+        HCR_round_mapping_dict = []
+        HCR_rounds_intensities_pivot = []
+        HCR_rounds_names = register_rounds
+        for HCR_round_to_register in register_rounds:
+            # load mapping data
+            round_file_name = f"HCR{HCR_round_to_register}_to_HCR{reference_round['round']}"
+            round_mapping_file_path = HCR_mapping_path / f"{round_file_name}.csv"
+            HCR_rounds_mapping_tables.append(pd.read_csv(round_mapping_file_path))
+            HCR_round_mapping_dict.append({mask_2:mask_1 for mask_1,mask_2 in HCR_rounds_mapping_tables[-1][['mask1','mask2']].values})
+
+            # load intensities
+            HCR_round_intensities = pd.read_pickle(HCR_intensities_path / f"{round_file_name}_probs_intensities.pkl")
+            HCR_rounds_intensities_pivot.append(pd.pivot(HCR_round_intensities, index='mask_id', columns=['channel_name'], values=[feature]).reset_index())
+
+
+        ####       ####
+        ###  MATCH  ###
+        ####       ####
+        # first let's match the 2p
+        mask_tp_matched = []
+        for i in reference_round_intensities_pivot.mask_id_main:
+            if i in twoP_mapping_dict:
+                mask_tp_matched.append(twoP_mapping_dict[i])
+            else:
+                mask_tp_matched.append(None)    
+        reference_round_intensities_pivot['twoP_mask']  = mask_tp_matched
+
+
+        for j in range(len(HCR_round_mapping_dict)):
+            HCR_main_2_HCR_round = HCR_round_mapping_dict[j]
+            mask_matched = []
+            for i in reference_round_intensities_pivot.mask_id_main:
+                if i in HCR_main_2_HCR_round:
+                    mask_matched.append(HCR_main_2_HCR_round[i])
+                else:
+                    mask_matched.append(None)
+            reference_round_intensities_pivot[f'mask_round_{HCR_rounds_names[j]}'] = mask_matched
+
+
+        ####       ####
+        ###  MERGE  ###
+        ####       ####
+        HCR_main_pivot_merged = reference_round_intensities_pivot.copy().reset_index()
+
+        for j in range(len(HCR_round_mapping_dict)):
+            round_mask_name = f'mask_round_{HCR_rounds_names[j]}'
+            print(round_mask_name)
+            HCR_main_pivot_merged = pd.merge(HCR_main_pivot_merged, 
+                                        HCR_rounds_intensities_pivot[j],
+                                        left_on=round_mask_name,
+                                        right_on='mask_id',
+                                        suffixes=['',f'_round_{HCR_rounds_names[j]}'],
+                                        how='left').drop(columns=['mask_id'])#,how='outer')
+        pd.set_option('display.max_columns', None)
+        print(f'final table saved to {merged_table_file_path}')
+        HCR_main_pivot_merged.to_pickle(merged_table_file_path)
