@@ -148,7 +148,7 @@ def stitch_tiles_and_rotate(manifest: dict, session: dict):
     data = tif_imread(stitched_file_C01)
     for k in rotation_config:
         if k == 'rotation' and rotation_config[k]:
-            data = np.stack([rotate(data[0], rotation_config['rotation']),rotate(data[1], rotation_config['rotation'])])
+            data = np.stack([rotate(data[0], rotation_config['rotation'],resize='True'),rotate(data[1], rotation_config['rotation'],resize='True')])
         if k == 'fliplr' and rotation_config[k]:
             data = data[:, :, ::-1]
         if k == 'flipud' and rotation_config[k]:
