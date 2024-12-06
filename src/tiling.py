@@ -120,6 +120,8 @@ def stitch_tiles_and_rotate(manifest: dict, session: dict):
     '''
     stitch the tiles of the session
     '''
+    if len(session['anatomical_hires_green_runs']) == 0:
+        return
     tile_to_num = {'left':'001', 'center':'002', 'right':'003'}
     plane = session['functional_plane'][0]
     stitched_file_C01  = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'stitched' / f'stack_stitched_C01_plane{plane}.tiff' 
