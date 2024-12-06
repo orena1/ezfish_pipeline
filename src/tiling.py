@@ -54,6 +54,8 @@ def unwarp_tile(image_path: Path, unwarp_config: Path, steps: int, image_output_
 
 
 def unwarp_tiles(manifest: dict, session: dict):
+    if len(session['anatomical_hires_green_runs']) == 0:
+        return
     print(f'Unwarping tiles for session {session["date"]}')
     for i in range(1,1+len(session['anatomical_hires_green_runs'])):
         warp_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'warped' / f'stack_warped_C12_{i:03}.tiff'
@@ -73,6 +75,8 @@ def process_session_sbx(manifest: dict , session:dict):
     manifest: json dict
     session: the session to process, extracted from the manifest 
     '''
+    if len(session['anatomical_hires_green_runs']) == 0:
+        return
     print(f'processing session {session["date"]}')
     tile_to_num = {'left':'001', 'center':'002', 'right':'003'}
     
@@ -81,7 +85,8 @@ def process_session_sbx(manifest: dict , session:dict):
     mouse_name = manifest['mouse_name']
     date = session['date']
 
-    for j, tile_loc in enumerate(['left','center','right']):
+    scans_names = ['left','center','right']
+    for j, tile_loc in enumerate(scans_names):
         # get output stack name from tile location
         stack_name_new = tile_to_num[tile_loc]
         save_path.mkdir(exist_ok=True, parents=True)

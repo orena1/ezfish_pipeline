@@ -1,16 +1,17 @@
-import numpy as np
-from scipy.sparse import csr_matrix
-from tifffile import imread as tif_imread
-from suite2p.io import binary
-from suite2p.io import tiff
 from pathlib import Path
+
+import hjson
+import matplotlib.pyplot as plt
+import numpy as np
+import scipy.io as sio
+from rich import print as rprint
+from rich.progress import track
+from scipy.sparse import csr_matrix
+from skimage.transform import rotate
+from suite2p.io import binary, tiff
+from .registrations import verify_rounds
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imwrite
-import scipy.io as sio
-import matplotlib.pyplot as plt
-from rich.progress import track
-from skimage.transform import rotate
-import hjson
 
 
 def extract_suite2p_registered_planes(manifest: dict , session: dict):
@@ -50,8 +51,19 @@ def extract_suite2p_registered_planes(manifest: dict , session: dict):
     
     if save_filename_rotated.exists():
         return
-        
+
+    # this is for the case of no-hires
     rotation_file =  Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'stitched' / 'rotation.txt'
+    reference_HCR_round = verify_rounds(manifest)[1]['image_path']
+    while not rotation_file.exists():
+        output_string = f'''
+        Missing rotation file for rotating [red]{save_filename_C01}[/red] to {reference_HCR_round}
+        Once you create these files press enter
+        '''
+        rprint(output_string)
+        input()
+
+
     rotation_config = hjson.load(open(rotation_file,'r'))
     data = tif_imread(save_filename_C01)
     assert data.ndim == 2, 'suite2p binary files should be 2D, not 3D!, can fix but not implemented yet'
