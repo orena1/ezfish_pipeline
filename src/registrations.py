@@ -181,7 +181,7 @@ def registarion_apply(manifest):
         #Loop through channels starting with 1, which ignores the first channel which has already been registered
         for channel in track(range(HCR_mov_round.shape[1]), description="Registering channels"):
             output_channel_path = Path(fr"{reg_path}/out_c{channel}.zarr")
-            output_channel_tiff_path =output_channel_path.parent / output_channel_path.name.replace('.zarr','.tiff')
+            output_channel_tiff_path = output_channel_path.parent / output_channel_path.name.replace('.zarr','.tiff')
             if os.path.exists(output_channel_path) and os.path.exists(output_channel_tiff_path):
                 print(f"Channel {channel} already registered")
                 data_paths.append(output_channel_path)
@@ -232,7 +232,7 @@ def verify_rounds(manifest, parse_registered = False, print_rounds = False, prin
     # verify that all rounds exists.
     reference_round_path, mov_rounds_path = HCR_confocal_imaging(manifest, only_paths=True)
     reference_round_number = manifest['HCR_confocal_imaging']['reference_round']
-    if print_rounds: print("Rounds available for register:")
+    if print_rounds: print("\nRounds available:")
 
     round_to_rounds = {}
     j=0
@@ -269,7 +269,8 @@ def register_rounds(manifest, manifest_path):
     Register the rounds in the manifest
     """
     round_to_rounds, reference_round, ready_to_apply = verify_rounds(manifest)
-    rprint("[green]Registering rounds: [/green]")
+    
+    rprint("\n [green]---------------------------Registering rounds---------------------------- [/green]")
     rprint(f"There are {len(manifest['HCR_confocal_imaging']['rounds'])} HCR rounds in the manifest, registartion is done round to round using juptyer notebooks")
 
     rprint("\n[green]Step A:[/green]")

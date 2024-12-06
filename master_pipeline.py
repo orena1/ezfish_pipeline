@@ -16,9 +16,8 @@ def parse_input_args(args):
         return args
     argparser = argparse.ArgumentParser(description='Master pipeline for processing data')
     argparser.add_argument('manifest', help='Path to the pipeline manifest file')
-
-
-
+    argparser.add_argument('only_hcr', action='store_true', help='Run only HCR part of the pipeline')
+    
     args = argparser.parse_args(args)
 
 
@@ -48,23 +47,25 @@ def main(args = None):
     '''
 
     args = parse_input_args(args)
+    session =[]
 
     # step 1-A: parse the manifest file
     manifest = mt.main_pipeline_manifest(args.manifest)
-    specs = mt.verify_manifest(manifest)
-
-    session = manifest['two_photons_imaging']['sessions'][0]
-    tl.process_session_sbx(manifest, session)
-  
-    # # step 2-A: unwarp 2P anatomical_runs
-    tl.unwarp_tiles(manifest, session)
-
-    # # step 3-M: stitch the tiles
-    tl.stitch_tiles_and_rotate(manifest, session)
-
-    # ### moved temporarily to generate mean image from suite2p
-    fc.extract_suite2p_registered_planes(manifest, session)
+    specs = mt.verify_manifest(manifest, args)
     
+    if not args.only_hcr:
+        session = manifest['two_photons_imaging']['sessions'][0]
+        tl.process_session_sbx(manifest, session)
+    
+        # # step 2-A: unwarp 2P anatomical_runs
+        tl.unwarp_tiles(manifest, session)
+
+        # # step 3-M: stitch the tiles
+        tl.stitch_tiles_and_rotate(manifest, session)
+
+        # ### moved temporarily to generate mean image from suite2p
+        fc.extract_suite2p_registered_planes(manifest, session)
+        
     # # step 4-AM: register the HCR data round to round
     rf.register_rounds(manifest, manifest_path=args.manifest)
 
@@ -74,17 +75,21 @@ def main(args = None):
     # # extract probs values from cellpose segmentation
     sg.extract_probs_intensities(manifest)
 
-    sg.extract_electrophysiology_intensities(manifest, session)
+    if not args.only_hcr:
+        sg.extract_electrophysiology_intensities(manifest, session)
 
-    sg.align_masks(manifest, session)
+    sg.align_masks(manifest, session, only_hcr=args.only_hcr)
 
     # merge aligned masks to single files
-    sg.merge_masks(manifest, session)
+    sg.merge_masks(manifest, session, only_hcr=args.only_hcr)
+
+    rprint('Pipeline completed successfully!')
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--manifest', required=True, help='Path to the pipeline manifest file e.g. examples/CIM132.hjson')
+    parser.add_argument('--only_hcr', action='store_true', help='Run only HCR part of the pipeline')
     args = parser.parse_args()
     #args = {'manifest': 'examples/CIM132.hjson'}
     main(args)

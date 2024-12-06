@@ -29,7 +29,7 @@ def user_input_missing(check_results, message, color):
             if out=='y':
                 return
 
-def verify_manifest(manifest):
+def verify_manifest(manifest, args):
     '''
     Verify that the json file is valid
     '''
@@ -53,20 +53,21 @@ def verify_manifest(manifest):
             assert channel in HCR_probs, f"Probe {channel} not supported"
 
     # verify that all 2p runs exists.
-    session = manifest['two_photons_imaging']['sessions'][0]
-    check_results = []
-    for k in session:
-        if '_run' in k:
-            for run in session[k]:
-                run_path_sbx = base_path / mouse_name / '2P' /  f'{mouse_name}_{date_two_photons}_{run}' / f'{mouse_name}_{date_two_photons}_{run}.sbx'
-                check_results.append([run_path_sbx,os.path.exists(run_path_sbx)])
-    check_results = np.array(check_results)
-    user_input_missing(check_results, 'Some 2p runs are missing, do you whish to continue?', color='red')
+    if not args.only_hcr:
+        session = manifest['two_photons_imaging']['sessions'][0]
+        check_results = []
+        for k in session:
+            if '_run' in k:
+                for run in session[k]:
+                    run_path_sbx = base_path / mouse_name / '2P' /  f'{mouse_name}_{date_two_photons}_{run}' / f'{mouse_name}_{date_two_photons}_{run}.sbx'
+                    check_results.append([run_path_sbx,os.path.exists(run_path_sbx)])
+        check_results = np.array(check_results)
+        user_input_missing(check_results, 'Some 2p runs are missing, do you whish to continue?', color='red')
 
-    # verify that functional run exists.
-    suite2p_run = session['functional_run'][0]
-    suite2p_path = base_path / mouse_name / '2P' /  f'{mouse_name}_{date_two_photons}_{suite2p_run}' / 'suite2p' /'plane0/ops.npy'
-    user_input_missing(np.array([[suite2p_path, os.path.exists(suite2p_path)]]), 'Suite2p path is missing, do you wish to continue?', color='pink')
+        # verify that functional run exists.
+        suite2p_run = session['functional_run'][0]
+        suite2p_path = base_path / mouse_name / '2P' /  f'{mouse_name}_{date_two_photons}_{suite2p_run}' / 'suite2p' /'plane0/ops.npy'
+        user_input_missing(np.array([[suite2p_path, os.path.exists(suite2p_path)]]), 'Suite2p path is missing, do you wish to continue?', color='pink')
 
     # verify that unwarp_config exists
     if not os.path.exists(manifest['two_photons_imaging']['sessions'][0]['unwarp_config']):

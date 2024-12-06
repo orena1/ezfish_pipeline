@@ -51,6 +51,7 @@ class CellposeModelWrapper:
         )
 
 def run_cellpose(manifest):
+    rprint("\n [green]---------------------------Cellpose on Rounds---------------------------- [/green]")
     round_to_rounds, reference_round, register_rounds = verify_rounds(manifest, parse_registered=True, 
                                                                       print_rounds=True, print_registered=True, func='cellpose')
     
@@ -180,6 +181,8 @@ def get_neuropil_mask_square(volume, radius, bound, inds):
 
 
 def extract_probs_intensities(manifest):
+    rprint("\n [green]---------------------------Extract Rounds Intensities ---------------------------- [/green]")
+
     round_to_rounds, reference_round, register_rounds = verify_rounds(manifest, parse_registered = True, 
                                                                       print_rounds = True, print_registered = True, func='intensities-extraction')
     
@@ -270,7 +273,7 @@ def extract_probs_intensities(manifest):
 
 def extract_electrophysiology_intensities(manifest: dict , session: dict):
     #Edited dictionary version
-
+    rprint("\n [green]---------------------------Extract 2P Intensities ---------------------------- [/green]")
     mouse_name = manifest['mouse_name']
     date = session['date']
     suite2p_run = session['functional_run'][0]
@@ -481,10 +484,10 @@ def convex_mask(landmarks_path: str, stack_path: str, Ydist: int):
     return blacked_out_stack_first_channel
 
 
-def align_masks(manifest: dict, session: dict):
+def align_masks(manifest: dict, session: dict, only_hcr: bool = False):
 
+    rprint("\n [green]---------------------------Align Rounds Masks ---------------------------- [/green]")
 
-    print("### HCR masks alignment - start")
     round_to_rounds, reference_round, register_rounds = verify_rounds(manifest, parse_registered = True, 
                                                                     print_rounds = False, print_registered = False)
     
@@ -506,13 +509,12 @@ def align_masks(manifest: dict, session: dict):
         # calculate the matching masks and the overlap
         mask1_to_mask2_df = match_masks(mov_stack_masks, reference_round_masks)
         mask1_to_mask2_df.to_csv(save_path)
-
-    print("### HCR masks alignment - finish")
-
-    # 2p masks alignment
-
-    # Rotate the masks
-
+    
+    if only_hcr:
+        print("Skipping 2p masks alignment")
+        return
+    
+    rprint("\n [green]---------------------------Align 2P Masks ---------------------------- [/green]")
     plane = session['functional_plane'][0]
     rotation_file = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'stitched' / 'rotation.txt'
     rotation_config = hjson.load(open(rotation_file,'r'))
@@ -563,6 +565,7 @@ def align_masks(manifest: dict, session: dict):
 
     mask1_to_mask2_df = match_masks(masks_2p_rotated_to_HCR1, reference_round_masks)
     mask1_to_mask2_df.to_csv(save_path)
+    print("### 2p masks alignment - start")
 
 
 
@@ -578,9 +581,9 @@ def align_masks(manifest: dict, session: dict):
     # visualize_match(stack1_image_path, stack1_masks_path, stack2_image_path, stack2_masks_path,
     #                 mask1_to_mask2, output_base_filename)
 
-def merge_masks(manifest: dict, session: dict):
-    print("\n### HCR masks merging - start ##")
-    
+def merge_masks(manifest: dict, session: dict, only_hcr: bool = False):
+    rprint("\n [green]---------------------------Match Aligned Masks ---------------------------- [/green]")
+
     round_to_rounds, reference_round, register_rounds = verify_rounds(manifest, parse_registered = True, 
                                                                     print_rounds = False, print_registered = False)
     HCR_intensities_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'extract_intensities'
@@ -613,9 +616,12 @@ def merge_masks(manifest: dict, session: dict):
             print(f"Feature extraction already merged for {feature} - skipping")
             continue
         print(f"Extracting feature: {feature}")
-        # load 2p mapping
-        towP_to_reference_mapping = pd.read_csv(HCR_mapping_path / f"twop_to_HCR{reference_round['round']}.csv")
-        twoP_mapping_dict = {mask_2:mask_1 for mask_1,mask_2 in towP_to_reference_mapping[['mask1','mask2']].values}
+        if only_hcr:
+            twoP_mapping_dict = {0:0}
+        else:
+            # load 2p mapping
+            towP_to_reference_mapping = pd.read_csv(HCR_mapping_path / f"twop_to_HCR{reference_round['round']}.csv")
+            twoP_mapping_dict = {mask_2:mask_1 for mask_1,mask_2 in towP_to_reference_mapping[['mask1','mask2']].values}
 
         # load reference round intensities
         reference_round_intensities = pd.read_pickle(HCR_intensities_path / f"HCR{reference_round['round']}_probs_intensities.pkl")
