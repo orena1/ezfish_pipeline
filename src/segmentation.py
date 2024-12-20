@@ -542,7 +542,7 @@ def align_masks(manifest: dict, session: dict, only_hcr: bool = False):
 
     masks_2p_rotated = masks_2p
     masks_2p_rotated_path = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated.tiff'
-    tif_imsave(masks_2p_rotated_path,  masks_2p_rotated)
+    tif_imsave(masks_2p_rotated_path,  masks_2p_rotated.astype(int))
 
     masks_2p_rotated_to_HCR1 = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_bigwarped_to_HCR1.tiff'
     masks_2p_rotated_to_HCR1_blacked_save_path = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_bigwarped_to_HCR1_blacked.tiff'
