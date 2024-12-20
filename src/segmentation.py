@@ -533,7 +533,7 @@ def align_masks(manifest: dict, session: dict, only_hcr: bool = False):
 
     for k in rotation_config:
         if k == 'rotation' and rotation_config[k]:
-            masks_2p = rotate(masks_2p, rotation_config['rotation'])
+            masks_2p = rotate(masks_2p, rotation_config['rotation'],preserve_range=True)
         if k == 'fliplr' and rotation_config[k]:
             masks_2p = masks_2p[:,::-1]
         if k == 'flipud' and rotation_config[k]:
