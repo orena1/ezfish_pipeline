@@ -533,7 +533,7 @@ def align_masks(manifest: dict, session: dict, only_hcr: bool = False):
 
     for k in rotation_config:
         if k == 'rotation' and rotation_config[k]:
-            masks_2p = rotate(masks_2p, rotation_config['rotation'],preserve_range=True)
+            masks_2p = rotate(masks_2p, rotation_config['rotation'], preserve_range=True, resize=True)
         if k == 'fliplr' and rotation_config[k]:
             masks_2p = masks_2p[:,::-1]
         if k == 'flipud' and rotation_config[k]:
@@ -542,7 +542,7 @@ def align_masks(manifest: dict, session: dict, only_hcr: bool = False):
 
     masks_2p_rotated = masks_2p
     masks_2p_rotated_path = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated.tiff'
-    tif_imsave(masks_2p_rotated_path,  masks_2p_rotated.astype(int))
+    tif_imsave(masks_2p_rotated_path,  masks_2p_rotated.astype(np.uint16))
 
     masks_2p_rotated_to_HCR1 = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_bigwarped_to_HCR1.tiff'
     masks_2p_rotated_to_HCR1_blacked_save_path = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_bigwarped_to_HCR1_blacked.tiff'
