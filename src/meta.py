@@ -45,7 +45,7 @@ def verify_manifest(manifest, args):
         if i['round'] == reference_round:
             break
     else:
-        raise Exception(f"reference round was not found {reference_round} is not un rounds")
+        raise Exception(f"reference round was not found {reference_round} is not in rounds")
     
     # verify that all probs are supported
     for i in manifest['HCR_confocal_imaging']['rounds']:

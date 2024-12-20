@@ -189,9 +189,9 @@ def extract_probs_intensities(manifest):
     HCR_fix_image_path = reference_round['image_path'] # The fix image that all other rounds will be registerd to (include all channels!)
 
     # neuropil parameters
-    neuropil_radius = manifest['HCR_prob_intenisty_extraction']['neuropil_radius']
-    neuropil_boundary = manifest['HCR_prob_intenisty_extraction']['neuropil_boundary']
-    neuropil_pooling = manifest['HCR_prob_intenisty_extraction']['neuropil_pooling']
+    neuropil_radius = manifest['HCR_prob_intensity_extraction']['neuropil_radius']
+    neuropil_boundary = manifest['HCR_prob_intensity_extraction']['neuropil_boundary']
+    neuropil_pooling = manifest['HCR_prob_intensity_extraction']['neuropil_pooling']
     
     for HCR_round_to_register in register_rounds + [reference_round['round']]:
         if HCR_round_to_register == reference_round['round']:
@@ -593,9 +593,9 @@ def merge_masks(manifest: dict, session: dict, only_hcr: bool = False):
     
     
     # get available features to create merged table for
-    neuropil_radius = manifest['HCR_prob_intenisty_extraction']['neuropil_radius']
-    neuropil_boundary = manifest['HCR_prob_intenisty_extraction']['neuropil_boundary']
-    neuropil_pooling = manifest['HCR_prob_intenisty_extraction']['neuropil_pooling']
+    neuropil_radius = manifest['HCR_prob_intensity_extraction']['neuropil_radius']
+    neuropil_boundary = manifest['HCR_prob_intensity_extraction']['neuropil_boundary']
+    neuropil_pooling = manifest['HCR_prob_intensity_extraction']['neuropil_pooling']
     # Use the neuropil_pooling list to extract the correct values
     features_to_extract = ['mean']
     for pooling_method in neuropil_pooling:

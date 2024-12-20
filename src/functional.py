@@ -57,7 +57,8 @@ def extract_suite2p_registered_planes(manifest: dict , session: dict):
     reference_HCR_round = verify_rounds(manifest)[1]['image_path']
     while not rotation_file.exists():
         output_string = f'''
-        Missing rotation file for rotating [red]{save_filename_C01}[/red] to {reference_HCR_round}
+        Missing rotation file {rotation_file} 
+        for rotating [red]{save_filename_C01}[/red] to {reference_HCR_round}
         Once you create these files press enter
         '''
         rprint(output_string)

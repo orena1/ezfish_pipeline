@@ -147,7 +147,7 @@ def registarion_apply(manifest):
             print(f"Round {HCR_round_to_register} already registered")
             continue
         full_stack_path.parent.mkdir(exist_ok=True, parents=True)
-        rprint(f"[bold]Applying Registering to round - {HCR_round_to_register}[/bold]")
+        rprint(f"[bold]Applying Registration to round - {HCR_round_to_register}[/bold]")
 
 
         # resolution of the images
@@ -223,7 +223,7 @@ def registarion_apply(manifest):
         
             
 
-def verify_rounds(manifest, parse_registered = False, print_rounds = False, print_registered = False, func='registerion-apply'):
+def verify_rounds(manifest, parse_registered = False, print_rounds = False, print_registered = False, func='registering-apply'):
     '''
     if parse_registered is True, return the rounds that have been registered
     
@@ -288,7 +288,7 @@ def register_rounds(manifest, manifest_path):
 
     round_to_rounds, reference_round, ready_to_apply = verify_rounds(manifest, parse_registered = True)
     rprint("\n[green]Step D:[/green]")
-    rprint(f"Currenlty registartion that are ready to apply are {ready_to_apply}")
-    rprint(f"Press Enter to apply registerion matrix to these rounds {ready_to_apply}")
+    rprint(f"Currently registration that are ready to apply are {ready_to_apply}")
+    rprint(f"Press Enter to apply registeration matrix to these rounds {ready_to_apply}")
     input()
     registarion_apply(manifest)
