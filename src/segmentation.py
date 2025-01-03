@@ -524,7 +524,16 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     rotation_config = params['rotation_2p_to_HCRspec']
 
     cellpose_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'cellpose'
-    stats = np.load(cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg.npy', allow_pickle=True).item()
+    twop_cellpose = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg.npy'
+    while not twop_cellpose.exists():
+        tiff_path = cellpose_path / f'lowres_meanImg_C0_plane{plane}.tiff'
+        output_string = f'''
+        Please run cellpose on plane {tiff_path}
+        once you are done save the file in the cellpose directory as {twop_cellpose}
+        '''
+        rprint(output_string)
+        input()
+    stats = np.load(twop_cellpose, allow_pickle=True).item()
     masks_2p = np.array(stats['masks'])  # Get (x, y) indices per mask
     save_path = output_folder / f"twop_to_HCR{reference_round['round']}.csv"
     if save_path.exists():
