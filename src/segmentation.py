@@ -30,33 +30,34 @@ from .registrations import verify_rounds
 # 2. Allow lazy loading of the model, which can be computationally expensive
 # 3. Centralize the configuration management for Cellpose parameters
 class CellposeModelWrapper:
-    def __init__(self, manifest):
-        self.manifest = manifest
+    def __init__(self, params):
+        self.params = params
         self.model = None
 
     def eval(self, raw_image):
         if self.model is None:
             self.model = models.CellposeModel(
-                pretrained_model=self.manifest['HCR_cellpose']['model_path'],
-                gpu=self.manifest['HCR_cellpose']['gpu']
+                pretrained_model=self.params['HCR_cellpose']['model_path'],
+                gpu=self.params['HCR_cellpose']['gpu']
             )
         
         return self.model.eval(
             raw_image,
             channels=[0,0],
-            diameter=self.manifest['HCR_cellpose']['diameter'],
-            flow_threshold=self.manifest['HCR_cellpose']['flow_threshold'],
-            cellprob_threshold=self.manifest['HCR_cellpose']['cellprob_threshold'],
+            diameter=self.params['HCR_cellpose']['diameter'],
+            flow_threshold=self.params['HCR_cellpose']['flow_threshold'],
+            cellprob_threshold=self.params['HCR_cellpose']['cellprob_threshold'],
             do_3D=True,
         )
 
 def run_cellpose(full_manifest):
     manifest = full_manifest['data']
+    params = full_manifest['params']
     rprint("\n [green]---------------------------Cellpose on Rounds---------------------------- [/green]")
     round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered=True, 
                                                                       print_rounds=True, print_registered=True, func='cellpose')
     
-    model_wrapper = CellposeModelWrapper(manifest)
+    model_wrapper = CellposeModelWrapper(params)
     print(f"Running cellpose for {register_rounds}")
     for HCR_round_to_register in register_rounds + [reference_round['round']]:
         if HCR_round_to_register == reference_round['round']:
@@ -184,15 +185,16 @@ def get_neuropil_mask_square(volume, radius, bound, inds):
 def extract_probs_intensities(full_manifest):
     rprint("\n [green]---------------------------Extract Rounds Intensities ---------------------------- [/green]")
     manifest = full_manifest['data']
+    params = full_manifest['params']
     round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered = True, 
                                                                       print_rounds = True, print_registered = True, func='intensities-extraction')
     
     HCR_fix_image_path = reference_round['image_path'] # The fix image that all other rounds will be registerd to (include all channels!)
 
     # neuropil parameters
-    neuropil_radius = manifest['HCR_probe_intensity_extraction']['neuropil_radius']
-    neuropil_boundary = manifest['HCR_probe_intensity_extraction']['neuropil_boundary']
-    neuropil_pooling = manifest['HCR_probe_intensity_extraction']['neuropil_pooling']
+    neuropil_radius = params['HCR_probe_intensity_extraction']['neuropil_radius']
+    neuropil_boundary = params['HCR_probe_intensity_extraction']['neuropil_boundary']
+    neuropil_pooling = params['HCR_probe_intensity_extraction']['neuropil_pooling']
     
     for HCR_round_to_register in register_rounds + [reference_round['round']]:
         if HCR_round_to_register == reference_round['round']:
@@ -489,6 +491,7 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
 
     rprint("\n [green]---------------------------Align Rounds Masks ---------------------------- [/green]")
     manifest = full_manifest['data']
+    params = full_manifest['params']
     round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered = True, 
                                                                     print_rounds = False, print_registered = False)
     
@@ -561,7 +564,7 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
         rprint(output_string)
         input()
     
-    masks_2p_rotated_to_HCR1_blacked = convex_mask(bigwarp_landmarks_path, masks_2p_rotated_to_HCR1, manifest['2p_to_HCR_params']['convex_masking_distance'])
+    masks_2p_rotated_to_HCR1_blacked = convex_mask(bigwarp_landmarks_path, masks_2p_rotated_to_HCR1, params['2p_to_HCR_params']['convex_masking_distance'])
     tif_imsave(masks_2p_rotated_to_HCR1_blacked_save_path, masks_2p_rotated_to_HCR1_blacked)
 
     mask1_to_mask2_df = match_masks(masks_2p_rotated_to_HCR1, reference_round_masks)
@@ -585,7 +588,8 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
 def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     rprint("\n [green]---------------------------Match Aligned Masks ---------------------------- [/green]")
     manifest = full_manifest['data']
-    
+    params = full_manifest['params']
+
     round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered = True, 
                                                                     print_rounds = False, print_registered = False)
     HCR_intensities_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'extract_intensities'
@@ -595,9 +599,9 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     
     
     # get available features to create merged table for
-    neuropil_radius = manifest['HCR_probe_intensity_extraction']['neuropil_radius']
-    neuropil_boundary = manifest['HCR_probe_intensity_extraction']['neuropil_boundary']
-    neuropil_pooling = manifest['HCR_probe_intensity_extraction']['neuropil_pooling']
+    neuropil_radius = params['HCR_probe_intensity_extraction']['neuropil_radius']
+    neuropil_boundary = params['HCR_probe_intensity_extraction']['neuropil_boundary']
+    neuropil_pooling = params['HCR_probe_intensity_extraction']['neuropil_pooling']
     # Use the neuropil_pooling list to extract the correct values
     features_to_extract = ['mean']
     for pooling_method in neuropil_pooling:
