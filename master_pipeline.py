@@ -22,38 +22,41 @@ def main(args = None):
     session =[]
 
     # Parse the manifest file
-    manifest = mt.main_pipeline_manifest(args.manifest)
-    specs = mt.verify_manifest(manifest, args)
+    full_manifest = mt.main_pipeline_manifest(args.manifest)
+    specs, has_hires = mt.verify_manifest(full_manifest, args)
     
     if not args.only_hcr:
-        session = manifest['two_photons_imaging']['sessions'][0]
-        tl.process_session_sbx(manifest, session)
-    
-        # Unwrap 2P anatomical_runs
-        tl.unwarp_tiles(manifest, session)
+        session = full_manifest['data']['two_photons_imaging']['sessions'][0]
+        if has_hires:
+            tl.process_session_sbx(full_manifest, session)
 
-        # Stitch the tiles sdf sd
-        tl.stitch_tiles_and_rotate(manifest, session)
+            # Unwrap 2P anatomical_runs
+            tl.unwarp_tiles(full_manifest, session)
 
-        # extract registered suite2p planes
-        fc.extract_suite2p_registered_planes(manifest, session)
+            # Stitch the tiles sdf sd
+            tl.stitch_tiles_and_rotate(full_manifest, session)
+
+            # extract registered suite2p planes
+            fc.extract_suite2p_registered_planes(full_manifest, session)
+        else:
+            fc.extract_suite2p_registered_planes(full_manifest, session, combine_with_red=True)
         
     # Register the HCR data round to round
-    rf.register_rounds(manifest, manifest_path=args.manifest)
+    rf.register_rounds(full_manifest)
 
     # Run cellpose on HCR rounds
-    sg.run_cellpose(manifest)
+    sg.run_cellpose(full_manifest)
 
     # Extract probs values from cellpose segmentation
-    sg.extract_probs_intensities(manifest)
+    sg.extract_probs_intensities(full_manifest)
 
     if not args.only_hcr:
-        sg.extract_electrophysiology_intensities(manifest, session)
+        sg.extract_electrophysiology_intensities(full_manifest, session)
 
-    sg.align_masks(manifest, session, only_hcr=args.only_hcr)
+    sg.align_masks(full_manifest, session, only_hcr=args.only_hcr)
 
     # Merge aligned masks to single files
-    sg.merge_masks(manifest, session, only_hcr=args.only_hcr)
+    sg.merge_masks(full_manifest, session, only_hcr=args.only_hcr)
 
     rprint('Pipeline completed successfully!')
 

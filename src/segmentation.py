@@ -50,9 +50,10 @@ class CellposeModelWrapper:
             do_3D=True,
         )
 
-def run_cellpose(manifest):
+def run_cellpose(full_manifest):
+    manifest = full_manifest['data']
     rprint("\n [green]---------------------------Cellpose on Rounds---------------------------- [/green]")
-    round_to_rounds, reference_round, register_rounds = verify_rounds(manifest, parse_registered=True, 
+    round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered=True, 
                                                                       print_rounds=True, print_registered=True, func='cellpose')
     
     model_wrapper = CellposeModelWrapper(manifest)
@@ -180,10 +181,10 @@ def get_neuropil_mask_square(volume, radius, bound, inds):
     return all_masks_locs
 
 
-def extract_probs_intensities(manifest):
+def extract_probs_intensities(full_manifest):
     rprint("\n [green]---------------------------Extract Rounds Intensities ---------------------------- [/green]")
-
-    round_to_rounds, reference_round, register_rounds = verify_rounds(manifest, parse_registered = True, 
+    manifest = full_manifest['data']
+    round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered = True, 
                                                                       print_rounds = True, print_registered = True, func='intensities-extraction')
     
     HCR_fix_image_path = reference_round['image_path'] # The fix image that all other rounds will be registerd to (include all channels!)
@@ -484,11 +485,11 @@ def convex_mask(landmarks_path: str, stack_path: str, Ydist: int):
     return blacked_out_stack_first_channel
 
 
-def align_masks(manifest: dict, session: dict, only_hcr: bool = False):
+def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
 
     rprint("\n [green]---------------------------Align Rounds Masks ---------------------------- [/green]")
-
-    round_to_rounds, reference_round, register_rounds = verify_rounds(manifest, parse_registered = True, 
+    manifest = full_manifest['data']
+    round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered = True, 
                                                                     print_rounds = False, print_registered = False)
     
     reference_round_tiff = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
@@ -581,10 +582,11 @@ def align_masks(manifest: dict, session: dict, only_hcr: bool = False):
     # visualize_match(stack1_image_path, stack1_masks_path, stack2_image_path, stack2_masks_path,
     #                 mask1_to_mask2, output_base_filename)
 
-def merge_masks(manifest: dict, session: dict, only_hcr: bool = False):
+def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     rprint("\n [green]---------------------------Match Aligned Masks ---------------------------- [/green]")
-
-    round_to_rounds, reference_round, register_rounds = verify_rounds(manifest, parse_registered = True, 
+    manifest = full_manifest['data']
+    
+    round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered = True, 
                                                                     print_rounds = False, print_registered = False)
     HCR_intensities_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'extract_intensities'
     HCR_mapping_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'MERGED' / 'aligned_masks'

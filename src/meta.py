@@ -34,6 +34,7 @@ def verify_manifest(manifest, args):
     Verify that the json file is valid
     '''
     #test that only one 2P session is present
+    manifest = manifest['data']
     assert len(manifest['two_photons_imaging']['sessions'])==1, 'only support one 2P sessions'
     base_path = Path(manifest['base_path'])
     mouse_name = manifest['mouse_name']
@@ -76,19 +77,42 @@ def verify_manifest(manifest, args):
             raise Exception(f"unwarp config file does not exist {manifest['two_photons_imaging']['sessions'][0]['unwarp_config']} and not in {new_path}")
         manifest['two_photons_imaging']['sessions'][0]['unwarp_config'] = new_path
     
-    return {'reference_round':reference_round}
+
+    # verify that either the lowres run or the hires run exists
+    if not args.only_hcr:
+        has_hires = False
+        if len(session['anatomical_lowres_green_runs'])==0 and len(session['anatomical_hires_green_runs'])==0:
+            raise Exception("No anatomical green runs found")
+        if len(session['anatomical_lowres_red_runs'])==0 and len(session['anatomical_hires_red_runs'])==0:
+            raise Exception("No anatomical red runs found")
+        assert len(session['anatomical_lowres_green_runs'])==len(session['anatomical_lowres_red_runs']), "Number of lowres green and red runs do not match"
+        assert len(session['anatomical_hires_green_runs'])==len(session['anatomical_hires_red_runs']), "Number of hires green and red runs do not match"
+        if len(session['anatomical_hires_green_runs'])>0:
+            assert len(session['anatomical_lowres_green_runs'])==0, "Cannot have both lowres and hires runs"
+            has_hires = True
+
+    return {'reference_round':reference_round}, has_hires
 
 def main_pipeline_manifest(json_file):
     """
     Parse the pipeline manifest json file and verify that the required fields are present
     """
     manifest = parse_json(json_file)
+    manifest['manifest_path'] = json_file
     required_fields = ['base_path', 'mouse_name']
     for field in required_fields:
-        if field not in manifest:
+        if field not in manifest['data']:
             raise ValueError(f"Required field {field} not found in pipeline manifest")
     
     # ToDo, add more checks here
 
     return manifest
+
+def check_rotation(manifest):
+    manifest = parse_json(manifest['manifest_path'])
+    if 'rotation_2p_to_HCRspec' in manifest['params']:
+        return True
+    else:
+        return False
+
 
