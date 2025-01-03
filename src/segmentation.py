@@ -274,9 +274,10 @@ def extract_probs_intensities(full_manifest):
 
 
 
-def extract_electrophysiology_intensities(manifest: dict , session: dict):
+def extract_electrophysiology_intensities(full_manifest: dict , session: dict):
     #Edited dictionary version
     rprint("\n [green]---------------------------Extract 2P Intensities ---------------------------- [/green]")
+    manifest = full_manifest['data'] 
     mouse_name = manifest['mouse_name']
     date = session['date']
     suite2p_run = session['functional_run'][0]
