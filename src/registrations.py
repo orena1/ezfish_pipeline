@@ -256,7 +256,7 @@ def verify_rounds(full_manifest, parse_registered = False, print_rounds = False,
         for i in selected_registrations['HCR_selected_registrations']['rounds']:
             assert i['round'] in round_to_rounds, f"Round {i['round']} not defined in manifest!"
             selected_registration_path =  Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'registrations'/ f"HCR{i['round']}_to_HCR{reference_round_number}" / i['selected_registrations'][0]
-            assert os.path.exists(selected_registration_path), f"Registration {selected_registration_path} not found although params.hjson says it should be there"
+            assert os.path.exists(selected_registration_path), f"Registration {selected_registration_path} not found although it exists in the manifest params"
 
             round_to_rounds[i['round']]['registrations'] = i['selected_registrations']
             txt_to_rich+= f" {i['round']}"
