@@ -29,8 +29,10 @@ def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combi
     suite2p_path = base_path / mouse_name / '2P' /  f'{mouse_name}_{date}_{suite2p_run}' / 'suite2p'
     save_path = base_path / mouse_name / 'OUTPUT' / '2P' / 'cellpose'
     save_path_registered = base_path / mouse_name / 'OUTPUT' / '2P' / 'registered'
-    save_path_registered.mkdir(exist_ok=True, parents=True)
+
     save_path.mkdir(exist_ok=True, parents=True)
+    save_path_registered.mkdir(exist_ok=True, parents=True)
+
     functional_plane = int(session['functional_plane'][0])
     ops = np.load(suite2p_path / 'plane0/ops.npy',allow_pickle=True).item()
     planes = ops['nplanes']
