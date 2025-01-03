@@ -521,8 +521,7 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     
     rprint("\n [green]---------------------------Align 2P Masks ---------------------------- [/green]")
     plane = session['functional_plane'][0]
-    rotation_file = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'stitched' / 'rotation.txt'
-    rotation_config = hjson.load(open(rotation_file,'r'))
+    rotation_config = params['rotation_2p_to_HCRspec']
 
     cellpose_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'cellpose'
     stats = np.load(cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg.npy', allow_pickle=True).item()
