@@ -59,7 +59,7 @@
         "convex_masking_distance": 40,
     }
 
-    "HCR_prob_intenisty_extraction":{
+    "HCR_probe_intensity_extraction":{
         "neuropil_radius": 25
         "neuropil_boundary": 1
         'neuropil_pooling': ['mean', 'median', 'percentile-20']

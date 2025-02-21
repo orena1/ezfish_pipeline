@@ -13,22 +13,20 @@ from tifffile import imwrite as tif_imwrite
 from tqdm.auto import tqdm, trange
 
 sys.path.append("../../")
-from registrations import (HCR_confocal_imaging, register_lowres,
+from registrations import (HCR_confocal_imaging,
                                  verify_rounds)
+from bigstream_functions import custom_easifish_registration_pipeline, register_lowres
+# Path for bigstream unless you did pip install
+sys.path = [fr"\\nasquatch\data\2p\jonna\Code_Python\Notebooks_Jonna\BigStream\bigstream_v2_andermann"] + sys.path 
+sys.path = [fr"C:\Users\jonna\Notebooks_Jonna\BigStream\bigstream_v2_andermann"] + sys.path 
+sys.path = [fr'{os.getcwd()}/bigstream_v2_andermann'] + sys.path
+sys.path = ["/mnt/nasquatch/data/2p/jonna/Code_Python/Notebooks_Jonna/BigStream/bigstream_v2_andermann"] + sys.path 
+
 
 # Path for bigstream unless you did pip install
-sys.path = [fr"\\nasquatch\data\2p\jonna\Code_Python\Notebooks_Jonna\BigStream\bigstream_github"] + sys.path 
-sys.path = [fr"C:\Users\jonna\Notebooks_Jonna\BigStream\bigstream_github"] + sys.path 
-sys.path = [fr'{os.getcwd()}/bigstream_github'] + sys.path
-sys.path = ["/mnt/nasquatch/data/2p/jonna/Code_Python/Notebooks_Jonna/BigStream/bigstream_github"] + sys.path 
+sys.path = ["/mnt/nasquatch/data/2p/jonna/Code_Python/Notebooks_Jonna/BigStream/bigstream_v2_andermann"] + sys.path 
 
-
-# Path for bigstream unless you did pip install
-sys.path = ["/mnt/nasquatch/data/2p/jonna/Code_Python/Notebooks_Jonna/BigStream/bigstream_github"] + sys.path 
-sys.path.append("../../")
 from bigstream.align import feature_point_ransac_affine_align
-from bigstream.application_pipelines import easifish_registration_pipeline
 from bigstream.piecewise_transform import distributed_apply_transform
 from bigstream.transform import apply_transform
-from registrations import (HCR_confocal_imaging, register_lowres,
-                                 verify_rounds)
+
