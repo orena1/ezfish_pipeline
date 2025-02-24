@@ -90,6 +90,8 @@ def verify_manifest(manifest, args):
         if len(session['anatomical_hires_green_runs'])>0:
             assert len(session['anatomical_lowres_green_runs'])==0, "Cannot have both lowres and hires runs"
             has_hires = True
+    else:
+        has_hires = True
 
     return {'reference_round':reference_round}, has_hires
 
