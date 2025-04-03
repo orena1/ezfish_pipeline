@@ -9,7 +9,7 @@ from bigstream.transform import apply_transform
 from ClusterWrap import cluster as cluster_constructor
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imwrite
-
+import SimpleITK as sitk
 
 def custom_easifish_registration_pipeline(
     fix_lowres,
