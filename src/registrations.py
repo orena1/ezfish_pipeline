@@ -6,7 +6,12 @@ import zarr
 import shutil
 import numpy as np
 from pathlib import Path
-from meta import parse_json
+
+try:
+    from .meta import parse_json  # Relative import (for running as part of a package)
+except ImportError:
+    from meta import parse_json  # Absolute import (for running in Jupyter Notebook)
+    
 from rich.progress import track
 import SimpleITK as sitk
 from rich import print as rprint
