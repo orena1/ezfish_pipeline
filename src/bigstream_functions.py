@@ -9,7 +9,6 @@ from bigstream.transform import apply_transform
 from ClusterWrap import cluster as cluster_constructor
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imwrite
-import SimpleITK as sitk
 
 def custom_easifish_registration_pipeline(
     fix_lowres,
@@ -286,6 +285,7 @@ from bigstream.align import feature_point_ransac_affine_align
 from bigstream.application_pipelines import easifish_registration_pipeline
 from bigstream.transform import apply_transform
 from bigstream.piecewise_transform import distributed_apply_transform
+import SimpleITK as sitk
 
 def get_registration_score(fixed, mov):
     fixed_image = sitk.GetImageFromArray(fixed.astype(np.float32))
