@@ -30,6 +30,7 @@ def custom_easifish_registration_pipeline(
     only_lowres=False,
     fname='',
     no_deform=False,
+    no_global_affine=False,
     overwrite_lowres=False,
     c = {'n_workers': 10, 'threads_per_worker':2},
 ):
@@ -182,7 +183,10 @@ def custom_easifish_registration_pipeline(
         ('ransac', {**a, **global_ransac_kwargs}),
         ('affine', {**b, **global_affine_kwargs}),
     ]
-
+    if no_global_affine:
+        steps = [
+            ('ransac', {**a, **global_ransac_kwargs})
+        ]
     if overwrite_lowres or (not os.path.exists(f'{write_directory}/{fname}_affine.mat') and
                             not os.path.exists(f'{write_directory}/{fname}_affine.npy')):
     
