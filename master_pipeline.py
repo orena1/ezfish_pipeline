@@ -10,6 +10,8 @@ from src import registrations as rf
 from src import meta as mt
 from src import segmentation as sg
 
+from bigstream.piecewise_transform import distributed_apply_transform
+
 # This is the main pipeline script that runs the entire pipeline
 
 # https://drive.google.com/file/d/1HZNh7aqJr-vTsLsSGlFmi11HuEvYlgZ-/view?usp=sharing
