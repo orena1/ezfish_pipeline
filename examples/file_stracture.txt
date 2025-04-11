@@ -67,11 +67,14 @@ ezfish/
             └── HCR
                 ├── registrations
                 │   ├── HCR02_to_HCR01
-                │   │  ├── global_parms_scan
-                │   │  └── local_params_scan
+                │   │  ├── global_params_scan
+                |   |  └── local_params_scan
+                │   │      └── local_params_summary
+                |   |   
                 │   ├── HCR03_to_HCR01
-                │   │  ├── global_parms_scan
-                │   │  └── local_params_scan
+                │   │  ├── global_params_scan
+                |   |  └── local_params_scan
+                │   │      └── local_params_summary
                 |   └── ...
                 |     
                 ├── cellpose
