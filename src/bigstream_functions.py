@@ -15,7 +15,6 @@ from bigstream.application_pipelines import easifish_registration_pipeline
 from bigstream.transform import apply_transform
 from bigstream.piecewise_transform import distributed_apply_transform
 
-
 def custom_easifish_registration_pipeline(
     fix_lowres,
     fix_highres,
@@ -36,6 +35,7 @@ def custom_easifish_registration_pipeline(
     only_lowres=False,
     fname='',
     no_deform=False,
+    no_global_affine=False,
     overwrite_lowres=False,
     c = {'n_workers': 10, 'threads_per_worker':2},
 ):
@@ -188,7 +188,10 @@ def custom_easifish_registration_pipeline(
         ('ransac', {**a, **global_ransac_kwargs}),
         ('affine', {**b, **global_affine_kwargs}),
     ]
-
+    if no_global_affine:
+        steps = [
+            ('ransac', {**a, **global_ransac_kwargs})
+        ]
     if overwrite_lowres or (not os.path.exists(f'{write_directory}/{fname}_affine.mat') and
                             not os.path.exists(f'{write_directory}/{fname}_affine.npy')):
     
@@ -283,10 +286,6 @@ def custom_easifish_registration_pipeline(
         aligned = resample(cluster)
 
     return affine, deform, aligned
-
-
-
-
 
 def get_registration_score(fixed, mov):
     fixed_image = sitk.GetImageFromArray(fixed.astype(np.float32))

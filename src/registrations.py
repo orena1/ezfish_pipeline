@@ -6,18 +6,26 @@ import zarr
 import shutil
 import numpy as np
 from pathlib import Path
-from meta import parse_json
+
+try:
+    from .meta import parse_json  # Relative import (for running as part of a package)
+except ImportError:
+    from meta import parse_json  # Absolute import (for running in Jupyter Notebook)
+    
 from rich.progress import track
 import SimpleITK as sitk
 from rich import print as rprint
 from tifffile import imwrite as tif_imwrite
 from tifffile import imread as tif_imread
 
+
 # Path for bigstream unless you did pip install
 sys.path = [fr"\\nasquatch\data\2p\jonna\Code_Python\Notebooks_Jonna\BigStream\bigstream_v2_andermann"] + sys.path 
 sys.path = [fr"C:\Users\jonna\Notebooks_Jonna\BigStream\bigstream_v2_andermann"] + sys.path 
 sys.path = [fr'{os.getcwd()}/bigstream_v2_andermann'] + sys.path
 sys.path = ["/mnt/nasquatch/data/2p/jonna/Code_Python/Notebooks_Jonna/BigStream/bigstream_v2_andermann"] + sys.path 
+
+from bigstream.piecewise_transform import distributed_apply_transform
 
 
 

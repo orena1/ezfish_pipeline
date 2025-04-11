@@ -7,7 +7,7 @@ import sys
 # supported HCR probs
 HCR_probs = ['CALCA', 'CCK', 'CHAT', 'CHRIMSON', 'DAPI', 'FOXP2', 'GCAMP', 'GLP1R', 'GRP', 'NPR3', 'PDYN', 
              'RORB', 'SST', 'SYT10', 'TAC1', 'VGAT', 'SYT10', 'CD24A', 'GPR101','PDE11A','MC4R','TH','RUNX1','RUNX4',
-            'BRS3', 'TACR1', 'OPRM1', 'ASB4', 'SAMD3', 'EGR1', 'EPHA3','TRHR','SSTR2','FOS']
+            'BRS3', 'TACR1', 'OPRM1','NPY1R', 'ASB4', 'SAMD3', 'SATB2', 'EGR1', 'EPHA3','TRHR','SSTR2','FOS','EBF2','ADRA2A','ADRA1A','ADRA2B','ADRA1B','DRD1']
 
 
 def parse_json(json_file):
