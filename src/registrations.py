@@ -61,7 +61,7 @@ def HCR_confocal_imaging(manifest, only_paths=False):
         return reference_round, mov_rounds
     # register the rounds
 
-def registarion_apply(full_manifest):
+def registration_apply(full_manifest):
     """
     Register the rounds in the manifest that was selected in params.hjson
     """
@@ -90,30 +90,30 @@ def registarion_apply(full_manifest):
         mov_image_spacing = np.array(mov_round['resolution']) # Y,X,Z
 
 
-        # spatial downsampling, probably no need to test. (Changed x and y from 3 to 2 for CIM round 5)
+        # spatial down-sampling, probably no need to test. (Changed x and y from 3 to 2 for CIM round 5)
         red_mut_x = manifest['HCR_to_HCR_params']['red_mut_x']
         red_mut_y = manifest['HCR_to_HCR_params']['red_mut_y']
         red_mut_z = manifest['HCR_to_HCR_params']['red_mut_z']
 
-        fix_lowres_spacing = fix_image_spacing * np.array([red_mut_y,red_mut_x,red_mut_z])
-        mov_lowres_spacing = mov_image_spacing * np.array([red_mut_y,red_mut_x,red_mut_z])
+        fix_lowres_spacing = fix_image_spacing * np.array([red_mut_y, red_mut_x, red_mut_z])
+        mov_lowres_spacing = mov_image_spacing * np.array([red_mut_y, red_mut_x, red_mut_z])
 
 
         # get block size from the registration file
         blocksize_match = re.findall(r'bs(\d+)_(\d+)_(\d+)', Path(round_to_rounds[HCR_round_to_register]['registrations'][0]).name)
         blocksize = [int(num) for num in blocksize_match[0]]
 
-        print("Loding images")
-        HCR_fix_round = tif_imread(HCR_fix_image_path)[:,0]
+        print("Loading images")
+        HCR_fix_round = tif_imread(HCR_fix_image_path)[:, 0]
         HCR_mov_round = tif_imread(HCR_mov_image_path)
 
         # load the registration files
         affine = np.loadtxt(fr"{reg_path}/_affine.mat")
         deform = zarr.load(fr"{reg_path}/deform.zarr")
         data_paths = []
-        fix_highres = HCR_fix_round.transpose(2,1,0) # from Z,X,Y to Y,X,Z
+        fix_highres = HCR_fix_round.transpose(2, 1, 0) # from Z,X,Y to Y,X,Z
 
-        #Loop through channels starting with 1, which ignores the first channel which has already been registered
+        # Loop through channels starting with 1, which ignores the first channel which has already been registered
         for channel in track(range(HCR_mov_round.shape[1]), description="Registering channels"):
             output_channel_path = Path(fr"{reg_path}/out_c{channel}.zarr")
             output_channel_tiff_path = output_channel_path.parent / output_channel_path.name.replace('.zarr','.tiff')
@@ -227,4 +227,4 @@ def register_rounds(full_manifest):
     rprint(f"Currently registration that are ready to apply are {ready_to_apply}")
     rprint(f"Press Enter to apply registeration matrix to these rounds {ready_to_apply}")
     input()
-    registarion_apply(full_manifest)
+    registration_apply(full_manifest)

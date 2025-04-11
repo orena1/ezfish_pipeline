@@ -43,27 +43,38 @@ ezfish/
             |   |    ├── lowres_meanImg_C0_plane0.pkl
             |   |    └── ...
             |   └── registered
-            |        ├── stitched_C01_plane1_rotated.tiff
-            |        ├── stitched_C01_plane1_rotated_TO_HCR1.tiff
-            |        ├── stitched_C01_plane1_rotated_TO_HCR1_landmarks.csv
-            |        ├── stitched_C01_plane1_rotated_TO_HCR1_landmarks_adjusted_VALUE.csv
-            |        ├── stitched_C01_plane1_rotated_TO_HCR1.settings.xml
+            |        # CASE with highres imaging
+            |        ├── higres_C01_plane1_rotated.tiff
+            |        ├── higres_C01_plane1_rotated-bigwarped-HCR1.tiff
+            |        ├── higres_C01_plane1_rotated-bigwarped-HCR1_landmarks.csv
+            |        ├── higres_C01_plane1_rotated-bigwarped-HCR1_landmarks_adjusted_VALUE.csv
+            |        ├── higres_C01_plane1_rotated-bigwarped-HCR1.settings.xml
             |        ├── lowres_meanImg_C0_plane1_rotated.tiff
-            |        ├── lowres_meanImg_C0_plane1_rotated_TO_stack_stitched_C01_plane1.tiff
-            |        ├── lowres_meanImg_C0_plane1_rotated_TO_stack_stitched_C01_plane1_landmarks.csv
-            |        ├── lowres_meanImg_C0_plane1_rotated_TO_stack_stitched_C01_plane1.settings.xml
+            |        ├── lowres_meanImg_C0_plane1_rotated-bigwarped-higres_C01_plane1_rotated.tiff
+            |        ├── lowres_meanImg_C0_plane1_rotated-bigwarped-higres_C01_plane1_rotated_landmarks.csv
+            |        ├── lowres_meanImg_C0_plane1_rotated-bigwarped-higres_C01_plane1_rotated.settings.xml
             |        ├── lowres_meanImg_C0_plane1_masks_rotated.tiff
-            |        ├── lowres_meanImg_C0_plane1_masks_rotated_TO_stack_stitched_C01_plane1.tiff
-            |        ├── lowres_meanImg_C0_plane1_masks_rotated_TO_stack_stitched_C01_plane1_TO_HCR1.tiff
+            |        ├── lowres_meanImg_C0_plane1_masks_rotated-bigwarped-higres_C01_plane1_rotated.tiff
+            |        ├── lowres_meanImg_C0_plane1_masks_rotated-bigwarped-higres_C01_plane1_rotated-bigwarped-HCR1.tiff
+            |        # CASE without highres imaging (only lowres)
+            |        ├── lowres_meanImg_C01_plane1_rotated.tiff
+            |        ├── lowres_meanImg_C01_plane1_rotated-bigwarped-HCR1.tiff
+            |        ├── lowres_meanImg_C01_plane1_rotated-bigwarped-HCR1_landmarks.csv
+            |        ├── lowres_meanImg_C01_plane1_rotated-bigwarped-HCR1.settings.xml
+            |        ├── lowres_meanImg_C0_plane1_masks_rotated.tiff
+            |        ├── lowres_meanImg_C0_plane1_masks_rotated-bigwarped-HCR1.tiff
             |        └── ...
             └── HCR
                 ├── registrations
                 │   ├── HCR02_to_HCR01
-                │   │  ├── global_parms_scan
-                │   │  └── local_params_scan
-                │   ├── HCR02_to_HCR01
-                │   │  ├── global_parms_scan
-                │   │  └── local_params_scan
+                │   │  ├── global_params_scan
+                |   |  └── local_params_scan
+                │   │      └── local_params_summary
+                |   |   
+                │   ├── HCR03_to_HCR01
+                │   │  ├── global_params_scan
+                |   |  └── local_params_scan
+                │   │      └── local_params_summary
                 |   └── ...
                 |     
                 ├── cellpose

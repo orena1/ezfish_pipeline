@@ -7,6 +7,7 @@ from pathlib import Path
 import hjson
 import numpy as np
 import zarr
+import shutil
 from IPython.display import HTML, display
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imwrite
@@ -15,7 +16,7 @@ from tqdm.auto import tqdm, trange
 sys.path.append("../../")
 from registrations import (HCR_confocal_imaging,
                                  verify_rounds)
-from bigstream_functions import custom_easifish_registration_pipeline, register_lowres
+from bigstream_functions import custom_easifish_registration_pipeline, register_lowres, get_registration_score
 # Path for bigstream unless you did pip install
 sys.path = [fr"\\nasquatch\data\2p\jonna\Code_Python\Notebooks_Jonna\BigStream\bigstream_v2_andermann"] + sys.path 
 sys.path = [fr"C:\Users\jonna\Notebooks_Jonna\BigStream\bigstream_v2_andermann"] + sys.path 
