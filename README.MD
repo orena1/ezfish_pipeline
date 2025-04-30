@@ -34,4 +34,4 @@ SA - Semi-Automatic
     - find the correct paramters that are good for highres
     - set the correct parameters in the OUTPUT/params.hjson file
     - apply registration to all channels in rounds
-7. 
+7. .
