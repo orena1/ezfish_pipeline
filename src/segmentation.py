@@ -398,7 +398,7 @@ def convex_mask(landmarks_path: str, stack_path: str, Ydist: int):
     bottom_points[:, 2] -= Ydist  # Shift down by Ydist microns
 
     # Image resolution factors to convert microns to voxels
-    resolution = [1.263, 1.263, 5.0]  # [X, Y, Z] in microns
+    resolution = full_manifest['data']['HCR_confocal_imaging']['rounds'][0]['resolution']
 
     # Convert point coordinates from microns to voxels
     top_points[:, 0] /= resolution[0]  # Scale X 
@@ -573,7 +573,7 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
         rprint(output_string)
         input()
     
-    masks_2p_rotated_to_HCR1_blacked = convex_mask(bigwarp_landmarks_path, masks_2p_rotated_to_HCR1, params['2p_to_HCR_params']['convex_masking_distance'])
+    masks_2p_rotated_to_HCR1_blacked = convex_mask(bigwarp_landmarks_path, masks_2p_rotated_to_HCR1, params['2p_to_HCR_params']['convex_masking_distance'], full_manifest)
     tif_imsave(masks_2p_rotated_to_HCR1_blacked_save_path, masks_2p_rotated_to_HCR1_blacked)
 
     mask1_to_mask2_df = match_masks(masks_2p_rotated_to_HCR1, reference_round_masks)
