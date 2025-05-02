@@ -73,7 +73,7 @@ def unwarp_tiles(full_manifest: dict, session: dict):
 
 def process_session_sbx(full_manifest: dict , session:dict):
     '''
-    extract the mean of analtomical hires green and red runs to tiff file in the correct pathways.
+    extract the mean of anatomical hires green and red runs to tiff file in the correct pathways.
     manifest: json dict
     session: the session to process, extracted from the manifest 
     '''
@@ -145,7 +145,7 @@ def stitch_tiles_and_rotate(full_manifest: dict, session: dict):
     reference_HCR_round = verify_rounds(full_manifest)[1]['image_path']
     while not stitched_file_C01.exists() or not check_rotation(full_manifest):
         output_string = f'''
-        need to stitch the files using bigstitcher or other software, 
+        need to stitch the files using big-stitcher or other software, 
         input unwarped files are - [red]{unwarped_path}[/red]
         output file is - [green]{stitched_file_C01}[/green]
         we also need a rotation specs in {full_manifest['manifest_path']} that contains the rotation to fit {reference_HCR_round}

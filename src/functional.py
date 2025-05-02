@@ -40,7 +40,7 @@ def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combi
     for plane in track(range(planes), description='Extracting suite2p registered planes'):
         ## Extract the mean of the registered plane
 
-        save_filename = save_path / f'meanImg_C0_plane{plane}.tiff'
+        save_filename = save_path / f'lowres_meanImg_C0_plane{plane}.tiff'
         if save_filename.exists():
             print(f'{save_filename} already exists')
             continue
@@ -50,7 +50,7 @@ def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combi
         tif_imwrite(save_filename, img)
 
     if combine_with_red:
-        save_filename_C01 = save_path / f'meanImg_C01_plane{functional_plane}.tiff'
+        save_filename_C01 = save_path / f'lowres_meanImg_C01_plane{functional_plane}.tiff'
         if not save_filename_C01.exists():
             img = tif_imread(save_filename)
             
@@ -66,7 +66,7 @@ def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combi
         channels_needed = 'C01'
 
     # rotate and flip the selected functional plane
-    save_filename_C = save_path / f'meanImg_{channels_needed}_plane{functional_plane}.tiff'
+    save_filename_C = save_path / f'lowres_meanImg_{channels_needed}_plane{functional_plane}.tiff'
     save_filename_rotated = save_path_registered / f'{save_filename_C.stem}_rotated.tiff'
     
     if save_filename_rotated.exists():
