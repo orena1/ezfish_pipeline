@@ -541,9 +541,6 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
         return
     # Check the shape and type of masks_2p before rotation
     print(f"'masks_2p' type: {type(masks_2p)}, shape: {masks_2p.shape}")
-    
-    # Check the shape of individual masks
-    print(f"Individual mask shapes: {[mask.shape for mask in masks_2p]}")
 
     for k in rotation_config:
         if k == 'rotation' and rotation_config[k]:
@@ -558,9 +555,10 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     masks_2p_rotated_path = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated.tiff'
     tif_imsave(masks_2p_rotated_path,  masks_2p_rotated.astype(np.uint16))
 
-    masks_2p_rotated_to_HCR1 = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_bigwarped_to_HCR1.tiff'
-    masks_2p_rotated_to_HCR1_blacked_save_path = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_bigwarped_to_HCR1_blacked.tiff'
-    bigwarp_landmarks_path =  Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered' /  f'stitched_C01_plane{plane}_rotated_TO_HCR1_landmarks.csv'
+    reg_save_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered'
+    masks_2p_rotated_to_HCR1 = reg_save_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_bigwarped_to_HCR1.tiff'
+    masks_2p_rotated_to_HCR1_blacked_save_path = reg_save_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_bigwarped_to_HCR1_blacked.tiff'
+    bigwarp_landmarks_path =  reg_save_path /  f'stitched_C01_plane{plane}_rotated_TO_HCR1_landmarks.csv'
 
     # saved rotated masks_2p
     while not masks_2p_rotated_to_HCR1.exists() or not bigwarp_landmarks_path.exists():
@@ -568,7 +566,7 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
         Please apply bigwarp on masks in {masks_2p_rotated_path}, two steps required
         step 1 - low res to high res transform
         setp 2 - high res to HCR Round 1 transform
-        once you are done save the file in the cellpose directory as {masks_2p_rotated_to_HCR1}
+        once you are done save the file in the registered directory as {masks_2p_rotated_to_HCR1}
         and also save step 2 landmarks in {bigwarp_landmarks_path}
         '''
         rprint(output_string)
