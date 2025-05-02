@@ -370,7 +370,7 @@ def match_masks(stack1_masks_path: np.ndarray, stack2_masks_path: np.ndarray) ->
 ## MAKE SURE TO ALWAYS LEAVE ONE CONSTANT AS HCR 1, DON'T SWITCH THE IDENTITIES
 #Output dataframes (dfs) saved in the HCR round folder in NASQUATCH for now
 
-def convex_mask(landmarks_path: str, stack_path: str, Ydist: int):
+def convex_mask(landmarks_path: str, stack_path: str, Ydist: int, full_manifest: dict):
     '''
     Use landmarks to create two boundary surfaces and mask out everything outside them.
 
