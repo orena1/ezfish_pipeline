@@ -284,7 +284,7 @@ def extract_electrophysiology_intensities(full_manifest: dict , session: dict):
 
     suite2p_path = Path(manifest['base_path']) / manifest['mouse_name'] / '2P' /  f'{mouse_name}_{date}_{suite2p_run}' / 'suite2p'
     save_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'suite2p'
-    cellpose_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'cellpose'
+    cellpose_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered'
     save_path.mkdir(exist_ok=True, parents=True)
     functional_plane = session['functional_plane'][0]
 
@@ -535,7 +535,7 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
         input()
     stats = np.load(twop_cellpose, allow_pickle=True).item()
     masks_2p = np.array(stats['masks'])  # Get (x, y) indices per mask
-    save_path = output_folder / f"twop_to_HCR{reference_round['round']}.csv"
+    save_path = output_folder / f"twop_plane{plane}_to_HCR{reference_round['round']}.csv"
     if save_path.exists():
         print(f"2p masks alignment already exists for plane {plane} - skipping")
         return
@@ -543,6 +543,7 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     print(f"'masks_2p' type: {type(masks_2p)}, shape: {masks_2p.shape}")
     
     # Check the shape of individual masks
+    print(f"Individual mask shapes: {[mask.shape for mask in masks_2p]}")
 
     for k in rotation_config:
         if k == 'rotation' and rotation_config[k]:
@@ -598,6 +599,8 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     rprint("\n [green]---------------------------Match Aligned Masks ---------------------------- [/green]")
     manifest = full_manifest['data']
     params = full_manifest['params']
+    
+    plane = session['functional_plane'][0]
 
     round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered = True, 
                                                                     print_rounds = False, print_registered = False)
@@ -626,7 +629,7 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     
     
     for feature in features_to_extract:
-        merged_table_file_path = merged_table_path / f'full_table_{feature}.pkl'
+        merged_table_file_path = merged_table_path / f'full_table_{feature}_twop_plane{plane}.pkl'
         if merged_table_file_path.exists():
             print(f"Feature extraction already merged for {feature} - skipping")
             continue
@@ -635,7 +638,7 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
             twoP_mapping_dict = {0:0}
         else:
             # load 2p mapping
-            towP_to_reference_mapping = pd.read_csv(HCR_mapping_path / f"twop_to_HCR{reference_round['round']}.csv")
+            towP_to_reference_mapping = pd.read_csv(HCR_mapping_path / f"twop_plane{plane}_to_HCR{reference_round['round']}.csv")
             twoP_mapping_dict = {mask_2:mask_1 for mask_1,mask_2 in towP_to_reference_mapping[['mask1','mask2']].values}
 
         # load reference round intensities
