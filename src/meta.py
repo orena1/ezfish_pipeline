@@ -39,6 +39,8 @@ def verify_manifest(manifest, args):
     base_path = Path(manifest['base_path'])
     mouse_name = manifest['mouse_name']
     date_two_photons = manifest['two_photons_imaging']['sessions'][0]['date']
+    session = manifest['two_photons_imaging']['sessions'][0]
+
 
     #test that reference round exists
     reference_round = manifest['HCR_confocal_imaging']['reference_round']
@@ -55,7 +57,6 @@ def verify_manifest(manifest, args):
 
     # verify that all 2p runs exists.
     if not args.only_hcr:
-        session = manifest['two_photons_imaging']['sessions'][0]
         check_results = []
         for k in session:
             if '_run' in k:
@@ -79,8 +80,8 @@ def verify_manifest(manifest, args):
     
 
     # verify that either the lowres run or the hires run exists
+    has_hires = False
     if not args.only_hcr:
-        has_hires = False
         if len(session['anatomical_lowres_green_runs'])==0 and len(session['anatomical_hires_green_runs'])==0:
             raise Exception("No anatomical green runs found")
         if len(session['anatomical_lowres_red_runs'])==0 and len(session['anatomical_hires_red_runs'])==0:
@@ -91,7 +92,7 @@ def verify_manifest(manifest, args):
             assert len(session['anatomical_lowres_green_runs'])==0, "Cannot have both lowres and hires runs"
             has_hires = True
 
-    return {'reference_round':reference_round}, has_hires
+    return {'reference_round':reference_round, 'session':session}, has_hires
 
 def main_pipeline_manifest(json_file):
     """
