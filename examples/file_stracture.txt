@@ -1,4 +1,4 @@
-This is the data-stracture that is required to use our pipeline.
+This is the data-structure that is required to use our pipeline.
 See demo.json for the corresponding 
 ezfish/
 └── jonna/

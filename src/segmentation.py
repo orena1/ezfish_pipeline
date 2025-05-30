@@ -284,7 +284,7 @@ def extract_electrophysiology_intensities(full_manifest: dict , session: dict):
 
     suite2p_path = Path(manifest['base_path']) / manifest['mouse_name'] / '2P' /  f'{mouse_name}_{date}_{suite2p_run}' / 'suite2p'
     save_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'suite2p'
-    cellpose_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'cellpose'
+    cellpose_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered'
     save_path.mkdir(exist_ok=True, parents=True)
     functional_plane = session['functional_plane'][0]
 
@@ -370,7 +370,7 @@ def match_masks(stack1_masks_path: np.ndarray, stack2_masks_path: np.ndarray) ->
 ## MAKE SURE TO ALWAYS LEAVE ONE CONSTANT AS HCR 1, DON'T SWITCH THE IDENTITIES
 #Output dataframes (dfs) saved in the HCR round folder in NASQUATCH for now
 
-def convex_mask(landmarks_path: str, stack_path: str, Ydist: int):
+def convex_mask(landmarks_path: str, stack_path: str, Ydist: int, full_manifest: dict):
     '''
     Use landmarks to create two boundary surfaces and mask out everything outside them.
 
@@ -535,14 +535,12 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
         input()
     stats = np.load(twop_cellpose, allow_pickle=True).item()
     masks_2p = np.array(stats['masks'])  # Get (x, y) indices per mask
-    save_path = output_folder / f"twop_to_HCR{reference_round['round']}.csv"
+    save_path = output_folder / f"twop_plane{plane}_to_HCR{reference_round['round']}.csv"
     if save_path.exists():
         print(f"2p masks alignment already exists for plane {plane} - skipping")
         return
     # Check the shape and type of masks_2p before rotation
     print(f"'masks_2p' type: {type(masks_2p)}, shape: {masks_2p.shape}")
-    
-    # Check the shape of individual masks
 
     for k in rotation_config:
         if k == 'rotation' and rotation_config[k]:
@@ -557,9 +555,10 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     masks_2p_rotated_path = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated.tiff'
     tif_imsave(masks_2p_rotated_path,  masks_2p_rotated.astype(np.uint16))
 
-    masks_2p_rotated_to_HCR1 = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_bigwarped_to_HCR1.tiff'
-    masks_2p_rotated_to_HCR1_blacked_save_path = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_bigwarped_to_HCR1_blacked.tiff'
-    bigwarp_landmarks_path =  Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered' /  f'stitched_C01_plane{plane}_rotated_TO_HCR1_landmarks.csv'
+    reg_save_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered'
+    masks_2p_rotated_to_HCR1 = reg_save_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_bigwarped_to_HCR1.tiff'
+    masks_2p_rotated_to_HCR1_blacked_save_path = reg_save_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_bigwarped_to_HCR1_blacked.tiff'
+    bigwarp_landmarks_path =  reg_save_path /  f'stitched_C01_plane{plane}_rotated_TO_HCR1_landmarks.csv'
 
     # saved rotated masks_2p
     while not masks_2p_rotated_to_HCR1.exists() or not bigwarp_landmarks_path.exists():
@@ -567,7 +566,7 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
         Please apply bigwarp on masks in {masks_2p_rotated_path}, two steps required
         step 1 - low res to high res transform
         setp 2 - high res to HCR Round 1 transform
-        once you are done save the file in the cellpose directory as {masks_2p_rotated_to_HCR1}
+        once you are done save the file in the registered directory as {masks_2p_rotated_to_HCR1}
         and also save step 2 landmarks in {bigwarp_landmarks_path}
         '''
         rprint(output_string)
@@ -598,6 +597,8 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     rprint("\n [green]---------------------------Match Aligned Masks ---------------------------- [/green]")
     manifest = full_manifest['data']
     params = full_manifest['params']
+    
+    plane = session['functional_plane'][0]
 
     round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered = True, 
                                                                     print_rounds = False, print_registered = False)
@@ -626,7 +627,7 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     
     
     for feature in features_to_extract:
-        merged_table_file_path = merged_table_path / f'full_table_{feature}.pkl'
+        merged_table_file_path = merged_table_path / f'full_table_{feature}_twop_plane{plane}.pkl'
         if merged_table_file_path.exists():
             print(f"Feature extraction already merged for {feature} - skipping")
             continue
@@ -635,7 +636,7 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
             twoP_mapping_dict = {0:0}
         else:
             # load 2p mapping
-            towP_to_reference_mapping = pd.read_csv(HCR_mapping_path / f"twop_to_HCR{reference_round['round']}.csv")
+            towP_to_reference_mapping = pd.read_csv(HCR_mapping_path / f"twop_plane{plane}_to_HCR{reference_round['round']}.csv")
             twoP_mapping_dict = {mask_2:mask_1 for mask_1,mask_2 in towP_to_reference_mapping[['mask1','mask2']].values}
 
         # load reference round intensities
