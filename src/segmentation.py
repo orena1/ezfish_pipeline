@@ -541,7 +541,7 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     rprint("="*80 + "\n")
 
     rprint("\n" + "="*80)
-    rprint("[bold green] Align 2P Masks[bold green]")
+    rprint("[bold green] Align 2P Masks[/bold green]")
     rprint("="*80)
 
     plane = session['functional_plane'][0]
