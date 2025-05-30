@@ -21,7 +21,7 @@ from rich import print as rprint
 from scipy.spatial import Delaunay, ConvexHull
 from scipy.interpolate import LinearNDInterpolator
 from .registrations import verify_rounds
-
+from .functional import get_number_of_suite2p_planes
 
 # CellposeModelWrapper class
 # This class encapsulates the Cellpose model and its configuration.
@@ -53,7 +53,10 @@ class CellposeModelWrapper:
 def run_cellpose(full_manifest):
     manifest = full_manifest['data']
     params = full_manifest['params']
-    rprint("\n [green]---------------------------Cellpose on Rounds---------------------------- [/green]")
+    rprint("\n" + "="*80)
+    rprint("[bold green] Cellpose on Rounds [/bold green]")
+    rprint("="*80)
+
     round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered=True, 
                                                                       print_rounds=True, print_registered=True, func='cellpose')
     
@@ -78,6 +81,10 @@ def run_cellpose(full_manifest):
         
         tif_imsave(output_path, masks)
         print(f"Cellpose segmentation saved for {round_folder_name} - {output_path}")
+    
+    rprint("\n" + "="*80)
+    rprint("[bold green]✨ Cellpose on Rounds COMPLETE[/bold green]")
+    rprint("="*80 + "\n")
 
 def compute_M(data):
     cols = np.arange(data.size)
@@ -183,7 +190,10 @@ def get_neuropil_mask_square(volume, radius, bound, inds):
 
 
 def extract_probs_intensities(full_manifest):
-    rprint("\n [green]---------------------------Extract Rounds Intensities ---------------------------- [/green]")
+    rprint("\n" + "="*80)
+    rprint("[bold green] Extract Rounds Intensities[/bold green]")
+    rprint("="*80)
+
     manifest = full_manifest['data']
     params = full_manifest['params']
     round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered = True, 
@@ -270,13 +280,18 @@ def extract_probs_intensities(full_manifest):
         df.to_csv(csv_output_path)
         df.to_pickle(pkl_output_path)
         print(f"Intensities extracted and saved for {round_folder_name} - {pkl_output_path}_probs_intensities.csv")
-        
+    rprint("\n" + "="*80)
+    rprint("[bold green]✨ Extract Rounds Intensities COMPLETE[/bold green]")
+    rprint("="*80 + "\n")
 
 
 
 def extract_electrophysiology_intensities(full_manifest: dict , session: dict):
     #Edited dictionary version
-    rprint("\n [green]---------------------------Extract 2P Intensities ---------------------------- [/green]")
+    rprint("\n" + "="*80)
+    rprint("[bold green] Extract 2P Intensities[/bold green]")
+    rprint("="*80)
+
     manifest = full_manifest['data'] 
     mouse_name = manifest['mouse_name']
     date = session['date']
@@ -288,9 +303,7 @@ def extract_electrophysiology_intensities(full_manifest: dict , session: dict):
     save_path.mkdir(exist_ok=True, parents=True)
     functional_plane = session['functional_plane'][0]
 
-    ops = np.load(suite2p_path / 'plane0/ops.npy',allow_pickle=True).item()
-
-    planes = ops['nplanes']
+    planes = get_number_of_suite2p_planes(suite2p_path)
     # Assuming `planes`, `suite2p_path`, `savepath`, `mouse`, `run`, and `ops` are defined
     for plane in [functional_plane]:
         pkl_save_path = save_path / f'lowres_meanImg_C0_plane{plane}.pkl'
@@ -324,7 +337,9 @@ def extract_electrophysiology_intensities(full_manifest: dict , session: dict):
                   'mean_frames': mean_frames}, 
                   open(pkl_save_path, 'wb'))
 
-
+    rprint("\n" + "="*80)
+    rprint("[bold green] Extract 2P Intensities COMPLETE[/bold green]")
+    rprint("="*80 + "\n")
 
 def match_masks(stack1_masks_path: np.ndarray, stack2_masks_path: np.ndarray) -> dict:
     '''
@@ -490,7 +505,10 @@ def convex_mask(landmarks_path: str, stack_path: str, Ydist: int):
 
 def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
 
-    rprint("\n [green]---------------------------Align Rounds Masks ---------------------------- [/green]")
+    rprint("\n" + "="*80)
+    rprint("[bold green] Align Rounds Masks[bold green]")
+    rprint("="*80)
+
     manifest = full_manifest['data']
     params = full_manifest['params']
     round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered = True, 
@@ -518,8 +536,14 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     if only_hcr:
         print("Skipping 2p masks alignment")
         return
-    
-    rprint("\n [green]---------------------------Align 2P Masks ---------------------------- [/green]")
+    rprint("\n" + "="*80)
+    rprint("[bold green] HCR Rounds Registrations COMPLETE[/bold green]")
+    rprint("="*80 + "\n")
+
+    rprint("\n" + "="*80)
+    rprint("[bold green] Align 2P Masks[bold green]")
+    rprint("="*80)
+
     plane = session['functional_plane'][0]
     rotation_config = params['rotation_2p_to_HCRspec']
 
@@ -538,6 +562,10 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     save_path = output_folder / f"twop_to_HCR{reference_round['round']}.csv"
     if save_path.exists():
         print(f"2p masks alignment already exists for plane {plane} - skipping")
+        rprint("\n" + "="*80)
+        rprint("[bold green] Align 2P Masks COMPLETE[/bold green]")
+        rprint("="*80 + "\n")
+        
         return
     # Check the shape and type of masks_2p before rotation
     print(f"'masks_2p' type: {type(masks_2p)}, shape: {masks_2p.shape}")
@@ -578,8 +606,9 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
 
     mask1_to_mask2_df = match_masks(masks_2p_rotated_to_HCR1, reference_round_masks)
     mask1_to_mask2_df.to_csv(save_path)
-    print("### 2p masks alignment - start")
-
+    rprint("\n" + "="*80)
+    rprint("[bold green] Align 2P Masks COMPLETE[/bold green]")
+    rprint("="*80 + "\n")
 
 
 
@@ -595,7 +624,10 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     #                 mask1_to_mask2, output_base_filename)
 
 def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
-    rprint("\n [green]---------------------------Match Aligned Masks ---------------------------- [/green]")
+    rprint("\n" + "="*80)
+    rprint("[bold green] Match Aligned Masks[bold green]")
+    rprint("="*80)
+
     manifest = full_manifest['data']
     params = full_manifest['params']
 
@@ -700,3 +732,7 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
         pd.set_option('display.max_columns', None)
         print(f'final table saved to {merged_table_file_path}')
         HCR_main_pivot_merged.to_pickle(merged_table_file_path)
+
+    rprint("\n" + "="*80)
+    rprint("[bold green] Match Aligned Masks COMPLETE[/bold green]")
+    rprint("="*80 + "\n")
