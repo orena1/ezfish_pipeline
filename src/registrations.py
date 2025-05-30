@@ -197,6 +197,36 @@ def verify_rounds(full_manifest, parse_registered = False, print_rounds = False,
         if print_registered: rprint(txt_to_rich)
     return round_to_rounds, reference_round, ready_to_apply
 
+# def register_rounds(full_manifest):
+#     """
+#     Register the rounds in the manifest
+#     """
+#     manifest = full_manifest['data']
+#     round_to_rounds, reference_round, ready_to_apply = verify_rounds(full_manifest)
+    
+#     rprint("\n [green]---------START----------------Registering rounds--------------START------------ [/green]")
+#     rprint(f"There are {len(manifest['HCR_confocal_imaging']['rounds'])} HCR rounds in the manifest, registration is done round to round using jupyter notebooks")
+
+#     rprint("\n[green]Step A:[/green]")
+#     rprint("Open the notebook ezfish_pipeline/src/processing_notebooks/HCR_rounds/1_scan_lowres_parameters.ipynb")
+#     rprint(f"Change the manifest path to this = {full_manifest['manifest_path']}")
+
+#     rprint("\n[green]Step B:[/green]")
+#     rprint("Open the notebook ezfish_pipeline/src/processing_notebooks/HCR_rounds/2_scan_highres_parameters.ipynb")
+#     rprint(f"Change the manifest path to this = {full_manifest['manifest_path']}")
+    
+#     rprint("\n[green]Step C:[/green]")
+#     rprint(f"add HCR_selected_registrations to {full_manifest['manifest_path']} file to select the rounds you want to register")
+#     rprint(f"Once files everything is set Press [bold]Enter[/bold] to load the HCR_selected_registrations")
+#     input()
+
+#     round_to_rounds, reference_round, ready_to_apply = verify_rounds(full_manifest, parse_registered = True)
+#     rprint("\n[green]Step D:[/green]")
+#     rprint(f"Currently registration that are ready to apply are {ready_to_apply}")
+#     rprint(f"Press Enter to apply registration matrix to these rounds {ready_to_apply}")
+#     input()
+#     registration_apply(full_manifest)
+#     rprint("\n [blue]---------END----------------Registering rounds--------------END------------ [/blue]\n\n\n\n\n")
 
 
 def register_rounds(full_manifest):
@@ -206,25 +236,46 @@ def register_rounds(full_manifest):
     manifest = full_manifest['data']
     round_to_rounds, reference_round, ready_to_apply = verify_rounds(full_manifest)
     
-    rprint("\n [green]---------------------------Registering rounds---------------------------- [/green]")
-    rprint(f"There are {len(manifest['HCR_confocal_imaging']['rounds'])} HCR rounds in the manifest, registartion is done round to round using juptyer notebooks")
+    # Clean header
+    rprint("\n" + "="*80)
+    rprint("[bold green] HCR Rounds Registrations[bold green]")
+    rprint("="*80)
+    rprint(f"Found {len(manifest['HCR_confocal_imaging']['rounds'])} HCR rounds in manifest")
+    rprint("Registration process uses step-by-step jupyter notebooks\n")
 
-    rprint("\n[green]Step A:[/green]")
-    rprint("Open the notebook ezfish_pipeline/src/processing_notebooks/HCR_rounds/1_scan_lowres_parameters.ipynb")
-    rprint(f"Change the manifest path to this = {full_manifest['manifest_path']}")
+    # Step A
+    rprint("[bold cyan] Step 1): Configure Low-Resolution Parameters[/bold cyan]")
+    rprint("   Notebook: [blue]ezfish_pipeline/src/processing_notebooks/HCR_rounds/1_scan_lowres_parameters.ipynb[/blue]")
+    rprint(f"   Manifest: [yellow]{full_manifest['manifest_path']}[/yellow]\n")
 
-    rprint("\n[green]Step B:[/green]")
-    rprint("Open the notebook ezfish_pipeline/src/processing_notebooks/HCR_rounds/2_scan_highres_parameters.ipynb")
-    rprint(f"Change the manifest path to this = {full_manifest['manifest_path']}")
+    # Step B  
+    rprint("[bold cyan] Step 2): Configure High-Resolution Parameters[/bold cyan]")
+    rprint("   Notebook: [blue]ezfish_pipeline/src/processing_notebooks/HCR_rounds/2_scan_highres_parameters.ipynb[/blue]")
+    rprint(f"   Manifest: [yellow]{full_manifest['manifest_path']}[/yellow]\n")
     
-    rprint("\n[green]Step C:[/green]")
-    rprint(f"add HCR_selected_registrations to {full_manifest['manifest_path']} file to select the rounds you want to register")
-    rprint(f"Once files everyting is set Press [bold]Enter[/bold] to load the HCR_selected_registrations")
+    # Step C
+    rprint("[bold cyan] Step 3): Select Registration Rounds[/bold cyan]")
+    rprint(f"   • Add 'HCR_selected_registrations' to: [yellow]{full_manifest['manifest_path']}[/yellow]")
+    rprint("   • This will specify which rounds you want to register")
+    rprint("\n[bold]Press [green]Enter[/green] when configuration is complete...[/bold]")
     input()
 
+    # Reload and verify
     round_to_rounds, reference_round, ready_to_apply = verify_rounds(full_manifest, parse_registered = True)
-    rprint("\n[green]Step D:[/green]")
-    rprint(f"Currently registration that are ready to apply are {ready_to_apply}")
-    rprint(f"Press Enter to apply registeration matrix to these rounds {ready_to_apply}")
-    input()
-    registration_apply(full_manifest)
+    rprint("[green]✅ Configuration loaded successfully[/green]\n")
+
+    # Step D
+    rprint("[bold cyan] Step 4): Apply Registration[/bold cyan]")
+    if ready_to_apply:
+        rprint(f"    Rounds ready for registration: [green]{', '.join(ready_to_apply)}[/green]")
+        rprint("\n[bold]Press [green]Enter[/green] to apply registration matrix...[/bold]")
+        input()
+        registration_apply(full_manifest)
+        rprint("\n[green]✅ Registration applied successfully[/green]")
+    else:
+        rprint("   [yellow]⚠️  No rounds ready for registration[/yellow]")
+    
+    # Clean footer
+    rprint("\n" + "="*80)
+    rprint("[bold green] HCR Rounds Registrations COMPLETE[/bold green]")
+    rprint("="*80 + "\n")

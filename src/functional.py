@@ -13,6 +13,26 @@ from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imwrite
 from sbxreader import sbx_get_metadata, sbx_memmap
 
+def get_number_of_suite2p_planes(suite2p_path: Path):
+    """
+    Get the number of planes in a suite2p run.
+    The ops file is very big (300MBs) so it will try to write a cache file
+    with the number of planes.
+    """
+    cache_file = suite2p_path / 'plane0' / 'nplanes_cache.txt'
+    if not cache_file.exists() or \
+        (suite2p_path / 'plane0' / 'ops.npy').stat().st_mtime > cache_file.stat().st_mtime:
+        # if the cache file does not exist or is older than the ops file,
+        ops = np.load(suite2p_path / 'plane0/ops.npy', allow_pickle=True).item()
+        nplanes = ops['nplanes']
+        with open(cache_file, 'w') as f:
+            f.write(str(nplanes))
+
+    with open(cache_file, 'r') as f:
+        nplanes = int(f.read())
+    return nplanes
+
+
 def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combine_with_red = False):
     '''
     extract the mean of registered plane from the functional run of suite2p
@@ -34,8 +54,7 @@ def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combi
     save_path_registered.mkdir(exist_ok=True, parents=True)
 
     functional_plane = int(session['functional_plane'][0])
-    ops = np.load(suite2p_path / 'plane0/ops.npy',allow_pickle=True).item()
-    planes = ops['nplanes']
+    planes = get_number_of_suite2p_planes(suite2p_path)
     channels_needed = 'C0'
     for plane in track(range(planes), description='Extracting suite2p registered planes'):
         ## Extract the mean of the registered plane
