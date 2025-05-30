@@ -310,7 +310,7 @@ def extract_electrophysiology_intensities(full_manifest: dict , session: dict):
         if pkl_save_path.exists():
             print(f"2p activity already extracted for plane {plane} - skipping")
             continue
-
+        ops = np.load(suite2p_path / f'plane0/ops.npy', allow_pickle=True).item()
         # Set up binary file
         bin_file = binary.BinaryFile(filename=suite2p_path / f'plane{plane}' / 'data.bin', Lx=ops['Lx'], Ly=ops['Ly'])
         # Move data to a numpy array
