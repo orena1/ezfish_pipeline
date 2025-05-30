@@ -7,7 +7,7 @@
 				{"date":"231016",
 				"functional_run":["001"],
 				// only one plane is currenlty supported
-				"functional_plane":["2"],  //plane notation is 0 1 2mnjhjhnjhnjnh opoa
+				"functional_plane":["1","2"],  //plane notation is 0 1 2mnjhjhnjhnjnh opoa
 				"anatomical_lowres_green_runs":[], //not using anatomical lowres/knobby currently
 				"anatomical_lowres_red_runs":[],
 				"anatomical_hires_green_runs":["004", "005", "006"],
