@@ -19,14 +19,27 @@ def main(args = None):
     We can either start main with arguments or from command line 
     See README.md for more information
     '''
-    session =[]
+    session = []
 
     # Parse the manifest file
     full_manifest = mt.main_pipeline_manifest(args.manifest)
     specs, has_hires = mt.verify_manifest(full_manifest, args)
-    
-    if not args.only_hcr:
+    if args.only_hcr:
+        process_plane(args, full_manifest, session, has_hires)
+    else:
         session = full_manifest['data']['two_photons_imaging']['sessions'][0]
+        functional_planes = list(session['functional_plane'])
+        for functional_plane in functional_planes:
+            session['functional_plane'] = [functional_plane]
+            rprint(f"\n[bold cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/bold cyan]")
+            rprint(f"[bold yellow]  🔬 Processing functional plane {functional_plane}[/bold yellow]")
+            rprint(f"[bold cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/bold cyan]\n")
+            process_plane(args, full_manifest, session, has_hires)
+
+def process_plane(args, full_manifest, session, has_hires):
+
+    if not args.only_hcr:
+
         if has_hires:
             tl.process_session_sbx(full_manifest, session)
 
