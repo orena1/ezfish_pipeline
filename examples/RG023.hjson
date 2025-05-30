@@ -1,0 +1,111 @@
+{
+    "data":{
+		"base_path":"/mnt/nasquatch/data/2p/jonna/EASI_FISH/pipeline",
+		"mouse_name":"RG023",
+		"two_photons_imaging":{
+			"sessions":[
+				{"date":"231016",
+				"functional_run":["001"],
+				// only one plane is currenlty supported
+				"functional_plane":["2"],  //plane notation is 0 1 2mnjhjhnjhnjnh opoa
+				"anatomical_lowres_green_runs":[], //not using anatomical lowres/knobby currently
+				"anatomical_lowres_red_runs":[],
+				"anatomical_hires_green_runs":["004", "005", "006"],
+				"anatomical_hires_red_runs":["007", "008", "009"],
+				"unwarp_config":"andromeda_unwarp_values_240412_3p4_mag.npy", // make sure config is in \\bananas\data\ezfish\jonna\Calibration_files_for_unwarping
+				"unwarp_steps":28}
+			]
+		},
+		"HCR_confocal_imaging":{
+			"rounds":[
+				{"round":"01",
+				"channels":["DAPI", "GCAMP", "SST", "CHRIMSON", "VGAT"],
+				"resolution":[1.337,1.337,5.0]
+				},
+				{"round":"02",
+				"channels":["DAPI", "BRS3", "PDYN"],	
+				"resolution":[1.337,1.337,5.0]
+				},
+				{"round":"03",
+				"channels":["DAPI", "EBF2", "GLP1R"],
+				"resolution":[1.337,1.337,5.0]
+				},
+				{"round":"04",
+				"channels":["DAPI", "SATB2", "SAMD3"],
+				"resolution":[1.337,1.337,5.0]
+				},
+				{"round":"05",
+				"channels":["DAPI", "CALCA", "NPY1R", "TAC1"],
+				"resolution":[1.337,1.337,5.0]
+				},
+				{"round":"06",
+				"channels":["DAPI", "NPY1R", "RUNX1"],
+				"resolution":[1.337,1.337,5.0]
+				},
+				{"round":"07",
+				"channels":["DAPI", "MC4R", "TH"],
+				"resolution":[1.337,1.337,5.0]
+				}
+				
+				
+			],
+			"reference_round":"01"
+			
+		}
+		"HCR_to_HCR_params":{
+			"red_mut_x" : 3,
+			"red_mut_y" : 3,
+			"red_mut_z" : 2,
+		}
+	}
+	
+	params:{
+        rotation_2p_to_HCRspec:{
+            "rotation":90,
+            "fliplr":false,
+            "flipud":false
+        }
+        2p_to_HCR_params:{
+            "convex_masking_distance": 10,
+        }
+        
+        "HCR_probe_intensity_extraction":{
+            "neuropil_radius": 50
+            "neuropil_boundary": 1
+            'neuropil_pooling': ['mean', 'median', 'percentile-20']
+
+        }
+        "HCR_cellpose":{
+            "model_path": "/mnt/nasquatch/data/2p/jonna/EASI_FISH/cellpose_models/DAPI_model_241122",
+            "diameter": 16,
+            "gpu": true,
+            "flow_threshold": 0,
+            "cellprob_threshold": -1,
+        }
+
+        HCR_selected_registrations:{
+            "rounds":[
+			   {"round":"02",
+				"selected_registrations":["local_params_scan_nodeform/rz1_rxy7_bs1to6_mt0.2/bs300_300_20_2_20_bs3to18_mt0.3"]
+				},
+			   {"round":"03",
+				"selected_registrations":["local_params_scan_nodeform/rz1_rxy10_bs3to8_mt0.4/bs200_200_25_2_30_bs7to24_mt0.4"]
+				},
+			   {"round":"04",
+				"selected_registrations":["local_params_scan_nodeform/rz1_rxy7_bs2to9_mt0.3/bs300_300_25_2_20_bs5to28_mt0.4"]
+				},
+			   {"round":"05",
+				"selected_registrations":["local_params_scan_nodeform/rz3_rxy7_bs2to30_mt0.1/bs200_200_20_6_21_bs6to60_mt0.3"]
+				},
+			   {"round":"06",
+				"selected_registrations":["local_params_scan_nodeform/rz1_rxy9_bs2to50_mt0.3/bs200_200_20_2_27_bs6to90_mt0.2"]
+				},
+			   {"round":"07",
+				"selected_registrations":["local_params_scan_nodeform/rz1_rxy15_bs2to50_mt0.3/bs200_200_25_2_40_bs6to100_mt0.3"]
+				}
+            ]
+        }
+
+
+    }
+}
