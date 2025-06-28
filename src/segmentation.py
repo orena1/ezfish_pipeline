@@ -211,8 +211,8 @@ def extract_probs_intensities(full_manifest):
 
     median_filter = None
     # Create custom 3x5x5 structuring element
-    if params['HCR_probe_intensity_extraction'].get('median_filter'):
-        median_filter = params['HCR_probe_intensity_extraction'].get('median_filter')
+    if params['HCR_probe_intensity_extraction'].get('stack_median_filter'):
+        median_filter = params['HCR_probe_intensity_extraction'].get('stack_median_filter')
         assert isinstance(median_filter, (list, tuple)) and len(median_filter) == 3
         median_filter = np.ones((median_filter[0], 1, median_filter[1], median_filter[2]))
         median_filter_label = f'medflt_{median_filter[0]}x{median_filter[1]}x{median_filter[2]}'
