@@ -657,8 +657,10 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
 
     manifest = full_manifest['data']
     params = full_manifest['params']
-    
-    plane = session['functional_plane'][0]
+    if only_hcr:
+        plane = 0
+    else:
+        plane = session['functional_plane'][0]
 
     round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered = True, 
                                                                     print_rounds = False, print_registered = False)
