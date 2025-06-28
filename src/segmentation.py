@@ -8,6 +8,7 @@ import pandas as pd
 import scipy.io as sio
 import scipy
 import skimage
+from skimage import filters
 import pickle as pkl
 from suite2p.io import binary
 from IPython.display import HTML, display
@@ -22,6 +23,8 @@ from scipy.spatial import Delaunay, ConvexHull
 from scipy.interpolate import LinearNDInterpolator
 from .registrations import verify_rounds
 from .functional import get_number_of_suite2p_planes
+
+
 
 # CellposeModelWrapper class
 # This class encapsulates the Cellpose model and its configuration.
@@ -205,7 +208,15 @@ def extract_probs_intensities(full_manifest):
     neuropil_radius = params['HCR_probe_intensity_extraction']['neuropil_radius']
     neuropil_boundary = params['HCR_probe_intensity_extraction']['neuropil_boundary']
     neuropil_pooling = params['HCR_probe_intensity_extraction']['neuropil_pooling']
-    
+
+    median_filter = None
+    # Create custom 3x5x5 structuring element
+    if params['HCR_probe_intensity_extraction'].get('median_filter'):
+        median_filter = params['HCR_probe_intensity_extraction'].get('median_filter')
+        assert isinstance(median_filter, (list, tuple)) and len(median_filter) == 3
+        median_filter = np.ones((median_filter[0], 1, median_filter[1], median_filter[2]))
+        median_filter_label = f'medflt_{median_filter[0]}x{median_filter[1]}x{median_filter[2]}'
+
     for HCR_round_to_register in register_rounds + [reference_round['round']]:
         if HCR_round_to_register == reference_round['round']:
             round_folder_name = f"HCR{HCR_round_to_register}"
@@ -229,7 +240,9 @@ def extract_probs_intensities(full_manifest):
         raw_image = tif_imread(full_stack_path)
         masks = tif_imread(full_stack_masks_path)
         assert raw_image[:,0,:,:].shape == masks.shape
-
+        if median_filter is not None:
+            print(f"Applying median filter with shape {median_filter.shape} to raw image, might take some time...")
+            med_filter_stack = filters.median(raw_image, median_filter)
         # acceleration step
         inds = get_indices_sparse(masks)
         neuropil_masks_inds = get_neuropil_mask_square(masks, neuropil_radius, neuropil_boundary, inds) #Confirm whether the neuropil_boundary is being used currently JSA
@@ -250,7 +263,7 @@ def extract_probs_intensities(full_manifest):
             to_pnd['channel'].extend(list(range(number_of_channels)))
             to_pnd['channel_name'].extend(channels_names)
             to_pnd['mean'].extend(list(vals_per_mask_per_channel.mean(axis=0)))
-            
+
             # add X,Y,Z 
             to_pnd['Z'].extend([Z.mean()]*number_of_channels)
             to_pnd['X'].extend([X.mean()]*number_of_channels)
@@ -260,15 +273,30 @@ def extract_probs_intensities(full_manifest):
             neuropil_Z, neuropil_Y, neuropil_X = neuropil_masks_inds[mask_id]
             neuropil_vals_per_channel = raw_image[neuropil_Z, :, neuropil_Y, neuropil_X]
 
+            if median_filter is not None:
+                to_pnd['mean_' + median_filter_label].extend(list(med_filter_stack[Z, :, Y, X].mean(axis=0)))
+                neuropil_vals_per_channel_median = med_filter_stack[neuropil_Z, :, neuropil_Y, neuropil_X]
+            
+
+            # UGLY CODE, create function.
             # Use the neuropil_pooling list to extract the correct values
             for pooling_method in neuropil_pooling:
                 if pooling_method == 'mean':
                     to_pnd[f'neuropil_mean_nr{neuropil_radius}_nb_{neuropil_boundary}'].extend(neuropil_vals_per_channel.mean(0))
+                    if median_filter is not None:
+                        to_pnd[f'{median_filter_label}_neuropil_mean_nr{neuropil_radius}_nb_{neuropil_boundary}'].extend(neuropil_vals_per_channel_median.mean(0))
+                
                 elif pooling_method == 'median':
                     to_pnd[f'neuropil_median_nr{neuropil_radius}_nb_{neuropil_boundary}'].extend(np.median(neuropil_vals_per_channel, axis=0))
+                    if median_filter is not None:
+                        to_pnd[f'{median_filter_label}_neuropil_median_nr{neuropil_radius}_nb_{neuropil_boundary}'].extend(np.median(neuropil_vals_per_channel_median, axis=0))
+                
                 elif pooling_method.startswith('percentile-'):
                     percentile = int(pooling_method.split('-')[1])
                     to_pnd[f'neuropil_{percentile}pct_nr{neuropil_radius}_nb_{neuropil_boundary}'].extend(np.percentile(neuropil_vals_per_channel, percentile, axis=0))
+                    if median_filter is not None:
+                        to_pnd[f'{median_filter_label}_neuropil_{percentile}pct_nr{neuropil_radius}_nb_{neuropil_boundary}'].extend(np.percentile(neuropil_vals_per_channel_median, percentile, axis=0))
+
                 else:
                     raise ValueError(f"Unsupported pooling method: {pooling_method}")
 
