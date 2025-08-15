@@ -720,13 +720,7 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
             twoP_mapping_dict = {mask_2:mask_1 for mask_1,mask_2 in towP_to_reference_mapping[['mask1','mask2']].values}
 
         # load reference round intensities
-        reference_round_intensities = pd.read_pickle(HCR_intensities_path / f"HCR{reference_round['round']}_probs_intensities.pkl")
-        
-        # Check if the feature exists in the data before attempting to pivot
-        if feature not in reference_round_intensities.columns:
-            print(f"Warning: Feature '{feature}' not found in reference round data - skipping")
-            continue
-            
+        reference_round_intensities = pd.read_pickle(HCR_intensities_path / f"HCR{reference_round['round']}_probs_intensities.pkl")       
         reference_round_intensities_pivot = pd.pivot(reference_round_intensities, index='mask_id', columns=['channel_name'], values=[feature]).reset_index()
         reference_round_intensities_pivot.rename(columns={'mask_id':'mask_id_main'},inplace=True)
         
@@ -782,10 +776,6 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
         HCR_main_pivot_merged = reference_round_intensities_pivot.copy().reset_index()
 
         for j in range(len(HCR_round_mapping_dict)):
-            # Skip empty dataframes (when feature wasn't found in that round)
-            if HCR_rounds_intensities_pivot[j].empty:
-                continue
-                
             round_mask_name = f'mask_round_{HCR_rounds_names[j]}'
             print(round_mask_name)
             HCR_main_pivot_merged = pd.merge(HCR_main_pivot_merged, 
