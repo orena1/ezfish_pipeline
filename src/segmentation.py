@@ -209,13 +209,16 @@ def extract_probs_intensities(full_manifest):
     neuropil_boundary = params['HCR_probe_intensity_extraction']['neuropil_boundary']
     neuropil_pooling = params['HCR_probe_intensity_extraction']['neuropil_pooling']
 
+    # FIXED: Create median filter label BEFORE converting to numpy array
     median_filter = None
-    # Create custom 3x5x5 structuring element
+    median_filter_label = None
     if params['HCR_probe_intensity_extraction'].get('stack_median_filter'):
-        median_filter = params['HCR_probe_intensity_extraction'].get('stack_median_filter')
-        assert isinstance(median_filter, (list, tuple)) and len(median_filter) == 3
-        median_filter = np.ones((median_filter[0], 1, median_filter[1], median_filter[2]))
-        median_filter_label = f'medflt_{median_filter[0]}x{median_filter[1]}x{median_filter[2]}'
+        median_filter_config = params['HCR_probe_intensity_extraction'].get('stack_median_filter')
+        assert isinstance(median_filter_config, (list, tuple)) and len(median_filter_config) == 3
+        # Create label from original config values
+        median_filter_label = f'medflt_{median_filter_config[0]}x{median_filter_config[1]}x{median_filter_config[2]}'
+        # Then create numpy array
+        median_filter = np.ones((median_filter_config[0], 1, median_filter_config[1], median_filter_config[2]))
 
     for HCR_round_to_register in register_rounds + [reference_round['round']]:
         if HCR_round_to_register == reference_round['round']:
@@ -530,7 +533,6 @@ def convex_mask(landmarks_path: str, stack_path: str, Ydist: int, full_manifest:
     blacked_out_stack_first_channel = blackout_above_and_below(tiff_stack_first_channel, top_z_values, bottom_z_values)
     return blacked_out_stack_first_channel
 
-
 def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
 
     rprint("\n" + "="*80)
@@ -638,18 +640,6 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     rprint("="*80 + "\n")
 
 
-
-
-
-
-    # TODO: Add visualization code here
-    # # filter only overlaps above min_overlap
-    # mask1_to_mask2 = mask1_to_mask2_df.query(f'overlap>@min_overlap')[['mask1','mask2']].astype('int').set_index('mask1')['mask2'].to_dict()
-
-    # # creating visualization files
-    # visualize_match(stack1_image_path, stack1_masks_path, stack2_image_path, stack2_masks_path,
-    #                 mask1_to_mask2, output_base_filename)
-
 def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     rprint("\n" + "="*80)
     rprint("[bold green] Match Aligned Masks[bold green]")
@@ -669,24 +659,51 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     merged_table_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'MERGED' / 'aligned_extracted_features'
     merged_table_path.mkdir(parents=True, exist_ok=True)
     
+    # Check if median filter was applied
+    median_filter = params['HCR_probe_intensity_extraction'].get('stack_median_filter')
+    median_filter_label = None
+    if median_filter is not None:
+        median_filter_label = f'medflt_{median_filter[0]}x{median_filter[1]}x{median_filter[2]}'
     
     # get available features to create merged table for
     neuropil_radius = params['HCR_probe_intensity_extraction']['neuropil_radius']
     neuropil_boundary = params['HCR_probe_intensity_extraction']['neuropil_boundary']
     neuropil_pooling = params['HCR_probe_intensity_extraction']['neuropil_pooling']
-    # Use the neuropil_pooling list to extract the correct values
+    
+    # Build complete list of ALL features (original + median filtered)
     features_to_extract = ['mean']
+    
+    # Add median filtered mean if available
+    if median_filter_label:
+        features_to_extract.append(f'mean_{median_filter_label}')
+    
+    # Add ALL neuropil features (both regular and median filtered versions)
     for pooling_method in neuropil_pooling:
         if pooling_method == 'mean':
-            features_to_extract.append(f'neuropil_mean_nr{neuropil_radius}_nb_{neuropil_boundary}')
+            base_feature = f'neuropil_mean_nr{neuropil_radius}_nb_{neuropil_boundary}'
+            features_to_extract.append(base_feature)
+            # Add median filtered version
+            if median_filter_label:
+                features_to_extract.append(f'{median_filter_label}_{base_feature}')
+                
         elif pooling_method == 'median':
-            features_to_extract.append(f'neuropil_median_nr{neuropil_radius}_nb_{neuropil_boundary}')
+            base_feature = f'neuropil_median_nr{neuropil_radius}_nb_{neuropil_boundary}'
+            features_to_extract.append(base_feature)
+            # Add median filtered version
+            if median_filter_label:
+                features_to_extract.append(f'{median_filter_label}_{base_feature}')
+                
         elif pooling_method.startswith('percentile-'):
             percentile = int(pooling_method.split('-')[1])
-            features_to_extract.append(f'neuropil_{percentile}pct_nr{neuropil_radius}_nb_{neuropil_boundary}')
+            base_feature = f'neuropil_{percentile}pct_nr{neuropil_radius}_nb_{neuropil_boundary}'
+            features_to_extract.append(base_feature)
+            # Add median filtered version
+            if median_filter_label:
+                features_to_extract.append(f'{median_filter_label}_{base_feature}')
         else:
             raise ValueError(f"Unsupported pooling method: {pooling_method}")
     
+    print(f"Building merged tables for {len(features_to_extract)} features: {features_to_extract}")
     
     for feature in features_to_extract:
         merged_table_file_path = merged_table_path / f'full_table_{feature}_twop_plane{plane}.pkl'
@@ -694,6 +711,7 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
             print(f"Feature extraction already merged for {feature} - skipping")
             continue
         print(f"Extracting feature: {feature}")
+        
         if only_hcr:
             twoP_mapping_dict = {0:0}
         else:
@@ -703,13 +721,21 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
 
         # load reference round intensities
         reference_round_intensities = pd.read_pickle(HCR_intensities_path / f"HCR{reference_round['round']}_probs_intensities.pkl")
+        
+        # Check if the feature exists in the data before attempting to pivot
+        if feature not in reference_round_intensities.columns:
+            print(f"Warning: Feature '{feature}' not found in reference round data - skipping")
+            continue
+            
         reference_round_intensities_pivot = pd.pivot(reference_round_intensities, index='mask_id', columns=['channel_name'], values=[feature]).reset_index()
         reference_round_intensities_pivot.rename(columns={'mask_id':'mask_id_main'},inplace=True)
+        
         # load HCR rounds intensities and matching files
         HCR_rounds_mapping_tables = []
         HCR_round_mapping_dict = []
         HCR_rounds_intensities_pivot = []
         HCR_rounds_names = register_rounds
+        
         for HCR_round_to_register in register_rounds:
             # load mapping data
             round_file_name = f"HCR{HCR_round_to_register}_to_HCR{reference_round['round']}"
@@ -719,8 +745,14 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
 
             # load intensities
             HCR_round_intensities = pd.read_pickle(HCR_intensities_path / f"{round_file_name}_probs_intensities.pkl")
+            
+            # Check if the feature exists in this round's data
+            if feature not in HCR_round_intensities.columns:
+                print(f"Warning: Feature '{feature}' not found in round {HCR_round_to_register} data - skipping this round")
+                HCR_rounds_intensities_pivot.append(pd.DataFrame())  # Empty dataframe as placeholder
+                continue
+                
             HCR_rounds_intensities_pivot.append(pd.pivot(HCR_round_intensities, index='mask_id', columns=['channel_name'], values=[feature]).reset_index())
-
 
         ####       ####
         ###  MATCH  ###
@@ -734,7 +766,6 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
                 mask_tp_matched.append(None)    
         reference_round_intensities_pivot['twoP_mask']  = mask_tp_matched
 
-
         for j in range(len(HCR_round_mapping_dict)):
             HCR_main_2_HCR_round = HCR_round_mapping_dict[j]
             mask_matched = []
@@ -745,13 +776,16 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
                     mask_matched.append(None)
             reference_round_intensities_pivot[f'mask_round_{HCR_rounds_names[j]}'] = mask_matched
 
-
         ####       ####
         ###  MERGE  ###
         ####       ####
         HCR_main_pivot_merged = reference_round_intensities_pivot.copy().reset_index()
 
         for j in range(len(HCR_round_mapping_dict)):
+            # Skip empty dataframes (when feature wasn't found in that round)
+            if HCR_rounds_intensities_pivot[j].empty:
+                continue
+                
             round_mask_name = f'mask_round_{HCR_rounds_names[j]}'
             print(round_mask_name)
             HCR_main_pivot_merged = pd.merge(HCR_main_pivot_merged, 
@@ -759,7 +793,8 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
                                         left_on=round_mask_name,
                                         right_on='mask_id',
                                         suffixes=['',f'_round_{HCR_rounds_names[j]}'],
-                                        how='left').drop(columns=['mask_id'])#,how='outer')
+                                        how='left').drop(columns=['mask_id'])
+        
         pd.set_option('display.max_columns', None)
         print(f'final table saved to {merged_table_file_path}')
         HCR_main_pivot_merged.to_pickle(merged_table_file_path)
