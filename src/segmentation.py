@@ -80,7 +80,17 @@ def run_cellpose(full_manifest):
         
         raw_image = tif_imread(full_stack_path)
         print(f"Running cellpose for {round_folder_name}, please wait")
-        masks, _, _ = model_wrapper.eval(raw_image)
+
+        # Extract only the first channel (DAPI) for segmentation
+        if raw_image.ndim == 4:  # Multi-channel (Z, C, Y, X)
+            dapi_only = raw_image[:, 0, :, :]  # Extract first channel (DAPI)
+            print(f"Extracted DAPI channel from multi-channel image: {raw_image.shape} -> {dapi_only.shape}")
+        elif raw_image.ndim == 3:  # Already single channel (Z, Y, X)
+            dapi_only = raw_image
+        else:
+            raise ValueError(f"Unexpected image dimensions: {raw_image.shape}")
+
+        masks, _, _ = model_wrapper.eval(dapi_only)
         
         tif_imsave(output_path, masks)
         print(f"Cellpose segmentation saved for {round_folder_name} - {output_path}")
@@ -373,13 +383,36 @@ def extract_electrophysiology_intensities(full_manifest: dict , session: dict):
     rprint("="*80 + "\n")
 
 def match_masks(stack1_masks_path: np.ndarray, stack2_masks_path: np.ndarray) -> dict:
-    '''
-    Input should be 2 stacks of masks where stack1 is registered to stack2.
-    '''
-
     stack1_masks = tif_imread(stack1_masks_path)
-    stack2_masks= tif_imread(stack2_masks_path)
+    stack2_masks = tif_imread(stack2_masks_path)
     
+    # Add dimension debugging
+    print(f"Stack1 (2P) shape: {stack1_masks.shape}")
+    print(f"Stack2 (HCR) shape: {stack2_masks.shape}")
+    
+    # Check if dimensions match
+    # Replace your current dimension checking code with this:
+    if stack1_masks.shape != stack2_masks.shape:
+        print(f"WARNING: Dimension mismatch!")
+        print(f"2P masks: {stack1_masks.shape}")
+        print(f"HCR masks: {stack2_masks.shape}")
+        
+        # Pad the smaller array to match the larger one
+        max_dims = tuple(max(s1, s2) for s1, s2 in zip(stack1_masks.shape, stack2_masks.shape))
+        print(f"Padding both to: {max_dims}")
+        
+        # Pad stack1 if needed
+        if stack1_masks.shape != max_dims:
+            pad_width = [(0, max_d - curr_d) for curr_d, max_d in zip(stack1_masks.shape, max_dims)]
+            stack1_masks = np.pad(stack1_masks, pad_width, mode='constant', constant_values=0)
+        
+        # Pad stack2 if needed  
+        if stack2_masks.shape != max_dims:
+            pad_width = [(0, max_d - curr_d) for curr_d, max_d in zip(stack2_masks.shape, max_dims)]
+            stack2_masks = np.pad(stack2_masks, pad_width, mode='constant', constant_values=0)
+        
+        print(f"After padding - Stack1: {stack1_masks.shape}, Stack2: {stack2_masks.shape}")
+
     stack1_masks_inds = get_indices_sparse(stack1_masks.astype(np.uint16))
 
     #collect mask to mask values with overlap and put in pandas dataframe
@@ -602,7 +635,7 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
 
     for k in rotation_config:
         if k == 'rotation' and rotation_config[k]:
-            masks_2p = rotate(masks_2p, rotation_config['rotation'], preserve_range=True, resize=True)
+            masks_2p = rotate(masks_2p, rotation_config['rotation'], preserve_range=True, resize=True, order=0)
         if k == 'fliplr' and rotation_config[k]:
             masks_2p = masks_2p[:,::-1]
         if k == 'flipud' and rotation_config[k]:
@@ -633,6 +666,8 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     masks_2p_rotated_to_HCR1_blacked = convex_mask(bigwarp_landmarks_path, masks_2p_rotated_to_HCR1, params['2p_to_HCR_params']['convex_masking_distance'], full_manifest)
     tif_imsave(masks_2p_rotated_to_HCR1_blacked_save_path, masks_2p_rotated_to_HCR1_blacked)
 
+    print(f"2P masks shape: {tif_imread(masks_2p_rotated_to_HCR1).shape}")
+    print(f"HCR reference masks shape: {tif_imread(reference_round_masks).shape}")
     mask1_to_mask2_df = match_masks(masks_2p_rotated_to_HCR1, reference_round_masks)
     mask1_to_mask2_df.to_csv(save_path)
     rprint("\n" + "="*80)
