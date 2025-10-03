@@ -92,6 +92,9 @@ def verify_manifest(manifest, args):
             assert len(session['anatomical_lowres_green_runs'])==0, "Cannot have both lowres and hires runs"
             has_hires = True
 
+    if 'cellpose_channel' not in full_manifest['params']['HCR_cellpose']:
+        raise ValueError("'cellpose_channel' must be specified in HCR_cellpose params. This should be the channel index to use for segmentation (e.g., 0 for first channel, 1 for second channel).")
+
     return {'reference_round':reference_round, 'session':session}, has_hires
 
 def main_pipeline_manifest(json_file):

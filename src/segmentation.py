@@ -61,10 +61,15 @@ def run_cellpose(full_manifest):
     rprint("="*80)
 
     round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered=True, 
-                                                                      print_rounds=True, print_registered=True, func='cellpose')
+                                                                     print_rounds=True, print_registered=True, func='cellpose')
+    
+    # Get the cellpose channel index from params
+    cellpose_channel_index = params['HCR_cellpose']['cellpose_channel']
     
     model_wrapper = CellposeModelWrapper(params)
     print(f"Running cellpose for {register_rounds}")
+    print(f"Using channel index {cellpose_channel_index} for cellpose segmentation")
+    
     for HCR_round_to_register in register_rounds + [reference_round['round']]:
         if HCR_round_to_register == reference_round['round']:
             round_folder_name = f"HCR{HCR_round_to_register}"
@@ -79,8 +84,12 @@ def run_cellpose(full_manifest):
             continue
         
         raw_image = tif_imread(full_stack_path)
-        print(f"Running cellpose for {round_folder_name}, please wait")
-        masks, _, _ = model_wrapper.eval(raw_image)
+        
+        # Extract only the specified channel for cellpose
+        cellpose_input = raw_image[:, cellpose_channel_index, :, :]
+        
+        print(f"Running cellpose for {round_folder_name} using channel {cellpose_channel_index}, please wait")
+        masks, _, _ = model_wrapper.eval(cellpose_input)
         
         tif_imsave(output_path, masks)
         print(f"Cellpose segmentation saved for {round_folder_name} - {output_path}")
@@ -89,6 +98,7 @@ def run_cellpose(full_manifest):
     rprint("[bold green]✨ Cellpose on Rounds COMPLETE[/bold green]")
     rprint("="*80 + "\n")
 
+    
 def compute_M(data):
     cols = np.arange(data.size)
     return csr_matrix((cols, (data.ravel(), cols)),
@@ -372,49 +382,60 @@ def extract_electrophysiology_intensities(full_manifest: dict , session: dict):
     rprint("[bold green] Extract 2P Intensities COMPLETE[/bold green]")
     rprint("="*80 + "\n")
 
-def match_masks(stack1_masks_path: np.ndarray, stack2_masks_path: np.ndarray) -> dict:
-    '''
-    Input should be 2 stacks of masks where stack1 is registered to stack2.
-    '''
+def bigwarp_pixel_adjustment(stack1, stack2, name1="Stack1", name2="Stack2"):
+    """Pad smaller array to match larger dimensions when bigwarp causes size mismatch."""
+    if stack1.shape == stack2.shape:
+        return stack1, stack2
+    
+    print(f"WARNING: Dimension mismatch - {name1}: {stack1.shape}, {name2}: {stack2.shape}")
+    # Check if padding exceeds 5 pixels in any dimension
+    if any(abs(s1 - s2) > 5 for s1, s2 in zip(stack1.shape, stack2.shape)):
+        raise ValueError(f"ERROR: Padding exceeds 5 pixels: {name1}={stack1.shape}, {name2}={stack2.shape}," /
+                    + " this means that there is a serious issue with bigwarp, please re-do the registration")
+    
+    max_dims = tuple(max(s1, s2) for s1, s2 in zip(stack1.shape, stack2.shape))
+    print(f"Padding to: {max_dims}")
+    
+    def pad_if_needed(arr, target):
+        if arr.shape != target:
+            pad_width = [(0, t - s) for s, t in zip(arr.shape, target)]
+            return np.pad(arr, pad_width, constant_values=0)
+        return arr
+    
+    return pad_if_needed(stack1, max_dims), pad_if_needed(stack2, max_dims)
 
+
+def match_masks(stack1_masks_path, stack2_masks_path):
+    '''Match masks between two registered stacks.'''
     stack1_masks = tif_imread(stack1_masks_path)
-    stack2_masks= tif_imread(stack2_masks_path)
+    stack2_masks = tif_imread(stack2_masks_path)
+    
+    # Handle dimension mismatches from bigwarp
+    stack1_masks, stack2_masks = bigwarp_pixel_adjustment(stack1_masks, stack2_masks, "Stack1", "Stack2")
     
     stack1_masks_inds = get_indices_sparse(stack1_masks.astype(np.uint16))
-
-    #collect mask to mask values with overlap and put in pandas dataframe
-
+    
     to_pandas = {'mask1':[], 'mask2':[], 'overlap':[]}
-    for mask1_inds in stack1_masks_inds[1:]: #skip the first one because it is background
-        if len(mask1_inds[0]) == 0: #skip if there are no pixels in the mask
+    for mask1_inds in stack1_masks_inds[1:]:  # skip background
+        if len(mask1_inds[0]) == 0:
             continue
-
+            
         mask1 = stack1_masks[mask1_inds]
         assert len(set(mask1)) == 1, 'mask1_inds should only have 1 value, it means that you have floats instead of ints for masks'
-
+        
         mask2_at_mask1 = stack2_masks[mask1_inds]
-
-        # get the mode of the mask2_at_mask1
-        most_overlapped_mask_in_s1 = scipy.stats.mode(mask2_at_mask1[mask2_at_mask1>0],keepdims=False).mode
-
-        # How many pixel in the overlap have the same value out of all overlap pixels 
+        most_overlapped_mask_in_s1 = scipy.stats.mode(mask2_at_mask1[mask2_at_mask1>0], keepdims=False).mode
         overlap = sum(mask2_at_mask1 == most_overlapped_mask_in_s1)/len(mask2_at_mask1)
+        
         to_pandas['mask1'].append(mask1[0])
         to_pandas['mask2'].append(most_overlapped_mask_in_s1)
         to_pandas['overlap'].append(overlap)
-
+    
     df = pd.DataFrame(to_pandas)
-    # keep the mask with the higher overlap
-    df_removed_dups = df.sort_values('overlap', ascending=False).drop_duplicates('mask2', keep='first')
-    
-    ##3<-- Add a print on the number of masks that where removed
+    return df.sort_values('overlap', ascending=False).drop_duplicates('mask2', keep='first')
 
-    
-    return df_removed_dups
 
 ## All dimensions must match, all must be 1 channel, all mask files must have 1 value per mask
-## MAKE SURE TO ALWAYS LEAVE ONE CONSTANT AS HCR 1, DON'T SWITCH THE IDENTITIES
-#Output dataframes (dfs) saved in the HCR round folder in NASQUATCH for now
 
 def convex_mask(landmarks_path: str, stack_path: str, Ydist: int, full_manifest: dict):
     '''
@@ -602,7 +623,7 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
 
     for k in rotation_config:
         if k == 'rotation' and rotation_config[k]:
-            masks_2p = rotate(masks_2p, rotation_config['rotation'], preserve_range=True, resize=True)
+            masks_2p = rotate(masks_2p, rotation_config['rotation'], preserve_range=True, resize=True, order=0)
         if k == 'fliplr' and rotation_config[k]:
             masks_2p = masks_2p[:,::-1]
         if k == 'flipud' and rotation_config[k]:
@@ -632,6 +653,7 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     
     masks_2p_rotated_to_HCR1_blacked = convex_mask(bigwarp_landmarks_path, masks_2p_rotated_to_HCR1, params['2p_to_HCR_params']['convex_masking_distance'], full_manifest)
     tif_imsave(masks_2p_rotated_to_HCR1_blacked_save_path, masks_2p_rotated_to_HCR1_blacked)
+
 
     mask1_to_mask2_df = match_masks(masks_2p_rotated_to_HCR1, reference_round_masks)
     mask1_to_mask2_df.to_csv(save_path)
