@@ -64,9 +64,6 @@ def run_cellpose(full_manifest):
                                                                      print_rounds=True, print_registered=True, func='cellpose')
     
     # Get the cellpose channel index from params
-    if 'cellpose_channel' not in params['HCR_cellpose']:
-        raise ValueError("'cellpose_channel' must be specified in HCR_cellpose params. This should be the channel index to use for segmentation (e.g., 0 for first channel, 1 for second channel).")
-    
     cellpose_channel_index = params['HCR_cellpose']['cellpose_channel']
     
     model_wrapper = CellposeModelWrapper(params)
@@ -391,6 +388,11 @@ def bigwarp_pixel_adjustment(stack1, stack2, name1="Stack1", name2="Stack2"):
         return stack1, stack2
     
     print(f"WARNING: Dimension mismatch - {name1}: {stack1.shape}, {name2}: {stack2.shape}")
+    # Check if padding exceeds 5 pixels in any dimension
+    if any(abs(s1 - s2) > 5 for s1, s2 in zip(stack1.shape, stack2.shape)):
+        raise ValueError(f"ERROR: Padding exceeds 5 pixels: {name1}={stack1.shape}, {name2}={stack2.shape}," /
+                    + " this means that there is a serious issue with bigwarp, please re-do the registration")
+    
     max_dims = tuple(max(s1, s2) for s1, s2 in zip(stack1.shape, stack2.shape))
     print(f"Padding to: {max_dims}")
     
