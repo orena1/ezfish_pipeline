@@ -1,13 +1,15 @@
-import hjson
-from pathlib import Path
 import os
-from rich.prompt import Prompt
-import numpy as np
 import sys
+import time
+import hjson
+import numpy as np
+from pathlib import Path
+from rich.prompt import Prompt
 # supported HCR probs
-HCR_probs = ['CALCA', 'CCK', 'CHAT', 'CHRIMSON', 'DAPI', 'FOXP2', 'GCAMP', 'GLP1R', 'GRP', 'NPR3', 'PDYN', 
+HCR_probs = ['ADRA2A','ADRA1A','ADRA2B','ADRA1B','CALCA', 'CCK', 'CHAT', 'CHRIMSON', 'DAPI', 'FOXP2', 'GCAMP', 'GLP1R', 'GRP', 'NPR3', 'PDYN', 
              'RORB', 'SST', 'SYT10', 'TAC1', 'VGAT', 'SYT10', 'CD24A', 'GPR101','PDE11A','MC4R','TH','RUNX1','RUNX4',
-            'BRS3', 'TACR1', 'OPRM1','NPY1R', 'ASB4', 'SAMD3', 'SATB2', 'EGR1', 'EPHA3','TRHR','SSTR2','FOS','EBF2','ADRA2A','ADRA1A','ADRA2B','ADRA1B','DRD1','CRH']
+             'BRS3', 'TACR1', 'OPRM1','NPY1R', 'ASB4', 'SAMD3', 'SATB2', 'EGR1', 'EPHA3','TRHR','SSTR2','FOS','EBF2',
+             'DRD1','CRH']
 
 
 def parse_json(json_file):
@@ -33,7 +35,14 @@ def verify_manifest(manifest, args):
     '''
     Verify that the json file is valid
     '''
-    #test that only one 2P session is present
+
+    if 'cellpose_channel' not in manifest['params']['HCR_cellpose']:
+        raise ValueError("'cellpose_channel' must be specified in HCR_cellpose params. (e.g., 0 for first channel, 1 for second channel).")
+    
+    if not args.only_hcr and '2p_cellpose' not in manifest['params']:
+        raise ValueError("'2p_cellpose' configuration must be specified in params when processing 2P data.")
+            
+    
     manifest = manifest['data']
     assert len(manifest['two_photons_imaging']['sessions'])==1, 'only support one 2P sessions'
     base_path = Path(manifest['base_path'])
@@ -92,9 +101,13 @@ def verify_manifest(manifest, args):
             assert len(session['anatomical_lowres_green_runs'])==0, "Cannot have both lowres and hires runs"
             has_hires = True
 
-    if 'cellpose_channel' not in full_manifest['params']['HCR_cellpose']:
-        raise ValueError("'cellpose_channel' must be specified in HCR_cellpose params. This should be the channel index to use for segmentation (e.g., 0 for first channel, 1 for second channel).")
-
+    if args.add_planes:
+        assert 'additional_functional_planes' in session, "additional_functional_planes must be specified in the session to add planes"
+        assert 'functional_plane' in session and len(session['functional_plane'])==1, \
+            "functional_plane must be specified in the session and only one plane can be used as reference when adding planes"
+        print(f"Adding additional functional planes: {session['additional_functional_planes']} to functional plane: {session['functional_plane']}")
+        print(f'\n ======>>> Make sure that the functional_plane is already registered completely <<======== \n') 
+        time.sleep(3)
     return {'reference_round':reference_round, 'session':session}, has_hires
 
 def main_pipeline_manifest(json_file):
