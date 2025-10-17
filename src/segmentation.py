@@ -141,7 +141,7 @@ def run_cellpose_2p(tiff_path: Path, output_path: Path, cellpose_params: dict):
 
 def extract_2p_cellpose_masks(full_manifest: dict, session: dict):
     rprint("\n" + "="*80)
-    rprint("[bold green] ????? [bold green]")
+    rprint("[bold green] Initiating cellpose for 2p planes [bold green]")
     rprint("="*80)
 
     manifest = full_manifest['data']
@@ -168,8 +168,7 @@ def extract_2p_cellpose_masks(full_manifest: dict, session: dict):
             rprint(f"✓ Cellpose segmentation already exists for plane {plane_to_segment}")
 
     # Confirmation prompt after all cellpose files exist
-    rprint("\n[bold cyan]Cellpose segmentation complete for all planes.[/bold cyan]")
-    rprint(f"[cyan]Processed planes: {', '.join(all_planes_for_cellpose)}[/cyan]")
+    rprint("\n[bold cyan]Cellpose segmentation complete for current plane [/bold cyan]")
     rprint("[bold]Please verify the segmentation files are correct before continuing.[/bold]")
     rprint("[bold]Press [green]Enter[/green] to continue with alignment...[/bold]")
     input()
@@ -640,13 +639,34 @@ def adjust_landmarks_for_plane(reference_landmarks_path, new_landmarks_path, ref
     """
     TISSUE_EXPANSION_FACTOR = 1.5
     
-    df = pd.read_csv(reference_landmarks_path, header=None)
+    # Read the file line by line to preserve exact formatting
+    with open(reference_landmarks_path, 'r') as f:
+        lines = f.readlines()
+    
     z_offset_2p = (target_optotune - reference_optotune) * 1.0  # microns in 2P space
     z_offset_hcr = z_offset_2p * TISSUE_EXPANSION_FACTOR  # convert to HCR space
-    df[7] = df[7] + z_offset_hcr
-    df.to_csv(new_landmarks_path, header=False, index=False)
+    
+    # Process each line
+    adjusted_lines = []
+    for line in lines:
+        values = line.strip().split(',')
+        
+        # Only adjust column 7 if it's a finite number
+        if len(values) > 7 and values[7] not in ['inf', '-inf']:
+            try:
+                z_value = float(values[7])
+                if np.isfinite(z_value):
+                    values[7] = str(z_value + z_offset_hcr)
+            except ValueError:
+                pass  # Keep original if can't parse
+        
+        adjusted_lines.append(','.join(values) + '\n')
+    
+    # Write back
+    with open(new_landmarks_path, 'w') as f:
+        f.writelines(adjusted_lines)
+    
     print(f"Adjusted landmarks: Z offset = {z_offset_hcr:.1f} µm (HCR space)")
-
 
 def align_masks(full_manifest: dict, 
                 session: dict, 
