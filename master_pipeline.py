@@ -27,19 +27,19 @@ def main(args = None):
         process_plane(args, full_manifest, session, has_hires)
 
     else:
-            session = full_manifest['data']['two_photons_imaging']['sessions'][0]
-            
-            if args.add_planes:
-                reference_plane = session['functional_plane'][0]
-                planes = session.get('additional_functional_planes', [])
-            else:
-                reference_plane = None
-                planes = [session['functional_plane'][0]]
-            
-            for plane in planes:
-                session['functional_plane'] = [plane]
-                rprint(f"\n[bold yellow]Processing plane {plane}{f' (ref: {reference_plane})' if reference_plane else ''}[/bold yellow]\n")
-                process_plane(args, full_manifest, session, has_hires, reference_plane=reference_plane)
+        session = full_manifest['data']['two_photons_imaging']['sessions'][0]
+        
+        if args.add_planes:
+            reference_plane = session['functional_plane'][0]
+            planes = session.get('additional_functional_planes', [])
+        else:
+            reference_plane = None
+            planes = [session['functional_plane'][0]]
+        
+        for plane in planes:
+            session['functional_plane'] = [plane]
+            rprint(f"\n[bold yellow]Processing plane {plane}{f' (ref: {reference_plane})' if reference_plane else ''}[/bold yellow]\n")
+            process_plane(args, full_manifest, session, has_hires, reference_plane=reference_plane)
 
 
 def process_plane(args, full_manifest, session, has_hires, reference_plane=None):
