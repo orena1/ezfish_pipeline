@@ -132,7 +132,6 @@ def run_cellpose_2p(tiff_path: Path, output_path: Path, cellpose_params: dict):
     io.masks_flows_to_seg(raw_image, masks, flows, str(tiff_path.parent / tiff_path.stem), channels=[0,0])
     
     # Move to correct output location
-    import shutil
     generated_file = tiff_path.parent / f'{tiff_path.stem}_seg.npy'
     if generated_file != output_path:
         shutil.move(str(generated_file), str(output_path))

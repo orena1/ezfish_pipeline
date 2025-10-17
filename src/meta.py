@@ -99,6 +99,13 @@ def verify_manifest(manifest, args):
             assert len(session['anatomical_lowres_green_runs'])==0, "Cannot have both lowres and hires runs"
             has_hires = True
 
+    if args.add_planes:
+        assert 'additional_functional_planes' in session, "additional_functional_planes must be specified in the session to add planes"
+        assert 'functional_plane' in session and len(session['functional_plane'])==1, \
+            "functional_plane must be specified in the session and only one plane can be used as reference when adding planes"
+        print(f"Adding additional functional planes: {session['additional_functional_planes']} to functional plane: {session['functional_plane']}")
+        print(f'\n ======>>> Make sure that the functional_plane is already registered completely <<======== \n') 
+        time.sleep(3)
     return {'reference_round':reference_round, 'session':session}, has_hires
 
 def main_pipeline_manifest(json_file):

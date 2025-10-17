@@ -72,7 +72,7 @@ def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combi
         save_filename_C01 = save_path / f'lowres_meanImg_C01_plane{functional_plane}.tiff'
         if not save_filename_C01.exists():
             save_filename_green = save_path / f'lowres_meanImg_C0_plane{functional_plane}.tiff'
-            img = tif_imread(save_filename_green) #Bug fix, was preventing the right green channel from being used in the C01 combined image
+            img = tif_imread(save_filename_green)
             red_run = session['anatomical_lowres_red_runs'][0]
             red_sbx = base_path / mouse_name / '2P' / f'{mouse_name}_{date}_{red_run}' / f'{mouse_name}_{date}_{red_run}.sbx'
 
