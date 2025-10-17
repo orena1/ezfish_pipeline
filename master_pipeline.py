@@ -3,7 +3,6 @@ import logging
 from pathlib import Path
 import argparse
 from rich import print as rprint
-
 from src import functional as fc
 from src import tiling as tl
 from src import registrations as rf
@@ -26,17 +25,24 @@ def main(args = None):
     specs, has_hires = mt.verify_manifest(full_manifest, args)
     if args.only_hcr:
         process_plane(args, full_manifest, session, has_hires)
-    else:
-        session = full_manifest['data']['two_photons_imaging']['sessions'][0]
-        functional_planes = list(session['functional_plane'])
-        for functional_plane in functional_planes:
-            session['functional_plane'] = [functional_plane]
-            rprint(f"\n[bold cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/bold cyan]")
-            rprint(f"[bold yellow]  🔬 Processing functional plane {functional_plane}[/bold yellow]")
-            rprint(f"[bold cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/bold cyan]\n")
-            process_plane(args, full_manifest, session, has_hires)
 
-def process_plane(args, full_manifest, session, has_hires):
+    else:
+            session = full_manifest['data']['two_photons_imaging']['sessions'][0]
+            
+            if args.add_planes:
+                reference_plane = session['functional_plane'][0]
+                planes = session.get('additional_functional_planes', [])
+            else:
+                reference_plane = None
+                planes = [session['functional_plane'][0]]
+            
+            for plane in planes:
+                session['functional_plane'] = [plane]
+                rprint(f"\n[bold yellow]Processing plane {plane}{f' (ref: {reference_plane})' if reference_plane else ''}[/bold yellow]\n")
+                process_plane(args, full_manifest, session, has_hires, reference_plane=reference_plane)
+
+
+def process_plane(args, full_manifest, session, has_hires, reference_plane=None):
 
     if not args.only_hcr:
 
@@ -66,8 +72,7 @@ def process_plane(args, full_manifest, session, has_hires):
     if not args.only_hcr:
         sg.extract_electrophysiology_intensities(full_manifest, session)
 
-    sg.align_masks(full_manifest, session, only_hcr=args.only_hcr)
-
+    sg.align_masks(full_manifest, session, only_hcr=args.only_hcr, reference_plane=reference_plane)
     # Merge aligned masks to single files
     sg.merge_masks(full_manifest, session, only_hcr=args.only_hcr)
 
@@ -78,6 +83,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--manifest', required=True, help='Path to the pipeline manifest file e.g. examples/CIM132.hjson')
     parser.add_argument('--only_hcr', action='store_true', help='Run only HCR part of the pipeline')
+    parser.add_argument('--add_planes', action='store_true', help='Process additional functional planes beyond the reference plane')
+
     args = parser.parse_args()
     #args = {'manifest': 'examples/CIM132.hjson'}
     main(args)

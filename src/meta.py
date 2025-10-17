@@ -33,7 +33,14 @@ def verify_manifest(manifest, args):
     '''
     Verify that the json file is valid
     '''
-    #test that only one 2P session is present
+
+    if 'cellpose_channel' not in manifest['params']['HCR_cellpose']:
+        raise ValueError("'cellpose_channel' must be specified in HCR_cellpose params. (e.g., 0 for first channel, 1 for second channel).")
+    
+    if not args.only_hcr and '2p_cellpose' not in manifest['params']:
+        raise ValueError("'2p_cellpose' configuration must be specified in params when processing 2P data.")
+            
+    
     manifest = manifest['data']
     assert len(manifest['two_photons_imaging']['sessions'])==1, 'only support one 2P sessions'
     base_path = Path(manifest['base_path'])
@@ -91,9 +98,6 @@ def verify_manifest(manifest, args):
         if len(session['anatomical_hires_green_runs'])>0:
             assert len(session['anatomical_lowres_green_runs'])==0, "Cannot have both lowres and hires runs"
             has_hires = True
-
-    if 'cellpose_channel' not in full_manifest['params']['HCR_cellpose']:
-        raise ValueError("'cellpose_channel' must be specified in HCR_cellpose params. This should be the channel index to use for segmentation (e.g., 0 for first channel, 1 for second channel).")
 
     return {'reference_round':reference_round, 'session':session}, has_hires
 

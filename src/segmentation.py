@@ -3,6 +3,7 @@ from collections import defaultdict
 from pathlib import Path
 import hjson
 from cellpose import models
+from cellpose import io
 import numpy as np
 import pandas as pd
 import scipy.io as sio
@@ -32,6 +33,7 @@ from .functional import get_number_of_suite2p_planes
 # 1. Provide a consistent interface for Cellpose model initialization and evaluation
 # 2. Allow lazy loading of the model, which can be computationally expensive
 # 3. Centralize the configuration management for Cellpose parameters
+
 class CellposeModelWrapper:
     def __init__(self, params):
         self.params = params
@@ -98,6 +100,43 @@ def run_cellpose(full_manifest):
     rprint("[bold green]✨ Cellpose on Rounds COMPLETE[/bold green]")
     rprint("="*80 + "\n")
 
+def run_cellpose_2p(tiff_path: Path, output_path: Path, cellpose_params: dict):
+    """
+    Run cellpose segmentation on a single 2P plane (2D image).
+    Saves in Cellpose 2-compatible format for GUI editing.
+    """
+    print(f"Running cellpose on 2P plane: {tiff_path}")
+    
+    # Load 2D image
+    raw_image = tif_imread(tiff_path)
+    assert raw_image.ndim == 2, f"Expected 2D image, got {raw_image.ndim}D"
+    
+    # Initialize cellpose model
+    model = models.CellposeModel(
+        pretrained_model=cellpose_params['model_path'],
+        gpu=cellpose_params['gpu']
+    )
+    
+    # Run cellpose in 2D mode (Cellpose 3 returns 3 values)
+    masks, flows, styles = model.eval(
+        raw_image,
+        channels=[0, 0],
+        diameter=cellpose_params['diameter'],
+        flow_threshold=cellpose_params['flow_threshold'],
+        cellprob_threshold=cellpose_params['cellprob_threshold'],
+        do_3D=False,
+    )
+    
+    # Save using Cellpose's built-in function for v2 compatibility
+    io.masks_flows_to_seg(raw_image, masks, flows, str(tiff_path.parent / tiff_path.stem), channels=[0,0])
+    
+    # Move to correct output location
+    import shutil
+    generated_file = tiff_path.parent / f'{tiff_path.stem}_seg.npy'
+    if generated_file != output_path:
+        shutil.move(str(generated_file), str(output_path))
+    
+    print(f"✓ Cellpose complete (v2 compatible): {output_path}")
     
 def compute_M(data):
     cols = np.arange(data.size)
@@ -554,10 +593,32 @@ def convex_mask(landmarks_path: str, stack_path: str, Ydist: int, full_manifest:
     blacked_out_stack_first_channel = blackout_above_and_below(tiff_stack_first_channel, top_z_values, bottom_z_values)
     return blacked_out_stack_first_channel
 
-def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
+
+
+def adjust_landmarks_for_plane(reference_landmarks_path, new_landmarks_path, reference_optotune, target_optotune):
+    """
+    Adjust landmark Z-coordinates based on optotune difference.
+    Note: 1 optotune unit ≈ 1 micron in 2P imaging ~ (calibrated)
+    Tissue expansion factor: 1.5x for HCR (all dimensions)
+    """
+    TISSUE_EXPANSION_FACTOR = 1.5
+    
+    df = pd.read_csv(reference_landmarks_path, header=None)
+    z_offset_2p = (target_optotune - reference_optotune) * 1.0  # microns in 2P space
+    z_offset_hcr = z_offset_2p * TISSUE_EXPANSION_FACTOR  # convert to HCR space
+    df[7] = df[7] + z_offset_hcr
+    df.to_csv(new_landmarks_path, header=False, index=False)
+    print(f"Adjusted landmarks: Z offset = {z_offset_hcr:.1f} µm (HCR space)")
+
+
+def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False,
+                reference_plane: str = None):
 
     rprint("\n" + "="*80)
-    rprint("[bold green] Align Rounds Masks[bold green]")
+    if reference_plane is not None:
+        rprint(f"[bold green] Align Masks for Additional Plane (Reference: Plane {reference_plane})[bold green]")
+    else:
+        rprint("[bold green] Align Rounds Masks[bold green]")
     rprint("="*80)
 
     manifest = full_manifest['data']
@@ -570,44 +631,68 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
 
     output_folder = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'MERGED' / 'aligned_masks'
     output_folder.mkdir(parents=True, exist_ok=True)
-    
-    for HCR_round_to_register in register_rounds:
-        round_folder_name = f"HCR{HCR_round_to_register}_to_HCR{reference_round['round']}"
 
-        mov_stack_masks = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
-
-        save_path = output_folder / f"{round_folder_name}.csv"
-        if save_path.exists():
-            print(f"Mask alignment already exists for {round_folder_name} - skipping")
-            continue
-        # calculate the matching masks and the overlap
-        mask1_to_mask2_df = match_masks(mov_stack_masks, reference_round_masks)
-        mask1_to_mask2_df.to_csv(save_path)
+        # Skip HCR round alignment for additional planes (already done with reference plane)
+    if reference_plane is None:  # Only process HCR rounds for the reference plane
     
+        for HCR_round_to_register in register_rounds:
+            round_folder_name = f"HCR{HCR_round_to_register}_to_HCR{reference_round['round']}"
+
+            mov_stack_masks = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
+
+            save_path = output_folder / f"{round_folder_name}.csv"
+            if save_path.exists():
+                print(f"Mask alignment already exists for {round_folder_name} - skipping")
+                continue
+            # calculate the matching masks and the overlap
+            mask1_to_mask2_df = match_masks(mov_stack_masks, reference_round_masks)
+            mask1_to_mask2_df.to_csv(save_path)
+
     if only_hcr:
         print("Skipping 2p masks alignment")
         return
-    rprint("\n" + "="*80)
-    rprint("[bold green] HCR Rounds Registrations COMPLETE[/bold green]")
-    rprint("="*80 + "\n")
+    
+    if reference_plane is None:
+        rprint("\n" + "="*80)
+        rprint("[bold green] HCR Rounds Registrations COMPLETE[/bold green]")
+        rprint("="*80 + "\n")
 
     rprint("\n" + "="*80)
     rprint("[bold green] Align 2P Masks[/bold green]")
     rprint("="*80)
 
+    cellpose_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'cellpose'
+
+    all_planes_for_cellpose = session['functional_plane'] + session.get('additional_functional_planes', [])
     plane = session['functional_plane'][0]
     rotation_config = params['rotation_2p_to_HCRspec']
 
-    cellpose_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'cellpose'
+# Run cellpose on all 2P planes (functional + additional)
+    rprint("[bold yellow]Checking cellpose segmentation for 2P planes...[/bold yellow]")
+    
+    for plane_to_segment in all_planes_for_cellpose:
+        twop_cellpose_file = cellpose_path / f'lowres_meanImg_C0_plane{plane_to_segment}_seg.npy'
+        tiff_path = cellpose_path / f'lowres_meanImg_C0_plane{plane_to_segment}.tiff'
+        
+        if not twop_cellpose_file.exists():
+            if not tiff_path.exists():
+                raise FileNotFoundError(f"2P tiff file not found: {tiff_path}")
+            
+            rprint(f"[yellow]Running cellpose on plane {plane_to_segment}...[/yellow]")
+            run_cellpose_2p(tiff_path, twop_cellpose_file, params['2p_cellpose'])
+        else:
+            print(f"✓ Cellpose segmentation already exists for plane {plane_to_segment}")
+    
+    # Confirmation prompt after all cellpose files exist
+    rprint("\n[bold cyan]Cellpose segmentation complete for all planes.[/bold cyan]")
+    rprint(f"[cyan]Processed planes: {', '.join(all_planes_for_cellpose)}[/cyan]")
+    rprint("[bold]Please verify the segmentation files are correct before continuing.[/bold]")
+    rprint("[bold]Press [green]Enter[/green] to continue with alignment...[/bold]")
+    input()
+    
+    # Now load the masks for the current plane being processed
     twop_cellpose = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg.npy'
-    while not twop_cellpose.exists():
-        tiff_path = cellpose_path / f'lowres_meanImg_C0_plane{plane}.tiff'
-        output_string = f'''
-        Please run cellpose on plane {tiff_path}
-        once you are done save the file in the cellpose directory as {twop_cellpose}
-        '''
-        rprint(output_string)
-        input()
+
     stats = np.load(twop_cellpose, allow_pickle=True).item()
     masks_2p = np.array(stats['masks'])  # Get (x, y) indices per mask
     save_path = output_folder / f"twop_plane{plane}_to_HCR{reference_round['round']}.csv"
@@ -632,25 +717,60 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
 
     masks_2p_rotated = masks_2p
     masks_2p_rotated_path = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated.tiff'
-    tif_imsave(masks_2p_rotated_path,  masks_2p_rotated.astype(np.uint16))
+
+    # Only save if it doesn't exist
+    if not masks_2p_rotated_path.exists():
+        tif_imsave(masks_2p_rotated_path, masks_2p_rotated.astype(np.uint16))
+        print(f"Created rotated mask: {masks_2p_rotated_path}")
+    else:
+        print(f"Rotated mask already exists: {masks_2p_rotated_path}")
 
     reg_save_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered'
     masks_2p_rotated_to_HCR1 = reg_save_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_bigwarped_to_HCR1.tiff'
     masks_2p_rotated_to_HCR1_blacked_save_path = reg_save_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_bigwarped_to_HCR1_blacked.tiff'
     bigwarp_landmarks_path =  reg_save_path /  f'stitched_C01_plane{plane}_rotated_TO_HCR1_landmarks.csv'
 
-    # saved rotated masks_2p
-    while not masks_2p_rotated_to_HCR1.exists() or not bigwarp_landmarks_path.exists():
-        output_string = f'''
+# Copy landmarks from reference plane if this is an additional plane
+    if reference_plane is not None:
+        ref_landmarks_path = reg_save_path / f'stitched_C01_plane{reference_plane}_rotated_TO_HCR1_landmarks.csv'
+        
+        if ref_landmarks_path.exists() and not bigwarp_landmarks_path.exists():
+            optotune_values = session.get('optotune', None)
+            
+            if optotune_values:
+                z_offset = (optotune_values[int(plane)] - optotune_values[int(reference_plane)]) * 1.5
+                adjust_landmarks_for_plane(ref_landmarks_path, bigwarp_landmarks_path, 
+                                          optotune_values[int(reference_plane)], 
+                                          optotune_values[int(plane)])
+                rprint(f"[green]Adjusted landmarks for plane {plane} by {z_offset:.1f} µm in Z[/green]")
+            else:
+                rprint(f"[yellow]No optotune values - copying without adjustment[/yellow]")
+                import shutil
+                shutil.copy(ref_landmarks_path, bigwarp_landmarks_path)
+
+        # Prompt for BigWarp file
+        if not masks_2p_rotated_to_HCR1.exists():
+            rprint(f"\n[yellow]Landmarks ready. Apply BigWarp to generate:[/yellow]")
+            rprint(f"  {masks_2p_rotated_to_HCR1}")
+            rprint("\nPress Enter when complete...")
+            input()
+            
+            if not masks_2p_rotated_to_HCR1.exists():
+                raise FileNotFoundError(f"BigWarp file still missing: {masks_2p_rotated_to_HCR1}")
+                
+    else:
+        # Original prompt for reference plane (first time processing)
+        while not masks_2p_rotated_to_HCR1.exists() or not bigwarp_landmarks_path.exists():
+            output_string = f'''
         Please apply bigwarp on masks in {masks_2p_rotated_path}, two steps required
         step 1 - low res to high res transform
-        setp 2 - high res to HCR Round 1 transform
+        step 2 - high res to HCR Round 1 transform
         once you are done save the file in the registered directory as {masks_2p_rotated_to_HCR1}
         and also save step 2 landmarks in {bigwarp_landmarks_path}
         '''
-        rprint(output_string)
-        input()
-    
+            rprint(output_string)
+            input()
+
     masks_2p_rotated_to_HCR1_blacked = convex_mask(bigwarp_landmarks_path, masks_2p_rotated_to_HCR1, params['2p_to_HCR_params']['convex_masking_distance'], full_manifest)
     tif_imsave(masks_2p_rotated_to_HCR1_blacked_save_path, masks_2p_rotated_to_HCR1_blacked)
 
