@@ -1,9 +1,10 @@
-import hjson
-from pathlib import Path
 import os
-from rich.prompt import Prompt
-import numpy as np
 import sys
+import time
+import hjson
+import numpy as np
+from pathlib import Path
+from rich.prompt import Prompt
 # supported HCR probs
 HCR_probs = ['CALCA', 'CCK', 'CHAT', 'CHRIMSON', 'DAPI', 'FOXP2', 'GCAMP', 'GLP1R', 'GRP', 'NPR3', 'PDYN', 
              'RORB', 'SST', 'SYT10', 'TAC1', 'VGAT', 'SYT10', 'CD24A', 'GPR101','PDE11A','MC4R','TH','RUNX1','RUNX4',
