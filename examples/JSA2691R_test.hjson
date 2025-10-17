@@ -6,7 +6,7 @@
             "sessions":[
                 {"date":"250617",
                 "functional_run":["002"],
-                "functional_plane":["2"],
+                "functional_plane":["2"], // Has to be a list
 				"additional_functional_planes":["0","1","3"]
                 "anatomical_lowres_green_runs":["002"],
                 "anatomical_lowres_red_runs":["005"],

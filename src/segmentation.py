@@ -2,6 +2,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 import hjson
+import shutil
 from cellpose import models
 from cellpose import io
 import numpy as np
@@ -137,7 +138,43 @@ def run_cellpose_2p(tiff_path: Path, output_path: Path, cellpose_params: dict):
         shutil.move(str(generated_file), str(output_path))
     
     print(f"✓ Cellpose complete (v2 compatible): {output_path}")
+
+def extract_2p_cellpose_masks(full_manifest: dict, session: dict):
+    rprint("\n" + "="*80)
+    rprint("[bold green] ????? [bold green]")
+    rprint("="*80)
+
+    manifest = full_manifest['data']
+    params = full_manifest['params']
+
+    cellpose_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'cellpose'
+
+    all_planes_for_cellpose = session['functional_plane']
+
+    # Run cellpose on all 2P planes
+    rprint("[bold yellow]Checking cellpose segmentation for 2P planes...[/bold yellow]")
     
+    for plane_to_segment in all_planes_for_cellpose:
+        twop_cellpose_file = cellpose_path / f'lowres_meanImg_C0_plane{plane_to_segment}_seg.npy'
+        tiff_path = cellpose_path / f'lowres_meanImg_C0_plane{plane_to_segment}.tiff'
+        
+        if not twop_cellpose_file.exists():
+            if not tiff_path.exists():
+                raise FileNotFoundError(f"2P tiff file not found: {tiff_path}")
+            
+            rprint(f"[yellow]Running cellpose on plane {plane_to_segment}...[/yellow]")
+            run_cellpose_2p(tiff_path, twop_cellpose_file, params['2p_cellpose'])
+        else:
+            rprint(f"✓ Cellpose segmentation already exists for plane {plane_to_segment}")
+
+    # Confirmation prompt after all cellpose files exist
+    rprint("\n[bold cyan]Cellpose segmentation complete for all planes.[/bold cyan]")
+    rprint(f"[cyan]Processed planes: {', '.join(all_planes_for_cellpose)}[/cyan]")
+    rprint("[bold]Please verify the segmentation files are correct before continuing.[/bold]")
+    rprint("[bold]Press [green]Enter[/green] to continue with alignment...[/bold]")
+    input()
+    return 
+
 def compute_M(data):
     cols = np.arange(data.size)
     return csr_matrix((cols, (data.ravel(), cols)),
@@ -611,8 +648,11 @@ def adjust_landmarks_for_plane(reference_landmarks_path, new_landmarks_path, ref
     print(f"Adjusted landmarks: Z offset = {z_offset_hcr:.1f} µm (HCR space)")
 
 
-def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False,
-                reference_plane: str = None):
+def align_masks(full_manifest: dict, 
+                session: dict, 
+                only_hcr: bool = False,
+                reference_plane: str = None
+                ):
 
     rprint("\n" + "="*80)
     if reference_plane is not None:
@@ -632,7 +672,7 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False,
     output_folder = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'MERGED' / 'aligned_masks'
     output_folder.mkdir(parents=True, exist_ok=True)
 
-        # Skip HCR round alignment for additional planes (already done with reference plane)
+    # Skip HCR round alignment for additional planes (already done with reference plane)
     if reference_plane is None:  # Only process HCR rounds for the reference plane
     
         for HCR_round_to_register in register_rounds:
@@ -663,32 +703,32 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False,
 
     cellpose_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'cellpose'
 
-    all_planes_for_cellpose = session['functional_plane'] + session.get('additional_functional_planes', [])
+    # all_planes_for_cellpose = session['functional_plane'] + session.get('additional_functional_planes', [])
     plane = session['functional_plane'][0]
     rotation_config = params['rotation_2p_to_HCRspec']
 
-# Run cellpose on all 2P planes (functional + additional)
-    rprint("[bold yellow]Checking cellpose segmentation for 2P planes...[/bold yellow]")
+# # Run cellpose on all 2P planes (functional + additional)
+#     rprint("[bold yellow]Checking cellpose segmentation for 2P planes...[/bold yellow]")
     
-    for plane_to_segment in all_planes_for_cellpose:
-        twop_cellpose_file = cellpose_path / f'lowres_meanImg_C0_plane{plane_to_segment}_seg.npy'
-        tiff_path = cellpose_path / f'lowres_meanImg_C0_plane{plane_to_segment}.tiff'
+#     for plane_to_segment in all_planes_for_cellpose:
+#         twop_cellpose_file = cellpose_path / f'lowres_meanImg_C0_plane{plane_to_segment}_seg.npy'
+#         tiff_path = cellpose_path / f'lowres_meanImg_C0_plane{plane_to_segment}.tiff'
         
-        if not twop_cellpose_file.exists():
-            if not tiff_path.exists():
-                raise FileNotFoundError(f"2P tiff file not found: {tiff_path}")
+#         if not twop_cellpose_file.exists():
+#             if not tiff_path.exists():
+#                 raise FileNotFoundError(f"2P tiff file not found: {tiff_path}")
             
-            rprint(f"[yellow]Running cellpose on plane {plane_to_segment}...[/yellow]")
-            run_cellpose_2p(tiff_path, twop_cellpose_file, params['2p_cellpose'])
-        else:
-            print(f"✓ Cellpose segmentation already exists for plane {plane_to_segment}")
+#             rprint(f"[yellow]Running cellpose on plane {plane_to_segment}...[/yellow]")
+#             run_cellpose_2p(tiff_path, twop_cellpose_file, params['2p_cellpose'])
+#         else:
+#             print(f"✓ Cellpose segmentation already exists for plane {plane_to_segment}")
     
-    # Confirmation prompt after all cellpose files exist
-    rprint("\n[bold cyan]Cellpose segmentation complete for all planes.[/bold cyan]")
-    rprint(f"[cyan]Processed planes: {', '.join(all_planes_for_cellpose)}[/cyan]")
-    rprint("[bold]Please verify the segmentation files are correct before continuing.[/bold]")
-    rprint("[bold]Press [green]Enter[/green] to continue with alignment...[/bold]")
-    input()
+#     # Confirmation prompt after all cellpose files exist
+#     rprint("\n[bold cyan]Cellpose segmentation complete for all planes.[/bold cyan]")
+#     rprint(f"[cyan]Processed planes: {', '.join(all_planes_for_cellpose)}[/cyan]")
+#     rprint("[bold]Please verify the segmentation files are correct before continuing.[/bold]")
+#     rprint("[bold]Press [green]Enter[/green] to continue with alignment...[/bold]")
+#     input()
     
     # Now load the masks for the current plane being processed
     twop_cellpose = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg.npy'
@@ -733,8 +773,9 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False,
 # Copy landmarks from reference plane if this is an additional plane
     if reference_plane is not None:
         ref_landmarks_path = reg_save_path / f'stitched_C01_plane{reference_plane}_rotated_TO_HCR1_landmarks.csv'
-        
-        if ref_landmarks_path.exists() and not bigwarp_landmarks_path.exists():
+        if not ref_landmarks_path.exists():
+            raise Exception(f"Reference landmarks file does not exist: {ref_landmarks_path}, please finsih running without --add_planes")
+        if not bigwarp_landmarks_path.exists():
             optotune_values = session.get('optotune', None)
             
             if optotune_values:
@@ -745,19 +786,15 @@ def align_masks(full_manifest: dict, session: dict, only_hcr: bool = False,
                 rprint(f"[green]Adjusted landmarks for plane {plane} by {z_offset:.1f} µm in Z[/green]")
             else:
                 rprint(f"[yellow]No optotune values - copying without adjustment[/yellow]")
-                import shutil
+
                 shutil.copy(ref_landmarks_path, bigwarp_landmarks_path)
 
         # Prompt for BigWarp file
-        if not masks_2p_rotated_to_HCR1.exists():
+        while not masks_2p_rotated_to_HCR1.exists():
             rprint(f"\n[yellow]Landmarks ready. Apply BigWarp to generate:[/yellow]")
             rprint(f"  {masks_2p_rotated_to_HCR1}")
             rprint("\nPress Enter when complete...")
-            input()
-            
-            if not masks_2p_rotated_to_HCR1.exists():
-                raise FileNotFoundError(f"BigWarp file still missing: {masks_2p_rotated_to_HCR1}")
-                
+            input()    
     else:
         # Original prompt for reference plane (first time processing)
         while not masks_2p_rotated_to_HCR1.exists() or not bigwarp_landmarks_path.exists():

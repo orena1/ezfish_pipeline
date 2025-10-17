@@ -31,12 +31,12 @@ def main(args = None):
         
         if args.add_planes:
             reference_plane = session['functional_plane'][0]
-            planes = session.get('additional_functional_planes', [])
+            functional_planes = session['additional_functional_planes']
         else:
             reference_plane = None
-            planes = [session['functional_plane'][0]]
+            functional_planes = list(session['functional_plane'])
         
-        for plane in planes:
+        for plane in functional_planes:
             session['functional_plane'] = [plane]
             rprint(f"\n[bold yellow]Processing plane {plane}{f' (ref: {reference_plane})' if reference_plane else ''}[/bold yellow]\n")
             process_plane(args, full_manifest, session, has_hires, reference_plane=reference_plane)
@@ -70,6 +70,10 @@ def process_plane(args, full_manifest, session, has_hires, reference_plane=None)
     sg.extract_probs_intensities(full_manifest)
 
     if not args.only_hcr:
+        # Extract cellpose masks from 2p images
+        sg.extract_2p_cellpose_masks(full_manifest, session)
+
+        # Extract electrophysiology intensities from 2p images
         sg.extract_electrophysiology_intensities(full_manifest, session)
 
     sg.align_masks(full_manifest, session, only_hcr=args.only_hcr, reference_plane=reference_plane)
