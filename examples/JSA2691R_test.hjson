@@ -1,0 +1,86 @@
+{
+    "data":{
+        "base_path":"/mnt/nasquatch/data/2p/jonna/EASI_FISH/pipeline",
+        "mouse_name":"JSA2691R_test",
+        "two_photons_imaging":{
+            "sessions":[
+                {"date":"250617",
+                "functional_run":["002"],
+                "functional_plane":["2"], // Has to be a list
+				"additional_functional_planes":["0","1","3"]
+                "anatomical_lowres_green_runs":["002"],
+                "anatomical_lowres_red_runs":["005"],
+                "anatomical_hires_green_runs":[], //only if you have tiling, otherwise just empty bracket
+                "anatomical_hires_red_runs":[],
+                "unwarp_config":"hutch_unwarp_values_051223_3p4_mag.npy", // make sure config is in \\bananas\data\ezfish\jonna\Calibration_files_for_unwarping
+                "unwarp_steps":28
+				"optotune":[150,200,250,300]
+				}
+            ]
+        },
+        "HCR_confocal_imaging":{
+            "rounds":[
+                {"round":"01",
+                "channels":["DAPI", "CHRIMSON", "GCAMP", "TH","CALCA"],
+                "resolution":[1.337,1.337,7.5]
+				},
+				{"round":"02",
+				"channels":["DAPI","CD24A","TAC1","SST"],
+                "resolution":[1.337,1.337,7.5]
+				}
+            ],
+            "reference_round":"01", // the round that everything will be registered to
+        }
+        "HCR_to_HCR_params":{
+            "red_mut_x" : 3,
+            "red_mut_y" : 3,
+            "red_mut_z" : 2,
+        }
+    }
+	
+    params:{
+        rotation_2p_to_HCRspec:{
+            "rotation":120,
+            "fliplr":true,
+            "flipud":false
+        }
+        2p_to_HCR_params:{
+            "convex_masking_distance": 40,
+        }
+        
+        "HCR_probe_intensity_extraction":{
+            "neuropil_radius": 50
+            "neuropil_boundary": 1
+            'neuropil_pooling': ['mean', 'median', 'percentile-20']
+			'stack_median_filter': [3,4,4]
+
+        }
+        "HCR_cellpose":{
+            "model_path": "/mnt/nasquatch/data/2p/jonna/EASI_FISH/cellpose_models/FOS_DAPI_model",
+            "diameter": 16,
+            "gpu": true,
+            "flow_threshold": 0,
+            "cellprob_threshold": -1.5,
+			"cellpose_channel": 0
+        }
+		
+		"2p_cellpose":{
+			"model_path": "/mnt/nasquatch/data/2p/jonna/EASI_FISH/cellpose_models/Ribo_lowres_model",
+			"diameter": 7,
+			"gpu": true,
+			"flow_threshold": 0,
+			"cellprob_threshold": -1,
+			"cellpose_channel": 0
+		}
+
+		
+
+        HCR_selected_registrations:{
+            "rounds":[
+            {"round":"02",
+                "selected_registrations":["local_params_scan_nodeform/rz1_rxy5_bs2to52_mt0.5/bs200_200_25_2_15_bs6to100_mt0.3"]
+                }
+			]
+        }
+    }
+}
