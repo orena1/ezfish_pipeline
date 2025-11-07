@@ -1,5 +1,5 @@
 from pathlib import Path
-
+import shutil
 import hjson
 import matplotlib.pyplot as plt
 import numpy as np
@@ -11,6 +11,7 @@ from .registrations import verify_rounds
 from .meta import check_rotation
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imwrite
+from tifffile import TiffFile
 from sbxreader import sbx_get_metadata, sbx_memmap
 
 def get_number_of_suite2p_planes(suite2p_path: Path):
@@ -33,7 +34,59 @@ def get_number_of_suite2p_planes(suite2p_path: Path):
     return nplanes
 
 
-def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combine_with_red = False):
+def hires_rotate_and_save(full_manifest: dict , session: dict):
+    '''
+    stitch the tiles of the session
+    '''
+    manifest = full_manifest['data']
+    if len(session['anatomical_hires_green_runs']) == 0:
+        return
+
+    plane = session['functional_plane'][0]
+    original_hires_run = session['anatomical_hires_run']
+    hires_file_C01  = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'hires' / f'hires_C01.tiff' 
+    registered_folder = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered'
+
+    registered_folder.mkdir(exist_ok=True, parents=True)
+    hires_file_C01.parent.mkdir(exist_ok=True, parents=True)
+
+    save_path_registered_rotated = registered_folder / f'{hires_file_C01.stem}_rotated.tiff'
+    if save_path_registered_rotated.exists():
+        print(f'already rotated {save_path_registered_rotated}')
+        return
+    
+    # Copy the original hires file to the expected location
+    print(f'Copying {original_hires_run} to {hires_file_C01}')
+    shutil.copyfile(original_hires_run, hires_file_C01)
+
+    rotation_config = full_manifest['params']['rotation_2p_to_HCRspec']
+    data = tif_imread(hires_file_C01)
+    for k in rotation_config:
+        if k == 'rotation' and rotation_config[k]:
+            data = np.stack([rotate(data[0], rotation_config['rotation'],resize=True,preserve_range=True),
+                             rotate(data[1], rotation_config['rotation'],resize=True,preserve_range=True)])
+        if k == 'fliplr' and rotation_config[k]:
+            data = data[:, :, ::-1]
+        if k == 'flipud' and rotation_config[k]:
+            data =data[:, ::-1, :]
+    tif_imwrite(hires_file_C01.parent / f'{hires_file_C01.stem}_rotated.tiff', data.astype(np.float32), imagej=True, metadata={'axes': 'CYX'})
+    tif_imwrite(save_path_registered_rotated, data.astype(np.float32), imagej=True, metadata={'axes': 'CYX'})
+
+
+def load_stack(stack_path: Path):
+    '''
+    load a stack from the given path, path can be tiff or suite2p bin file
+    '''
+    frames_to_load_for_mean = 50 # read every 50th frame to speed up loading <-- Need to take out!!
+    if stack_path.suffix == '.binary':
+        suite2p.io
+    elif stack_path.suffix in ['.tiff', '.tif']:
+        number_of_frames = len(TiffFile(stack_path).pages)
+        frames_to_load = range(0, number_of_frames, number_of_frames//frames_to_load_for_mean) if number_of_frames > frames_to_load_for_mean else None
+        data = tif_imread(stack_path, key=frames_to_load)
+    return data
+
+def extract_functional_planes(full_manifest: dict , session: dict):
     '''
     extract the mean of registered plane from the functional run of suite2p
     manifest: json dict
@@ -43,55 +96,29 @@ def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combi
     manifest = full_manifest['data']
     mouse_name = manifest['mouse_name']
     date = session['date']
-    suite2p_run = session['functional_run'][0]
     base_path = Path(manifest['base_path'])
 
-    suite2p_path = base_path / mouse_name / '2P' /  f'{mouse_name}_{date}_{suite2p_run}' / 'suite2p'
-    save_path = base_path / mouse_name / 'OUTPUT' / '2P' / 'cellpose'
-    save_path_registered = base_path / mouse_name / 'OUTPUT' / '2P' / 'registered'
+    #save_path = base_path / mouse_name / 'OUTPUT' / '2P' / 'cellpose'
+    lowres_mean_path = base_path / mouse_name / 'OUTPUT' / '2P' / 'lowres' / 'lowres_C01_meanImg.tiff'
+    registered_folder = base_path / mouse_name / 'OUTPUT' / '2P' / 'registered'
 
-    save_path.mkdir(exist_ok=True, parents=True)
-    save_path_registered.mkdir(exist_ok=True, parents=True)
+    lowres_mean_path.parent.mkdir(exist_ok=True, parents=True)
+    registered_folder.mkdir(exist_ok=True, parents=True)
 
-    functional_plane = int(session['functional_plane'][0])
-    planes = get_number_of_suite2p_planes(suite2p_path)
-    channels_needed = 'C0'
-    for plane in track(range(planes), description='Extracting suite2p registered planes'):
-        ## Extract the mean of the registered plane
+    lowres_mean_rotated_path = registered_folder / f'{lowres_mean_path.stem}_rotated.tiff'
 
-        save_filename = save_path / f'lowres_meanImg_C0_plane{plane}.tiff'
-        if save_filename.exists():
-            print(f'{save_filename} already exists')
-            continue
-        ops = np.load(suite2p_path / f'plane{plane}/ops.npy',allow_pickle=True).item()
-        img = ops['meanImg']
-        assert len(img.shape)==2, f"meanImg - should be 2D, not 3D!"
-        tif_imwrite(save_filename, img)
-
-    if combine_with_red:
-        save_filename_C01 = save_path / f'lowres_meanImg_C01_plane{functional_plane}.tiff'
-        if not save_filename_C01.exists():
-            save_filename_green = save_path / f'lowres_meanImg_C0_plane{functional_plane}.tiff'
-            img = tif_imread(save_filename_green)
-            red_run = session['anatomical_lowres_red_runs'][0]
-            red_sbx = base_path / mouse_name / '2P' / f'{mouse_name}_{date}_{red_run}' / f'{mouse_name}_{date}_{red_run}.sbx'
-
-            print(f'processing {red_sbx}, mean across time')
-            red_stack = np.array(sbx_memmap(red_sbx)[:,functional_plane,-1]).mean(0)
-
-            combined_stack = np.stack([img, red_stack])
-            tif_imwrite(save_filename_C01, combined_stack.astype(np.float32),
-                        imagej=True, metadata={'axes': 'CYX'})
-        channels_needed = 'C01'
-
-    # rotate and flip the selected functional plane
-    save_filename_C = save_path / f'lowres_meanImg_{channels_needed}_plane{functional_plane}.tiff'
-    save_filename_rotated = save_path_registered / f'{save_filename_C.stem}_rotated.tiff'
-    
-    if save_filename_rotated.exists():
+    if lowres_mean_rotated_path.exists():
         return
 
-    # this is for the case of no-hires
+    # load stack 
+    subsampled_stack = load_stack(lowres_mean_path)
+    assert subsampled_stack.ndim == 4, f'Expected 4D stack, got {subsampled_stack.ndim}D'
+    assert subsampled_stack.shape[1] == 2, f'Expected 2 channels, got {subsampled_stack.shape[1]} channels'
+    mean_stack = subsampled_stack.mean(axis=0)  # mean across time
+    tif_imwrite(lowres_mean_path, mean_stack.astype(np.float32), imagej=True, metadata={'axes': 'CYX'})
+
+    # If we do not have highres we need to verify that rotation file is created,
+    # If we have highres the rotation file should already exist otherwise the pipeline would have stopped before
     reference_HCR_round = verify_rounds(full_manifest)[1]['image_path']
     while not check_rotation(full_manifest):
         output_string = f'''
@@ -105,15 +132,7 @@ def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combi
 
     rotation_config = full_manifest['params']['rotation_2p_to_HCRspec']
     data = tif_imread(save_filename_C)
-    if data.ndim == 2:
-        for k in rotation_config:
-            if k == 'rotation' and rotation_config[k]:
-                data = rotate(data, rotation_config['rotation'], resize=True, preserve_range=True)
-            if k == 'fliplr' and rotation_config[k]:
-                data = data[:,::-1]
-            if k == 'flipud' and rotation_config[k]:
-                data =data[::-1,:]
-        file_specs = {'axes': 'YX'}
+
     if data.ndim == 3:
         for k in rotation_config:
             if k == 'rotation' and rotation_config[k]:

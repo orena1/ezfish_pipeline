@@ -4,7 +4,7 @@ from pathlib import Path
 import argparse
 from rich import print as rprint
 from src import functional as fc
-from src import tiling as tl
+# from src import tiling as tl
 from src import registrations as rf
 from src import meta as mt
 from src import segmentation as sg
@@ -47,19 +47,14 @@ def process_plane(args, full_manifest, session, has_hires, reference_plane=None)
     if not args.only_hcr:
 
         if has_hires:
-            tl.process_session_sbx(full_manifest, session)
-
-            # Unwrap 2P anatomical_runs
-            tl.unwarp_tiles(full_manifest, session)
-
-            # Stitch the tiles sdf sd
-            tl.stitch_tiles_and_rotate(full_manifest, session)
+            # Rotate hires file and save in correct directory.
+            fc.hires_rotate_and_save(full_manifest, session)
 
             # extract registered suite2p planes
-            fc.extract_suite2p_registered_planes(full_manifest, session)
+            fc.extract_functional_planes(full_manifest, session)
         else:
-            fc.extract_suite2p_registered_planes(full_manifest, session, combine_with_red=True)
-        
+            fc.extract_functional_planes(full_manifest, session, combine_with_red=True)
+
     # Register the HCR data round to round
     rf.register_rounds(full_manifest)
 

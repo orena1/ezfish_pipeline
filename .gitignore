@@ -1,2 +1,3 @@
 src/processing_notebooks/HCR_rounds/.*
 __pycache__/
+.*

@@ -1,5 +1,5 @@
-suite2p
-cellpose
-tifffile
-rich
-tqdm
+cellpose==3.0.7
+tifffile==2021.7.2
+rich==13.9.4
+tqdm==4.66.5
+#suite2p==0.14.2
