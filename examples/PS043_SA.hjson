@@ -1,14 +1,19 @@
 {
     "data": {
-        "base_path": "/mnt/nasquatch/data/2p/jonna/EASI_FISH/pipeline",
+        "base_path": "/mnt/andernas00/data/ezfish/jonna/new_pipeline",
         "mouse_name": "PS043",
         "two_photons_imaging": {
             "sessions": [
                 {
                     "date": "240913",
-                    "functional_run": '/mnt/nasquatch/data/2p/jonna/EASI_FISH/pipeline/PS043/2P/PS043_240913_002/suite2p/plane0/data.bin',
-                    
-                    "anatomical_hires_run": "/mnt/nasquatch/data/2p/jonna/EASI_FISH/pipeline/PS043/2P/PS043_240913_004/suite2p/plane0/data.bin",
+                    # tiff or binary
+                    # all files should be without rotation.
+                    "functional_green": '/mnt/nasquatch/data/2p/jonna/EASI_FISH/pipeline/PS043/2P/PS043_240913_002/suite2p/plane2/data.bin',
+                    "functional_red": "/mnt/nasquatch/data/2p/jonna/EASI_FISH/pipeline/PS043/2P/PS043_240913_002/suite2p/plane2/data.bin",
+
+                    "stitched_highres_green": "/mnt/nasquatch/data/2p/jonna/EASI_FISH/pipeline/PS043/OUTPUT/2P/tile/stitched/plane0_C0_merged_cropped_rotated.tif",
+                    "stitched_highres_red": "/mnt/nasquatch/data/2p/jonna/EASI_FISH/pipeline/PS043/OUTPUT/2P/tile/stitched/plane0_C1_merged_cropped_rotated.tif",
+
                 }
             ]
         },

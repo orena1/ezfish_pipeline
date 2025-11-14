@@ -1,3 +1,4 @@
+print("Running main pipeline...", flush=True)
 import argparse
 import logging
 from pathlib import Path
@@ -8,7 +9,7 @@ from src import functional as fc
 from src import registrations as rf
 from src import meta as mt
 from src import segmentation as sg
-
+print("Running main Finish loading", flush=True)
 # This is the main pipeline script that runs the entire pipeline
 
 # https://drive.google.com/file/d/1HZNh7aqJr-vTsLsSGlFmi11HuEvYlgZ-/view?usp=sharing
@@ -18,28 +19,17 @@ def main(args = None):
     We can either start main with arguments or from command line 
     See README.md for more information
     '''
-    session = []
-
+    
     # Parse the manifest file
     full_manifest = mt.main_pipeline_manifest(args.manifest)
     specs, has_hires = mt.verify_manifest(full_manifest, args)
-    if args.only_hcr:
-        process_plane(args, full_manifest, session, has_hires)
+    session = full_manifest['data']['two_photons_imaging']['sessions'][0]
+    process_plane(args, full_manifest, session, has_hires)
 
-    else:
-        session = full_manifest['data']['two_photons_imaging']['sessions'][0]
-        
-        if args.add_planes:
-            reference_plane = session['functional_plane'][0]
-            functional_planes = session['additional_functional_planes']
-        else:
-            reference_plane = None
-            functional_planes = list(session['functional_plane'])
-        
-        for plane in functional_planes:
-            session['functional_plane'] = [plane]
-            rprint(f"\n[bold yellow]Processing plane {plane}{f' (ref: {reference_plane})' if reference_plane else ''}[/bold yellow]\n")
-            process_plane(args, full_manifest, session, has_hires, reference_plane=reference_plane)
+    # if args.only_hcr:
+    #     process_plane(args, full_manifest, session, has_hires)
+
+    # # process_plane(args, full_manifest, session, has_hires, reference_plane=reference_plane)
 
 
 def process_plane(args, full_manifest, session, has_hires, reference_plane=None):
@@ -50,9 +40,10 @@ def process_plane(args, full_manifest, session, has_hires, reference_plane=None)
             # Rotate hires file and save in correct directory.
             fc.hires_rotate_and_save(full_manifest, session)
 
-            # extract registered suite2p planes
+            # Extract registered suite2p planes
             fc.extract_functional_planes(full_manifest, session)
         else:
+            # Will need to rotate here
             fc.extract_functional_planes(full_manifest, session, combine_with_red=True)
 
     # Register the HCR data round to round

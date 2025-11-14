@@ -12,7 +12,6 @@ import scipy
 import skimage
 from skimage import filters
 import pickle as pkl
-from suite2p.io import binary
 from IPython.display import HTML, display
 from scipy.ndimage import gaussian_filter
 from scipy.sparse import csr_matrix
@@ -26,7 +25,9 @@ from scipy.interpolate import LinearNDInterpolator
 from .registrations import verify_rounds
 from .functional import get_number_of_suite2p_planes
 
-
+# optional
+try: from suite2p.io import binary
+except: pass
 
 # CellposeModelWrapper class
 # This class encapsulates the Cellpose model and its configuration.
@@ -68,35 +69,35 @@ def run_cellpose(full_manifest):
     
     # Get the cellpose channel index from params
     cellpose_channel_index = params['HCR_cellpose']['cellpose_channel']
-    
+
     model_wrapper = CellposeModelWrapper(params)
     print(f"Running cellpose for {register_rounds}")
     print(f"Using channel index {cellpose_channel_index} for cellpose segmentation")
-    
+
     for HCR_round_to_register in register_rounds + [reference_round['round']]:
         if HCR_round_to_register == reference_round['round']:
             round_folder_name = f"HCR{HCR_round_to_register}"
         else:
             round_folder_name = f"HCR{HCR_round_to_register}_to_HCR{reference_round['round']}"
-        
+
         full_stack_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
         output_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if output_path.exists():
             print(f"Cellpose segmentation already exists for {round_folder_name} - skipping")
             continue
-        
+
         raw_image = tif_imread(full_stack_path)
-        
+
         # Extract only the specified channel for cellpose
         cellpose_input = raw_image[:, cellpose_channel_index, :, :]
-        
+
         print(f"Running cellpose for {round_folder_name} using channel {cellpose_channel_index}, please wait")
         masks, _, _ = model_wrapper.eval(cellpose_input)
-        
+
         tif_imsave(output_path, masks)
         print(f"Cellpose segmentation saved for {round_folder_name} - {output_path}")
-    
+
     rprint("\n" + "="*80)
     rprint("[bold green]✨ Cellpose on Rounds COMPLETE[/bold green]")
     rprint("="*80 + "\n")
@@ -156,11 +157,11 @@ def extract_2p_cellpose_masks(full_manifest: dict, session: dict):
     for plane_to_segment in all_planes_for_cellpose:
         twop_cellpose_file = cellpose_path / f'lowres_meanImg_C0_plane{plane_to_segment}_seg.npy'
         tiff_path = cellpose_path / f'lowres_meanImg_C0_plane{plane_to_segment}.tiff'
-        
+
         if not twop_cellpose_file.exists():
             if not tiff_path.exists():
                 raise FileNotFoundError(f"2P tiff file not found: {tiff_path}")
-            
+
             rprint(f"[yellow]Running cellpose on plane {plane_to_segment}...[/yellow]")
             run_cellpose_2p(tiff_path, twop_cellpose_file, params['2p_cellpose'])
         else:

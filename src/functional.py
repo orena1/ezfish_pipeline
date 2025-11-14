@@ -12,7 +12,10 @@ from .meta import check_rotation
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imwrite
 from tifffile import TiffFile
-from sbxreader import sbx_get_metadata, sbx_memmap
+
+# optional
+try: from suite2p.io import binary
+except: pass
 
 def get_number_of_suite2p_planes(suite2p_path: Path):
     """
@@ -39,38 +42,55 @@ def hires_rotate_and_save(full_manifest: dict , session: dict):
     stitch the tiles of the session
     '''
     manifest = full_manifest['data']
-    if len(session['anatomical_hires_green_runs']) == 0:
-        return
+    session = manifest['two_photons_imaging']['sessions'][0]
 
-    plane = session['functional_plane'][0]
-    original_hires_run = session['anatomical_hires_run']
-    hires_file_C01  = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'hires' / f'hires_C01.tiff' 
+    original_hires_run_green = session['stitched_highres_green']
+    original_hires_run_red = session['stitched_highres_red']
+    hires_file_C1  = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'hires' / f'hires_C0.tiff'
+    hires_file_C2  = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'hires' / f'hires_C1.tiff'
+     
     registered_folder = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered'
 
     registered_folder.mkdir(exist_ok=True, parents=True)
-    hires_file_C01.parent.mkdir(exist_ok=True, parents=True)
+    hires_file_C1.parent.mkdir(exist_ok=True, parents=True)
 
-    save_path_registered_rotated = registered_folder / f'{hires_file_C01.stem}_rotated.tiff'
+    save_path_registered_rotated = registered_folder / f'hires_C01_rotated.tiff'
+
     if save_path_registered_rotated.exists():
         print(f'already rotated {save_path_registered_rotated}')
         return
     
     # Copy the original hires file to the expected location
-    print(f'Copying {original_hires_run} to {hires_file_C01}')
-    shutil.copyfile(original_hires_run, hires_file_C01)
+    print(f'Copying {original_hires_run_green} to {hires_file_C1}')
+    shutil.copyfile(original_hires_run_green, hires_file_C1)
+    print(f'Copying {original_hires_run_red} to {hires_file_C2}')
+    shutil.copyfile(original_hires_run_red, hires_file_C2)
 
+    # Rotate both channels and save
     rotation_config = full_manifest['params']['rotation_2p_to_HCRspec']
-    data = tif_imread(hires_file_C01)
-    for k in rotation_config:
-        if k == 'rotation' and rotation_config[k]:
-            data = np.stack([rotate(data[0], rotation_config['rotation'],resize=True,preserve_range=True),
-                             rotate(data[1], rotation_config['rotation'],resize=True,preserve_range=True)])
-        if k == 'fliplr' and rotation_config[k]:
-            data = data[:, :, ::-1]
-        if k == 'flipud' and rotation_config[k]:
-            data =data[:, ::-1, :]
-    tif_imwrite(hires_file_C01.parent / f'{hires_file_C01.stem}_rotated.tiff', data.astype(np.float32), imagej=True, metadata={'axes': 'CYX'})
-    tif_imwrite(save_path_registered_rotated, data.astype(np.float32), imagej=True, metadata={'axes': 'CYX'})
+    for channel_file in [hires_file_C1, hires_file_C2]:
+        data = tif_imread(channel_file)
+        for k in rotation_config:
+            if k == 'rotation' and rotation_config[k]:
+                data = rotate(data, rotation_config['rotation'], resize=True, preserve_range=True)
+            if k == 'fliplr' and rotation_config[k]:
+                data = data[:, ::-1]
+            if k == 'flipud' and rotation_config[k]:
+                data =data[::-1, :]
+        tif_imwrite(channel_file.parent / f'{channel_file.stem}_rotated.tiff', data.astype(np.float32), 
+                    imagej=True,
+                    metadata={'axes': 'YX'})
+    
+    # load both channels and stack them
+    data_C01 = np.stack([tif_imread(hires_file_C1.parent / f'{hires_file_C1.stem}_rotated.tiff'),
+                        tif_imread(hires_file_C2.parent / f'{hires_file_C2.stem}_rotated.tiff')])
+
+    # save stacked channels
+    tif_imwrite(save_path_registered_rotated,
+                data_C01.astype(np.float32), 
+                imagej=True, metadata={'axes': 'CYX'})
+
+
 
 
 def load_stack(stack_path: Path):
@@ -78,9 +98,20 @@ def load_stack(stack_path: Path):
     load a stack from the given path, path can be tiff or suite2p bin file
     '''
     frames_to_load_for_mean = 50 # read every 50th frame to speed up loading <-- Need to take out!!
-    if stack_path.suffix == '.binary':
-        suite2p.io
+    if stack_path.suffix == '.bin':
+        # Loading suite2p binary file
+        plane0_ops_path = stack_path.parent / 'ops.npy'
+        if 'plane' in stack_path.parent.name:
+            plane0_ops_path = stack_path.parent.parent / 'plane0' / 'ops.npy' # <we meed plane0 for the Lx,Ly
+
+        ops = np.load(plane0_ops_path, allow_pickle=True).item()
+        bin_file = binary.BinaryFile(filename=stack_path, Lx=ops['Lx'], Ly=ops['Ly'])
+        number_of_frames = bin_file.n_frames
+        frames_to_load = range(0, number_of_frames, number_of_frames//frames_to_load_for_mean) if number_of_frames > frames_to_load_for_mean else None
+        data = bin_file[frames_to_load]
+        
     elif stack_path.suffix in ['.tiff', '.tif']:
+        # Loading tiff file
         number_of_frames = len(TiffFile(stack_path).pages)
         frames_to_load = range(0, number_of_frames, number_of_frames//frames_to_load_for_mean) if number_of_frames > frames_to_load_for_mean else None
         data = tif_imread(stack_path, key=frames_to_load)
@@ -97,7 +128,9 @@ def extract_functional_planes(full_manifest: dict , session: dict):
     mouse_name = manifest['mouse_name']
     date = session['date']
     base_path = Path(manifest['base_path'])
-
+    functional_green = Path(session['functional_green'])
+    functional_red = Path(session['functional_red'])
+    
     #save_path = base_path / mouse_name / 'OUTPUT' / '2P' / 'cellpose'
     lowres_mean_path = base_path / mouse_name / 'OUTPUT' / '2P' / 'lowres' / 'lowres_C01_meanImg.tiff'
     registered_folder = base_path / mouse_name / 'OUTPUT' / '2P' / 'registered'
@@ -111,10 +144,13 @@ def extract_functional_planes(full_manifest: dict , session: dict):
         return
 
     # load stack 
-    subsampled_stack = load_stack(lowres_mean_path)
-    assert subsampled_stack.ndim == 4, f'Expected 4D stack, got {subsampled_stack.ndim}D'
-    assert subsampled_stack.shape[1] == 2, f'Expected 2 channels, got {subsampled_stack.shape[1]} channels'
-    mean_stack = subsampled_stack.mean(axis=0)  # mean across time
+    subsampled_stack_green = load_stack(functional_green)
+    subsampled_stack_red = load_stack(functional_red)
+    assert subsampled_stack_green.ndim == 3, f'Expected 4D stack, got {subsampled_stack_green.ndim}D'
+    assert subsampled_stack_red.ndim == 3, f'Expected 4D stack, got {subsampled_stack_red.ndim}D'
+    mean_stack_green = subsampled_stack_green.mean(axis=0)  # mean across time
+    mean_stack_red = subsampled_stack_red.mean(axis=0)  # mean across time
+    mean_stack = np.stack([mean_stack_green, mean_stack_red])
     tif_imwrite(lowres_mean_path, mean_stack.astype(np.float32), imagej=True, metadata={'axes': 'CYX'})
 
     # If we do not have highres we need to verify that rotation file is created,
@@ -123,7 +159,7 @@ def extract_functional_planes(full_manifest: dict , session: dict):
     while not check_rotation(full_manifest):
         output_string = f'''
         Missing rotation specs in {full_manifest['manifest_path']} 
-        for rotating [red]{save_filename_C}[/red] to {reference_HCR_round}
+        for rotating [red]{lowres_mean_path}[/red] to {reference_HCR_round}
         Once you create these files press enter
         '''
         rprint(output_string)
@@ -131,7 +167,7 @@ def extract_functional_planes(full_manifest: dict , session: dict):
 
 
     rotation_config = full_manifest['params']['rotation_2p_to_HCRspec']
-    data = tif_imread(save_filename_C)
+    data = tif_imread(lowres_mean_path)
 
     if data.ndim == 3:
         for k in rotation_config:
@@ -144,7 +180,7 @@ def extract_functional_planes(full_manifest: dict , session: dict):
                 data =data[:,::-1,:]
         file_specs = {'axes': 'CYX'}
 
-    tif_imwrite(save_filename_rotated, 
+    tif_imwrite(lowres_mean_rotated_path, 
                 data.astype(np.float32), 
                 imagej=True, 
                 metadata=file_specs)

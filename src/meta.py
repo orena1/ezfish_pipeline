@@ -11,7 +11,12 @@ HCR_probs = ['ADRA2A','ADRA1A','ADRA2B','ADRA1B','CALCA', 'CCK', 'CHAT', 'CHRIMS
              'BRS3', 'TACR1', 'OPRM1','NPY1R', 'ASB4', 'SAMD3', 'SATB2', 'EGR1', 'EPHA3','TRHR','SSTR2','FOS','EBF2',
              'DRD1','CRH']
 
-
+suite2p_available = True
+try:
+    from suite2p.io import binary
+except ImportError as error:
+    suite2p_available = False
+    suite2p_import_error = error
 def parse_json(json_file):
     """
     Parse a json file and return a dictionary object
@@ -64,50 +69,49 @@ def verify_manifest(manifest, args):
         for channel in i['channels']:
             assert channel in HCR_probs, f"Probe {channel} not supported"
 
-    # verify that all 2p runs exists.
-    if not args.only_hcr:
-        check_results = []
-        for k in session:
-            if '_run' in k:
-                for run in session[k]:
-                    run_path_sbx = base_path / mouse_name / '2P' /  f'{mouse_name}_{date_two_photons}_{run}' / f'{mouse_name}_{date_two_photons}_{run}.sbx'
-                    check_results.append([run_path_sbx,os.path.exists(run_path_sbx)])
-        check_results = np.array(check_results)
-        user_input_missing(check_results, 'Some 2p runs are missing, do you whish to continue?', color='red')
+    # # verify that all 2p runs exists.
+    # if not args.only_hcr:
+    #     check_results = []
+    #     for k in session:
+    #         if '_run' in k:
+    #             for run in session[k]:
+    #                 run_path_sbx = base_path / mouse_name / '2P' /  f'{mouse_name}_{date_two_photons}_{run}' / f'{mouse_name}_{date_two_photons}_{run}.sbx'
+    #                 check_results.append([run_path_sbx,os.path.exists(run_path_sbx)])
+    #     check_results = np.array(check_results)
+    #     user_input_missing(check_results, 'Some 2p runs are missing, do you whish to continue?', color='red')
 
-        # verify that functional run exists.
-        suite2p_run = session['functional_run'][0]
-        suite2p_path = base_path / mouse_name / '2P' /  f'{mouse_name}_{date_two_photons}_{suite2p_run}' / 'suite2p' /'plane0/ops.npy'
-        user_input_missing(np.array([[suite2p_path, os.path.exists(suite2p_path)]]), 'Suite2p path is missing, do you wish to continue?', color='pink')
+    #     # verify that functional run exists.
+    #     suite2p_run = session['functional_run'][0]
+    #     suite2p_path = base_path / mouse_name / '2P' /  f'{mouse_name}_{date_two_photons}_{suite2p_run}' / 'suite2p' /'plane0/ops.npy'
+    #     user_input_missing(np.array([[suite2p_path, os.path.exists(suite2p_path)]]), 'Suite2p path is missing, do you wish to continue?', color='pink')
 
     # verify that unwarp_config exists
-    if not os.path.exists(manifest['two_photons_imaging']['sessions'][0]['unwarp_config']):
-        new_path  = base_path / 'Calibration_files_for_unwarping' /manifest['two_photons_imaging']['sessions'][0]['unwarp_config']
-        if not os.path.exists(new_path):
-            raise Exception(f"unwarp config file does not exist {manifest['two_photons_imaging']['sessions'][0]['unwarp_config']} and not in {new_path}")
-        manifest['two_photons_imaging']['sessions'][0]['unwarp_config'] = new_path
+    # if not os.path.exists(manifest['two_photons_imaging']['sessions'][0]['unwarp_config']):
+    #     new_path  = base_path / 'Calibration_files_for_unwarping' /manifest['two_photons_imaging']['sessions'][0]['unwarp_config']
+    #     if not os.path.exists(new_path):
+    #         raise Exception(f"unwarp config file does not exist {manifest['two_photons_imaging']['sessions'][0]['unwarp_config']} and not in {new_path}")
+    #     manifest['two_photons_imaging']['sessions'][0]['unwarp_config'] = new_path
     
 
     # verify that either the lowres run or the hires run exists
-    has_hires = False
-    if not args.only_hcr:
-        if len(session['anatomical_lowres_green_runs'])==0 and len(session['anatomical_hires_green_runs'])==0:
-            raise Exception("No anatomical green runs found")
-        if len(session['anatomical_lowres_red_runs'])==0 and len(session['anatomical_hires_red_runs'])==0:
-            raise Exception("No anatomical red runs found")
-        assert len(session['anatomical_lowres_green_runs'])==len(session['anatomical_lowres_red_runs']), "Number of lowres green and red runs do not match"
-        assert len(session['anatomical_hires_green_runs'])==len(session['anatomical_hires_red_runs']), "Number of hires green and red runs do not match"
-        if len(session['anatomical_hires_green_runs'])>0:
-            assert len(session['anatomical_lowres_green_runs'])==0, "Cannot have both lowres and hires runs"
-            has_hires = True
-
-    if args.add_planes:
-        assert 'additional_functional_planes' in session, "additional_functional_planes must be specified in the session to add planes"
-        assert 'functional_plane' in session and len(session['functional_plane'])==1, \
-            "functional_plane must be specified in the session and only one plane can be used as reference when adding planes"
-        print(f"Adding additional functional planes: {session['additional_functional_planes']} to functional plane: {session['functional_plane']}")
-        print(f'\n ======>>> Make sure that the functional_plane is already registered completely <<======== \n') 
-        time.sleep(3)
+    # has_hires = False
+    # if not args.only_hcr:
+    #     if len(session['anatomical_lowres_green_runs'])==0 and len(session['anatomical_hires_green_runs'])==0:
+    #         raise Exception("No anatomical green runs found")
+    #     if len(session['anatomical_lowres_red_runs'])==0 and len(session['anatomical_hires_red_runs'])==0:
+    #         raise Exception("No anatomical red runs found")
+    #     assert len(session['anatomical_lowres_green_runs'])==len(session['anatomical_lowres_red_runs']), "Number of lowres green and red runs do not match"
+    #     assert len(session['anatomical_hires_green_runs'])==len(session['anatomical_hires_red_runs']), "Number of hires green and red runs do not match"
+    #     if len(session['anatomical_hires_green_runs'])>0:
+    #         assert len(session['anatomical_lowres_green_runs'])==0, "Cannot have both lowres and hires runs"
+    #         has_hires = True
+    
+    has_hires = True
+    # If using binary suite2p files, verify that suite2p is installed
+    if Path(session['functional_green']).suffix == '.bin' or Path(session['functional_red']).suffix == '.bin':
+        if not suite2p_available:
+            raise ImportError(f"suite2p is not installed. Please install suite2p to process binary suite2p files.\n import error details: {suite2p_import_error}")
+    
     return {'reference_round':reference_round, 'session':session}, has_hires
 
 def main_pipeline_manifest(json_file):
