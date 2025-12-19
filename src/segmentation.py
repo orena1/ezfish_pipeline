@@ -11,7 +11,6 @@ import scipy.io as sio
 import scipy
 import skimage
 from skimage import filters
-from skimage.registration import phase_cross_correlation
 import pickle as pkl
 from suite2p.io import binary
 from IPython.display import HTML, display
@@ -146,12 +145,10 @@ def extract_2p_cellpose_masks(full_manifest: dict, session: dict):
 
     manifest = full_manifest['data']
     params = full_manifest['params']
+
     cellpose_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'cellpose'
-    suite2p_run = session['functional_run'][0]
-    date = session['date']
-    suite2p_path = Path(manifest['base_path']) / manifest['mouse_name'] / '2P' / f"{manifest['mouse_name']}_{date}_{suite2p_run}" / 'suite2p'
-    total_planes = get_number_of_suite2p_planes(suite2p_path)
-    all_planes_for_cellpose = [str(p) for p in range(total_planes)]
+
+    all_planes_for_cellpose = session['functional_plane']
 
     # Run cellpose on all 2P planes
     rprint("[bold yellow]Checking cellpose segmentation for 2P planes...[/bold yellow]")
@@ -631,110 +628,44 @@ def convex_mask(landmarks_path: str, stack_path: str, Ydist: int, full_manifest:
     blacked_out_stack_first_channel = blackout_above_and_below(tiff_stack_first_channel, top_z_values, bottom_z_values)
     return blacked_out_stack_first_channel
 
-def adjust_landmarks_for_plane(reference_landmarks_path, new_landmarks_path, 
-                                reference_optotune, target_optotune,
-                                session=None, manifest=None,
-                                hardcoded_shifts=None):
+
+
+def adjust_landmarks_for_plane(reference_landmarks_path, new_landmarks_path, reference_optotune, target_optotune):
     """
-    Adjust landmarks: Z from optotune, XY from cumulative phase correlation
-    
-    Args:
-        hardcoded_shifts: Optional dict with {'dx': -18, 'dy': 13, 'dz': -54} to override all calculations
+    Adjust landmark Z-coordinates based on optotune difference.
+    Note: 1 optotune unit ≈ 1 micron in 2P imaging ~ (calibrated)
+    Tissue expansion factor: 1.5x for HCR (all dimensions)
     """
-    from skimage.registration import phase_cross_correlation
-    
     TISSUE_EXPANSION_FACTOR = 1.5
     
-    # HARDCODED OVERRIDE
-    if hardcoded_shifts is not None:
-        dx_microns = hardcoded_shifts.get('dx', 0.0)
-        dy_microns = hardcoded_shifts.get('dy', 0.0)
-        z_offset_microns = hardcoded_shifts.get('dz', 0.0)
-        print(f"HARDCODED: dX={dx_microns:+.1f}, dY={dy_microns:+.1f}, dZ={z_offset_microns:+.1f} µm")
-    else:
-        # Normal calculation
-        # Z offset (higher optotune = shallower = lower HCR Z)
-        z_offset_microns = (reference_optotune - target_optotune) * TISSUE_EXPANSION_FACTOR
-        dx_microns, dy_microns = 0.0, 0.0
-    
-        # XY correction if session/manifest provided
-        if session is not None and manifest is not None:
-            try:
-                # Get paths and resolution
-                reg_save_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered'
-                pix_x, pix_y = session['resolution']
-                
-                # Extract plane numbers
-                ref_plane = int(re.search(r'plane(\d+)', str(reference_landmarks_path)).group(1))
-                tgt_plane = int(re.search(r'plane(\d+)', str(new_landmarks_path)).group(1))
-                
-                # Get plane range
-                planes = list(range(min(ref_plane, tgt_plane), max(ref_plane, tgt_plane) + 1))
-                
-                # Load images
-                imgs = {}
-                for p in planes:
-                    img_path = reg_save_path / f'lowres_meanImg_C01_plane{p}_rotated.tiff'
-                    if img_path.exists():
-                        img = tif_imread(img_path)
-                        if img.ndim == 3:
-                            img = img[0]
-                        img = img.astype(np.float32)
-                        imgs[p] = (img - img.min()) / (img.max() - img.min() + 1e-10)
-                
-                # Pairwise shifts
-                pairwise = {}
-                for i in range(len(planes) - 1):
-                    p1, p2 = planes[i], planes[i + 1]
-                    if p1 in imgs and p2 in imgs:
-                        shift, _, _ = phase_cross_correlation(imgs[p1], imgs[p2], upsample_factor=10, normalization=None)
-                        pairwise[(p1, p2)] = shift
-                
-                # Accumulate
-                total_dy, total_dx = 0.0, 0.0
-                if tgt_plane > ref_plane:
-                    for i in range(ref_plane, tgt_plane):
-                        if (i, i+1) in pairwise:
-                            dy, dx = pairwise[(i, i+1)]
-                            total_dy += dy
-                            total_dx += dx
-                else:
-                    for i in range(tgt_plane, ref_plane):
-                        if (i, i+1) in pairwise:
-                            dy, dx = pairwise[(i, i+1)]
-                            total_dy -= dy
-                            total_dx -= dx
-                
-                dy_microns = total_dy * pix_y * TISSUE_EXPANSION_FACTOR
-                dx_microns = total_dx * pix_x * TISSUE_EXPANSION_FACTOR
-                
-                print(f"P{ref_plane}→P{tgt_plane}: dX={dx_microns:+.1f}, dY={dy_microns:+.1f}, dZ={z_offset_microns:+.1f} µm")
-            except Exception as e:
-                print(f"XY correction failed ({e}), using Z-only")
-        
-    # Apply and save - MANUAL to preserve exact decimal precision
+    # Read the file line by line to preserve exact formatting
     with open(reference_landmarks_path, 'r') as f:
         lines = f.readlines()
     
-    output_lines = []
-    for line in lines:
-        parts = line.strip().split(',')
-        if len(parts) == 8:
-            # Modify X, Y, Z (columns 5, 6, 7)
-            for col, offset in [(5, dx_microns), (6, dy_microns), (7, z_offset_microns)]:
-                val_str = parts[col].strip('"')
-                if val_str.lower() != 'infinity':
-                    new_val = float(val_str) + offset
-                    # Clip negative HCR values to 0
-                    if new_val < 0:
-                        new_val = 0.0
-                    parts[col] = f'"{new_val}"'
-            output_lines.append(','.join(parts) + '\n')
-        else:
-            output_lines.append(line)
+    z_offset_2p = (target_optotune - reference_optotune) * 1.0  # microns in 2P space
+    z_offset_hcr = z_offset_2p * TISSUE_EXPANSION_FACTOR  # convert to HCR space
     
+    # Process each line
+    adjusted_lines = []
+    for line in lines:
+        values = line.strip().split(',')
+        
+        # Only adjust column 7 if it's a finite number
+        if len(values) > 7 and values[7] not in ['inf', '-inf']:
+            try:
+                z_value = float(values[7])
+                if np.isfinite(z_value):
+                    values[7] = str(z_value + z_offset_hcr)
+            except ValueError:
+                pass  # Keep original if can't parse
+        
+        adjusted_lines.append(','.join(values) + '\n')
+    
+    # Write back
     with open(new_landmarks_path, 'w') as f:
-        f.writelines(output_lines)
+        f.writelines(adjusted_lines)
+    
+    print(f"Adjusted landmarks: Z offset = {z_offset_hcr:.1f} µm (HCR space)")
 
 def align_masks(full_manifest: dict, 
                 session: dict, 
@@ -846,41 +777,14 @@ def align_masks(full_manifest: dict,
     masks_2p_rotated = masks_2p
     masks_2p_rotated_path = cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated.tiff'
 
-
+    # Only save if it doesn't exist
     if not masks_2p_rotated_path.exists():
         tif_imsave(masks_2p_rotated_path, masks_2p_rotated.astype(np.uint16))
         print(f"Created rotated mask: {masks_2p_rotated_path}")
     else:
         print(f"Rotated mask already exists: {masks_2p_rotated_path}")
 
-    # Pre-generate rotated masks for ALL other planes (first run only)
-    if reference_plane is None:
-        suite2p_run = session['functional_run'][0]
-        date = session['date']
-        suite2p_path = Path(manifest['base_path']) / manifest['mouse_name'] / '2P' / f"{manifest['mouse_name']}_{date}_{suite2p_run}" / 'suite2p'
-        total_planes = get_number_of_suite2p_planes(suite2p_path)
-        
-        for p in range(total_planes):
-            if str(p) == str(plane):
-                continue
-            seg_file = cellpose_path / f'lowres_meanImg_C0_plane{p}_seg.npy'
-            rot_path = cellpose_path / f'lowres_meanImg_C0_plane{p}_seg_rotated.tiff'
-            if rot_path.exists() or not seg_file.exists():
-                continue
-            other_masks = np.array(np.load(seg_file, allow_pickle=True).item()['masks'])
-            for k in rotation_config:
-                if k == 'rotation' and rotation_config[k]:
-                    other_masks = rotate(other_masks, rotation_config['rotation'], preserve_range=True, resize=True, order=0)
-                if k == 'fliplr' and rotation_config[k]:
-                    other_masks = other_masks[:,::-1]
-                if k == 'flipud' and rotation_config[k]:
-                    other_masks = other_masks[::-1,:]
-            tif_imsave(rot_path, other_masks.astype(np.uint16))
-            print(f"  Created rotated mask: plane {p}")
-        rprint("[bold green]✓ Rotated masks created for all planes with cellpose output[/bold green]")
-
     reg_save_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered'
-
     masks_2p_rotated_to_HCR1 = reg_save_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_bigwarped_to_HCR1.tiff'
     masks_2p_rotated_to_HCR1_blacked_save_path = reg_save_path / f'lowres_meanImg_C0_plane{plane}_seg_rotated_bigwarped_to_HCR1_blacked.tiff'
     bigwarp_landmarks_path =  reg_save_path /  f'stitched_C01_plane{plane}_rotated_TO_HCR1_landmarks.csv'
@@ -888,40 +792,17 @@ def align_masks(full_manifest: dict,
 # Copy landmarks from reference plane if this is an additional plane
     if reference_plane is not None:
         ref_landmarks_path = reg_save_path / f'stitched_C01_plane{reference_plane}_rotated_TO_HCR1_landmarks.csv'
-        
-        if ref_landmarks_path.exists() and not bigwarp_landmarks_path.exists():
+        if not ref_landmarks_path.exists():
+            raise Exception(f"Reference landmarks file does not exist: {ref_landmarks_path}, please finsih running without --add_planes")
+        if not bigwarp_landmarks_path.exists():
             optotune_values = session.get('optotune', None)
             
             if optotune_values:
-                # Get 2P pixel size from manifest (required)
-                if 'resolution' not in session:
-                    raise ValueError(
-                        f"'resolution' not found in session manifest!\n"
-                        f"Please add 'resolution': [pixel_size_x, pixel_size_y] in microns/pixel\n"
-                        f"Example: 'resolution': [1.8483, 1.8723]"
-                    )
-                
-                pixel_size_x, pixel_size_y = session['resolution']
-                
-                # Paths to ROTATED C01 (2-channel) images for XY alignment
-                reg_save_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered'
-                ref_img = reg_save_path / f'lowres_meanImg_C01_plane{reference_plane}_rotated.tiff'
-                tgt_img = reg_save_path / f'lowres_meanImg_C01_plane{plane}_rotated.tiff'
-
-                # # Adjust landmarks (Z + XY)
-                # adjust_landmarks_for_plane(ref_landmarks_path, bigwarp_landmarks_path, 
-                #           optotune_values[int(reference_plane)], 
-                #           optotune_values[int(plane)],
-                #           session=session, manifest=manifest)
-
-                adjust_landmarks_for_plane(
-                        ref_landmarks_path, bigwarp_landmarks_path,
-                        optotune_values[int(reference_plane)], 
-                        optotune_values[int(plane)],
-                        hardcoded_shifts={'dx': 0, 'dy': 0, 'dz': 0}
-                    )
-                rprint(f"[green]✓ Adjusted landmarks for plane {plane} (Z + XY correction)[/green]")
-
+                z_offset = (optotune_values[int(plane)] - optotune_values[int(reference_plane)]) * 1.5
+                adjust_landmarks_for_plane(ref_landmarks_path, bigwarp_landmarks_path, 
+                                          optotune_values[int(reference_plane)], 
+                                          optotune_values[int(plane)])
+                rprint(f"[green]Adjusted landmarks for plane {plane} by {z_offset:.1f} µm in Z[/green]")
             else:
                 rprint(f"[yellow]No optotune values - copying without adjustment[/yellow]")
 

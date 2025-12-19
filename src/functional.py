@@ -68,66 +68,64 @@ def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combi
         assert len(img.shape)==2, f"meanImg - should be 2D, not 3D!"
         tif_imwrite(save_filename, img)
 
-    # After extracting all C0 planes, combine with red for ALL planes
     if combine_with_red:
-        red_run = session['anatomical_lowres_red_runs'][0]
-        red_sbx = base_path / mouse_name / '2P' / f'{mouse_name}_{date}_{red_run}' / f'{mouse_name}_{date}_{red_run}.sbx'
-        
-        for plane in range(planes):
-            save_filename_C01 = save_path / f'lowres_meanImg_C01_plane{plane}.tiff'
-            if save_filename_C01.exists():
-                continue
-            
-            img = tif_imread(save_path / f'lowres_meanImg_C0_plane{plane}.tiff')
-            red_stack = np.array(sbx_memmap(red_sbx)[:,plane,-1]).mean(0)
-            
+        save_filename_C01 = save_path / f'lowres_meanImg_C01_plane{functional_plane}.tiff'
+        if not save_filename_C01.exists():
+            save_filename_green = save_path / f'lowres_meanImg_C0_plane{functional_plane}.tiff'
+            img = tif_imread(save_filename_green)
+            red_run = session['anatomical_lowres_red_runs'][0]
+            red_sbx = base_path / mouse_name / '2P' / f'{mouse_name}_{date}_{red_run}' / f'{mouse_name}_{date}_{red_run}.sbx'
+
+            print(f'processing {red_sbx}, mean across time')
+            red_stack = np.array(sbx_memmap(red_sbx)[:,functional_plane,-1]).mean(0)
+
             combined_stack = np.stack([img, red_stack])
             tif_imwrite(save_filename_C01, combined_stack.astype(np.float32),
                         imagej=True, metadata={'axes': 'CYX'})
         channels_needed = 'C01'
 
-# Rotate ALL planes
+    # rotate and flip the selected functional plane
+    save_filename_C = save_path / f'lowres_meanImg_{channels_needed}_plane{functional_plane}.tiff'
+    save_filename_rotated = save_path_registered / f'{save_filename_C.stem}_rotated.tiff'
+    
+    if save_filename_rotated.exists():
+        return
+
+    # this is for the case of no-hires
     reference_HCR_round = verify_rounds(full_manifest)[1]['image_path']
     while not check_rotation(full_manifest):
         output_string = f'''
         Missing rotation specs in {full_manifest['manifest_path']} 
-        for rotating 2P images to {reference_HCR_round}
+        for rotating [red]{save_filename_C}[/red] to {reference_HCR_round}
         Once you create these files press enter
         '''
         rprint(output_string)
         input()
 
-    rotation_config = full_manifest['params']['rotation_2p_to_HCRspec']
-    
-    for plane in range(planes):
-        save_filename_C = save_path / f'lowres_meanImg_{channels_needed}_plane{plane}.tiff'
-        save_filename_rotated = save_path_registered / f'{save_filename_C.stem}_rotated.tiff'
-        
-        if save_filename_rotated.exists():
-            continue
-        
-        data = tif_imread(save_filename_C)
-        if data.ndim == 2:
-            for k in rotation_config:
-                if k == 'rotation' and rotation_config[k]:
-                    data = rotate(data, rotation_config['rotation'], resize=True, preserve_range=True)
-                if k == 'fliplr' and rotation_config[k]:
-                    data = data[:,::-1]
-                if k == 'flipud' and rotation_config[k]:
-                    data = data[::-1,:]
-            file_specs = {'axes': 'YX'}
-        if data.ndim == 3:
-            for k in rotation_config:
-                if k == 'rotation' and rotation_config[k]:
-                    data = np.stack([rotate(data[0], rotation_config['rotation'], resize=True, preserve_range=True),
-                                     rotate(data[1], rotation_config['rotation'], resize=True, preserve_range=True)])
-                if k == 'fliplr' and rotation_config[k]:
-                    data = data[:,:,::-1]
-                if k == 'flipud' and rotation_config[k]:
-                    data = data[:,::-1,:]
-            file_specs = {'axes': 'CYX'}
 
-        tif_imwrite(save_filename_rotated, 
-                    data.astype(np.float32), 
-                    imagej=True, 
-                    metadata=file_specs)
+    rotation_config = full_manifest['params']['rotation_2p_to_HCRspec']
+    data = tif_imread(save_filename_C)
+    if data.ndim == 2:
+        for k in rotation_config:
+            if k == 'rotation' and rotation_config[k]:
+                data = rotate(data, rotation_config['rotation'], resize=True, preserve_range=True)
+            if k == 'fliplr' and rotation_config[k]:
+                data = data[:,::-1]
+            if k == 'flipud' and rotation_config[k]:
+                data =data[::-1,:]
+        file_specs = {'axes': 'YX'}
+    if data.ndim == 3:
+        for k in rotation_config:
+            if k == 'rotation' and rotation_config[k]:
+                data = np.stack([rotate(data[0], rotation_config['rotation'], resize=True, preserve_range=True),
+                                 rotate(data[1], rotation_config['rotation'], resize=True, preserve_range=True)])
+            if k == 'fliplr' and rotation_config[k]:
+                data = data[:,:,::-1]
+            if k == 'flipud' and rotation_config[k]:
+                data =data[:,::-1,:]
+        file_specs = {'axes': 'CYX'}
+
+    tif_imwrite(save_filename_rotated, 
+                data.astype(np.float32), 
+                imagej=True, 
+                metadata=file_specs)

@@ -81,18 +81,6 @@ def process_session_sbx(full_manifest: dict , session:dict):
     if len(session['anatomical_hires_green_runs']) == 0:
         return
     print(f'processing session {session["date"]}')
-
-    # tile_to_num = {'left':'001', 'center':'002', 'right':'003'}
-    # base_2P = Path(manifest['base_path']) / manifest['mouse_name'] / '2P' 
-    # save_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'warped' 
-    # mouse_name = manifest['mouse_name']
-    # date = session['date']
-
-    # scans_names = ['left','center','right']
-    # for j, tile_loc in enumerate(scans_names):
-    #     # get output stack name from tile location
-    #     stack_name_new = tile_to_num[tile_loc]
-
     
     base_2P = Path(manifest['base_path']) / manifest['mouse_name'] / '2P' 
     save_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'warped' 
