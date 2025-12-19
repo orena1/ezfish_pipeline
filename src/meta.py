@@ -6,10 +6,13 @@ import numpy as np
 from pathlib import Path
 from rich.prompt import Prompt
 # supported HCR probs
-HCR_probs = ['ADRA2A','ADRA1A','ADRA2B','ADRA1B','CALCA', 'CCK', 'CHAT', 'CHRIMSON', 'DAPI', 'FOXP2', 'GCAMP', 'GLP1R', 'GRP', 'NPR3', 'PDYN', 
-             'RORB', 'SST', 'SYT10', 'TAC1', 'VGAT', 'SYT10', 'CD24A', 'GPR101','PDE11A','MC4R','TH','RUNX1','RUNX4',
-             'BRS3', 'TACR1', 'OPRM1','NPY1R', 'ASB4', 'SAMD3', 'SATB2', 'EGR1', 'EPHA3','TRHR','SSTR2','FOS','EBF2',
-             'DRD1','CRH','FN1']
+HCR_probs = [
+    'ADRA1A', 'ADRA1B', 'ADRA2A', 'ADRA2B', 'ASB4', 'BRS3', 'CALCA', 'CCK', 'CD24A', 'CHAT',
+    'CHRIMSON', 'CRH', 'DAPI', 'DRD1', 'EBF2', 'EGR1', 'EPHA3', 'FOS', 'FOXP2', 'GCAMP',
+    'GLP1R', 'GPR101', 'GRP', 'MC4R', 'NPR3', 'NPY1R', 'OPRM1', 'PDE11A', 'PDYN', 'RORB',
+    'RUNX1', 'RUNX4', 'SAMD3', 'SATB2', 'SST', 'SSTR2', 'SYT10', 'TAC1', 'TACR1', 'TH',
+    'TRHR', 'VGAT'
+]
 
 
 def parse_json(json_file):
