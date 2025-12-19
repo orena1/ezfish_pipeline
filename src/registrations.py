@@ -127,14 +127,23 @@ def registration_apply(full_manifest):
             # mov Image
             mov_highres = HCR_mov_round_C.transpose(2,1,0)
             
+            # Interpolation: 
+            # - Channel 0 (DAPI): use linear ('1') for smooth cell boundaries in segmentation
+            # - Other channels (HCR probes): use nearest neighbor ('0') to preserve signal intensity
+            if channel == 0:
+                interpolator = '1'  # Linear for DAPI
+            else:
+                interpolator = '0'  # Nearest neighbor for HCR probes
+            
             # register the images
             local_aligned = distributed_apply_transform(
                 fix_highres, mov_highres,
                 fix_image_spacing, mov_image_spacing,
                 transform_list=[affine, deform],
                 blocksize=blocksize,
-                write_path=output_channel_path)
-            print(fr'saved output {output_channel_path}')
+                write_path=output_channel_path,
+                interpolator=interpolator)
+            print(fr'saved output {output_channel_path} (interpolator={interpolator})')
 
             data = zarr.load(output_channel_path)
             data_paths.append(output_channel_path)
@@ -155,7 +164,6 @@ def registration_apply(full_manifest):
     if not reference_round_full_stack_path.exists():
         print(f"Copying reference round {reference_round['round']} to full_registered_stacks")
         shutil.copy(HCR_fix_image_path, reference_round_full_stack_path)
-        
             
 
 def verify_rounds(full_manifest, parse_registered = False, print_rounds = False, print_registered = False, func='registering-apply'):
