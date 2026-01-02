@@ -17,7 +17,8 @@ import SimpleITK as sitk
 from rich import print as rprint
 from tifffile import imwrite as tif_imwrite
 from tifffile import imread as tif_imread
-
+from scipy.interpolate import RBFInterpolator, griddata
+from .registrations_utils import load_landmarks, build_z_map, tps_warp_2p_to_hcr, erode_labels, global_alignment, sample_hcr_binary_at_zmap, compute_iou, apply_shift_fields, compute_tile_shifts, interpolate_shift_field, shift_2d, rotate_2d
 
 # Path for bigstream unless you did pip install
 sys.path = [fr"\\nasquatch\data\2p\jonna\Code_Python\Notebooks_Jonna\BigStream\bigstream_v2_andermann"] + sys.path 
@@ -266,3 +267,201 @@ def register_rounds(full_manifest):
     rprint("\n" + "="*80)
     rprint("[bold green] HCR Rounds Registrations COMPLETE[/bold green]")
     rprint("="*80 + "\n")
+
+
+
+def twop_to_hcr_registration(full_manifest, session):
+
+    rprint("\n" + "="*80)
+    # if reference_plane is not None:
+    #     rprint(f"[bold green] Align Masks for Additional Plane (Reference: Plane {reference_plane})[bold green]")
+    # else:
+    #     rprint("[bold green] Align Rounds Masks[bold green]")
+    rprint("="*80)
+
+    manifest = full_manifest['data']
+    params = full_manifest['params']
+    base_path = Path(manifest['base_path'])
+    mouse = manifest['mouse_name']
+
+    # def extract registration params
+    # TODO
+
+    # --- EROSION ---
+    EROSION = 2  # Erode 2P masks
+
+    # --- GLOBAL ALIGNMENT ---
+    ROTATION_RANGE = (-1, 1)      # degrees
+    ROTATION_STEP = 0.5           # degrees
+    Z_RANGE_GLOBAL = (-2, 2)    # planes (wider for cross-plane)
+    XY_MAX_GLOBAL = 80            # pixels
+
+    # --- LOCAL TILES ---
+    TILE_SIZES = [150, 75]        # pyramid
+    TILE_OVERLAP = 0.30           # 30% overlap between tiles
+    TILE_XY_MAX = 15              # Max shift allowed for the tiles !pixels!
+    TILE_Z_RANGE = (-2, 2)        # slightly wider for cross-plane -> TILE_Z_MAX = 2 = (-2,2) !pixels!
+    MIN_TILE_PIXELS = 50          # Min non-zero pixles in the tile, if there is less we just keep the tile as is.
+
+    REFERENCE_PLANE = session['functional_plane'][0]
+    TARGET_PLANES = session['additional_functional_planes'] + [REFERENCE_PLANE]
+    round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered = True, 
+                                                                    print_rounds = False, print_registered = False)
+
+    # HCR paths
+    hcr_ref_round_path = base_path / mouse / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
+    hcr_ref_masks_path = base_path / mouse / 'OUTPUT' / 'HCR' / 'cellpose' / f"HCR{reference_round['round']}_masks.tiff"
+    # 2P reference path
+    twop_ref_masks_path =  base_path / mouse / 'OUTPUT' / '2P' / 'cellpose' / f'lowres_meanImg_C0_plane{REFERENCE_PLANE}_seg_rotated.tiff'
+
+    # Create output folder
+    output_folder = base_path / mouse / 'OUTPUT' / 'MERGED' / 'aligned_masks'
+    output_folder.mkdir(parents=True, exist_ok=True)
+
+    # Load and prepare reference landmarks (filter and modify from um to pixels)
+    landmarks_path = base_path / mouse / 'OUTPUT' / '2P' / 'registered' / f'stitched_C01_plane{REFERENCE_PLANE}_rotated_TO_HCR1_landmarks.csv'
+    landmarks_df = load_landmarks(landmarks_path, hcr_ref_round_path, twop_ref_masks_path)
+
+    # Load HCR reference masks
+    hcr_ref_masks = tif_imread(str(hcr_ref_masks_path))
+    y1, x1 = hcr_ref_masks.shape[1], hcr_ref_masks.shape[2]
+
+    # Build z-map from reference landmarks
+    z_map_base = build_z_map(landmarks_df, (y1, x1))
+
+    print("\n" + "="*70)
+    print("ALIGNING ALL PLANES")
+    print("="*70)
+
+    # Loading data 
+    # Load 2P masks for each plane
+    twop_2d_planes = {}
+    for plane in TARGET_PLANES:
+        twop_path = base_path / mouse / 'OUTPUT' / '2P' / 'cellpose' / f'lowres_meanImg_C0_plane{plane}_seg_rotated.tiff'
+        twop_2d_planes[plane] = tif_imread(str(twop_path))
+        print(f"Plane {plane}: {twop_2d_planes[plane].shape}, {len(np.unique(twop_2d_planes[plane]))-1} cells")
+
+    # Store results for each plane
+    plane_results = {}
+    for plane in TARGET_PLANES:
+        # All planes to align (including reference), the refernce just gives a guess but it goes through the full alignment anyway
+        print(f"\n{'='*70}")
+        print(f"PLANE {plane}" + (" (REFERENCE)" if plane == REFERENCE_PLANE else ""))
+        print("="*70)
+
+        # TPS warp using reference landmarks
+        print("  TPS warp...")
+        twop_warped = tps_warp_2p_to_hcr(twop_2d_planes[plane], landmarks_df, hcr_ref_masks.shape)
+        assert twop_warped.shape == (y1, x1), f"Warped shape {twop_warped.shape} does not match HCR shape {(y1, x1)}" #<<-- delete check!
+
+        # Erode
+        twop_eroded = erode_labels(twop_warped, EROSION)
+        twop_binary = twop_eroded > 0
+
+        n_cells = len(np.unique(twop_eroded)) - 1
+        print(f"  Cells after erosion: {n_cells}")
+
+        # Baseline IoU
+        hcr_baseline = sample_hcr_binary_at_zmap(hcr_ref_masks, z_map_base, z_offset=0)
+        iou_baseline = compute_iou(twop_binary, hcr_baseline)
+        print(f"  Baseline IoU: {iou_baseline:.4f}")
+
+        # Global alignment
+        print("  Global search...")
+        global_params = global_alignment(
+            twop_binary, hcr_ref_masks, z_map_base,
+            ROTATION_RANGE, ROTATION_STEP,
+            Z_RANGE_GLOBAL, XY_MAX_GLOBAL,
+            desc=f"Plane {plane}"
+        )
+
+        g_theta, g_dz, g_dy, g_dx = global_params['theta'], global_params['dz'], global_params['dy'], global_params['dx']
+        print(f"  Global: θ={g_theta}°, dz={g_dz}, dy={g_dy}, dx={g_dx}")
+
+        # Apply global
+        twop_global = rotate_2d(twop_binary, g_theta)
+        twop_global = shift_2d(twop_global, g_dy, g_dx)
+        hcr_global = sample_hcr_binary_at_zmap(hcr_ref_masks, z_map_base, z_offset=g_dz)
+        iou_global = compute_iou(twop_global, hcr_global)
+        print(f"  Global IoU: {iou_global:.4f}")
+
+        # Local tile alignment
+        print("  Local tiles...")
+        cumulative_dz = np.zeros((y1, x1))
+        cumulative_dy = np.zeros((y1, x1))
+        cumulative_dx = np.zeros((y1, x1))
+        twop_current = twop_global.copy()
+
+        all_tile_results = []
+        for tile_size in TILE_SIZES:
+            tile_results = compute_tile_shifts(
+                twop_current, hcr_ref_masks, z_map_base, g_dz,
+                tile_size, TILE_OVERLAP, TILE_XY_MAX, TILE_Z_RANGE, MIN_TILE_PIXELS
+            )
+            all_tile_results.append({'tile_size': tile_size, 'tiles': tile_results})
+            
+            dz_field, dy_field, dx_field = interpolate_shift_field(tile_results, (y1, x1))
+            cumulative_dz += dz_field
+            cumulative_dy += dy_field
+            cumulative_dx += dx_field
+            
+            twop_current = apply_shift_fields(twop_global, cumulative_dy, cumulative_dx)
+            print(f"    Tiles {tile_size}px: {len(tile_results)} tiles")
+        
+        # Final local result
+        twop_local = twop_current
+        z_map_local = z_map_base + g_dz + cumulative_dz
+        hcr_local = sample_hcr_binary_at_zmap(hcr_ref_masks, z_map_local, z_offset=0)
+        iou_local = compute_iou(twop_local, hcr_local)
+        print(f"  Final IoU after gloabl + local transform: {iou_local:.4f}")
+        
+        # Store results
+        plane_results[plane] = {
+            'twop_original': twop_2d_planes[plane],
+            'twop_warped': twop_warped,
+            'twop_eroded': twop_eroded,
+            'twop_binary': twop_binary,
+            'twop_global': twop_global,
+            'twop_local': twop_local,
+            'hcr_baseline': hcr_baseline,
+            'hcr_global': hcr_global,
+            'hcr_local': hcr_local,
+            'iou_baseline': iou_baseline,
+            'iou_global': iou_global,
+            'iou_local': iou_local,
+            'global_params': global_params,
+            'z_map_local': z_map_local,
+            'cumulative_dz': cumulative_dz,
+            'cumulative_dy': cumulative_dy,
+            'cumulative_dx': cumulative_dx,
+            'n_cells': n_cells,
+        }
+        
+        # Create 3D volume matching HCR dimensions
+        nz, ny, nx = hcr_ref_masks.shape
+        twop_3d = np.zeros((nz, ny, nx), dtype=twop_local.dtype)
+
+        # Get z-coordinates for each pixel (rounded to nearest integer)
+        z_coords = np.round(z_map_local).astype(int)
+
+        # Clip z-coordinates to valid range
+        z_coords = np.clip(z_coords, 0, nz - 1)
+
+        # Create coordinate arrays for indexing
+        yy, xx = np.mgrid[0:ny, 0:nx]
+
+        # Place 2D mask into 3D volume at z-positions specified by z_map
+        twop_3d[z_coords, yy, xx] = twop_local
+
+        # Save as TIFF
+        output_path = base_path / mouse / 'OUTPUT' / '2P' / 'registered' / f'twop_plane{plane}_aligned_3d.tiff'
+        tif_imwrite(str(output_path), twop_3d)
+        print(f" Saved twop_local stack to {output_path}")
+
+    print("\n" + "="*70)
+    print("ALIGNMENT COMPLETE")
+    print("="*70)
+
+
+
+

@@ -1,18 +1,21 @@
 {
-    // Use IntelliSense to learn about possible attributes.
-    // Hover to view descriptions of existing attributes.
-    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
-    "version": "0.2.0",
-    "configurations": [
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Attach to debugpy on server",
+      "type": "python",
+      "request": "attach",
+      "connect": {
+        "host": "colab00.bidmc.harvard.edu",
+        "port": 5678
+      },
+      "pathMappings": [
         {
-            "name": "Python Debugger: Current File with Arguments",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/master_pipeline.py",
-            "console": "integratedTerminal",
-            "args": [
-                "--manifest=examples/CIM132.hjson"
-            ]
+          "localRoot": "${workspaceFolder}",
+          "remoteRoot": "/absolute/path/to/project/on/server"
         }
-    ]
+      ],
+      "justMyCode": false
+    }
+  ]
 }

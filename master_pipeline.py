@@ -43,7 +43,7 @@ def main(args = None):
 
 
 def process_plane(args, full_manifest, session, has_hires, reference_plane=None):
-
+    print(f"\n[bold green]Starting pipeline for session [/bold green]\n")
     if not args.only_hcr:
 
         if has_hires:
@@ -72,7 +72,8 @@ def process_plane(args, full_manifest, session, has_hires, reference_plane=None)
     if not args.only_hcr:
         # Extract cellpose masks from 2p images
         sg.extract_2p_cellpose_masks(full_manifest, session)
-
+        # Register 2p to HCR
+        rf.twop_to_hcr_registration(full_manifest, session)
         # Extract electrophysiology intensities from 2p images
         sg.extract_electrophysiology_intensities(full_manifest, session)
 
