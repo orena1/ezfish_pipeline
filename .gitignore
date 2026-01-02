@@ -1,2 +1,6 @@
 src/processing_notebooks/HCR_rounds/.*
 __pycache__/
+**/*.pyc
+**/*.hjson
+**/.ipynb_checkpoints/
+*.ipynb
