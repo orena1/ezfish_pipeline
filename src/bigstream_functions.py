@@ -350,8 +350,8 @@ def register_lowres(
     reg_score = get_registration_score(aligned, fix_lowres)
     reg_score_text = str(np.round(reg_score,3)).replace('-','m')
     print(f'{write_directory}/{reg_score_text}_{fname}_both.tiff',flush=True)
-    tif_imwrite(f'{write_directory}/{reg_score_text}_{fname}_both.tiff', np.swapaxes(np.array([ aligned.transpose(2,1,0), 
+    tif_imwrite(f'{write_directory}/{reg_score_text}_{fname}_both.tiff', np.swapaxes(np.array([ aligned.transpose(2,1,0),
                                                                         fix_lowres.transpose(2,1,0)]),0,1),
                                                                         imagej=True)
-    
-    return aligned
+
+    return aligned, reg_score

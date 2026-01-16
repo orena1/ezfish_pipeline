@@ -83,14 +83,6 @@ def verify_manifest(manifest, args):
         suite2p_path = base_path / mouse_name / '2P' /  f'{mouse_name}_{date_two_photons}_{suite2p_run}' / 'suite2p' /'plane0/ops.npy'
         user_input_missing(np.array([[suite2p_path, os.path.exists(suite2p_path)]]), 'Suite2p path is missing, do you wish to continue?', color='pink')
 
-    # verify that unwarp_config exists
-    if not os.path.exists(manifest['two_photons_imaging']['sessions'][0]['unwarp_config']):
-        new_path  = base_path / 'Calibration_files_for_unwarping' /manifest['two_photons_imaging']['sessions'][0]['unwarp_config']
-        if not os.path.exists(new_path):
-            raise Exception(f"unwarp config file does not exist {manifest['two_photons_imaging']['sessions'][0]['unwarp_config']} and not in {new_path}")
-        manifest['two_photons_imaging']['sessions'][0]['unwarp_config'] = new_path
-    
-
     # verify that either the lowres run or the hires run exists
     has_hires = False
     if not args.only_hcr:
@@ -104,13 +96,14 @@ def verify_manifest(manifest, args):
             assert len(session['anatomical_lowres_green_runs'])==0, "Cannot have both lowres and hires runs"
             has_hires = True
 
-    if args.add_planes:
-        assert 'additional_functional_planes' in session, "additional_functional_planes must be specified in the session to add planes"
-        assert 'functional_plane' in session and len(session['functional_plane'])==1, \
-            "functional_plane must be specified in the session and only one plane can be used as reference when adding planes"
-        print(f"Adding additional functional planes: {session['additional_functional_planes']} to functional plane: {session['functional_plane']}")
-        print(f'\n ======>>> Make sure that the functional_plane is already registered completely <<======== \n') 
-        time.sleep(3)
+    # verify that unwarp_config exists (only needed for high-res workflow)
+    if has_hires and 'unwarp_config' in session:
+        if not os.path.exists(session['unwarp_config']):
+            new_path = base_path / 'Calibration_files_for_unwarping' / session['unwarp_config']
+            if not os.path.exists(new_path):
+                raise Exception(f"unwarp config file does not exist {session['unwarp_config']} and not in {new_path}")
+            session['unwarp_config'] = new_path
+
     return {'reference_round':reference_round, 'session':session}, has_hires
 
 def main_pipeline_manifest(json_file):
@@ -128,11 +121,90 @@ def main_pipeline_manifest(json_file):
 
     return manifest
 
+def get_automation_config(params):
+    """
+    Get automation config with sensible defaults.
+
+    If 'automation' section is missing, defaults to manual (backward compatible).
+
+    Config options (all use 'auto' or 'manual'):
+    - twop_to_hcr: 'auto' or 'manual'
+        - 'manual' (default): User-provided BigWarp landmarks only
+        - 'auto': Automated registration refinement (still requires manual landmarks as starting point)
+    - lowres_to_hires: 'auto' or 'manual'
+        - 'manual' (default): User-provided BigWarp landmarks + TPS
+        - 'auto': Automated SIFT feature matching + RANSAC affine
+    - stitching: 'auto' or 'manual'
+        - 'manual' (default): User-provided BigStitcher coordinates
+        - 'auto': Automated SIFT + phase correlation stitching
+    """
+    automation = params.get('automation', {})
+    return {
+        'twop_to_hcr': automation.get('twop_to_hcr', 'manual'),
+        'lowres_to_hires': automation.get('lowres_to_hires', 'manual'),
+        'stitching': automation.get('stitching', 'manual'),
+    }
+
 def check_rotation(manifest):
     manifest = parse_json(manifest['manifest_path'])
-    if 'rotation_2p_to_HCRspec' in manifest['params']:
+    # Support both old and new name
+    if 'rotation_2p_to_HCR' in manifest['params'] or 'rotation_2p_to_HCRspec' in manifest['params']:
         return True
     else:
         return False
+
+
+# =============================================================================
+# Parameter accessor functions (with backward compatibility)
+# =============================================================================
+
+def get_rotation_config(params):
+    """Get rotation/coordinate transform config. Supports old and new names."""
+    # New name first, fall back to old
+    return params.get('rotation_2p_to_HCR', params.get('rotation_2p_to_HCRspec', {}))
+
+
+def get_hcr_to_hcr_registration_config(params):
+    """
+    Get HCR-to-HCR registration config. Supports old and new names/formats.
+
+    Returns dict with 'downsampling' as [x, y, z] array.
+    """
+    # Try new name first
+    config = params.get('HCR_to_HCR_registration', {})
+    if config:
+        # New format: downsampling as array
+        if 'downsampling' in config:
+            return config
+        # Old field names in new location
+        return {
+            'downsampling': [
+                config.get('red_mut_x', 3),
+                config.get('red_mut_y', 3),
+                config.get('red_mut_z', 2)
+            ]
+        }
+
+    # Fall back to old name (HCR_to_HCR_params)
+    old_config = params.get('HCR_to_HCR_params', {})
+    return {
+        'downsampling': [
+            old_config.get('red_mut_x', 3),
+            old_config.get('red_mut_y', 3),
+            old_config.get('red_mut_z', 2)
+        ]
+    }
+
+
+def get_stitching_config(params):
+    """Get stitching config. Supports old and new names."""
+    # New name first, fall back to old
+    return params.get('stitching', params.get('auto_stitch_params', {}))
+
+
+def get_intensity_extraction_config(params):
+    """Get intensity extraction config. Supports old and new names."""
+    # New name first, fall back to old
+    return params.get('intensity_extraction', params.get('HCR_probe_intensity_extraction', {}))
 
 

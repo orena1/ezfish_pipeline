@@ -13,7 +13,12 @@ from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imwrite
 from tqdm.auto import tqdm, trange
 
-sys.path.append("../../")
+# Add src directory to path BEFORE importing from registrations
+# This ensures registrations_utils can be found as an absolute import
+_src_path = str(Path(__file__).resolve().parent.parent.parent)
+if _src_path not in sys.path:
+    sys.path.insert(0, _src_path)
+
 from registrations import (HCR_confocal_imaging,
                                  verify_rounds)
 from bigstream_functions import custom_easifish_registration_pipeline, register_lowres, get_registration_score
