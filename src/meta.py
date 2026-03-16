@@ -1,6 +1,5 @@
 import os
 import sys
-import time
 import hjson
 import numpy as np
 from pathlib import Path
@@ -206,5 +205,20 @@ def get_intensity_extraction_config(params):
     """Get intensity extraction config. Supports old and new names."""
     # New name first, fall back to old
     return params.get('intensity_extraction', params.get('HCR_probe_intensity_extraction', {}))
+
+
+def get_round_folder_name(round_num: int, reference_round_num: int) -> str:
+    """Get the folder name for an HCR round based on whether it's the reference.
+
+    Args:
+        round_num: The HCR round number
+        reference_round_num: The reference HCR round number
+
+    Returns:
+        "HCR{N}" for reference round, "HCR{N}_to_HCR{ref}" for other rounds
+    """
+    if round_num == reference_round_num:
+        return f"HCR{round_num}"
+    return f"HCR{round_num}_to_HCR{reference_round_num}"
 
 

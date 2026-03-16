@@ -28,6 +28,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from tqdm import tqdm
+from rich import print as rprint
 
 
 class StitchingError(Exception):
@@ -178,11 +179,7 @@ def compute_pairwise_shifts(
     # overlap_fraction=0.4 means 40% overlap, so dx = 60% of tile width
     expected_dx = int(tile_width * (1 - overlap_fraction))
 
-    print(f"\nFinding alignment for {len(pairs)} tile pairs...")
-    print(f"Tile size: {tile_height} x {tile_width} pixels")
-    print(f"Expected overlap: {overlap_fraction*100:.0f}% -> expected dx ≈ {expected_dx} pixels")
-
-    for t1, t2 in tqdm(pairs, desc="Aligning tiles"):
+    for t1, t2 in tqdm(pairs, desc=f"Aligning {len(pairs)} tile pairs"):
         data1 = tile_data[t1][:, 0, :, :]  # Channel 0
         data2 = tile_data[t2][:, 0, :, :]
 
@@ -214,10 +211,6 @@ def compute_pairwise_shifts(
                 'n_good_z': len(shifts_by_z),
                 'mean_correlation': np.mean(corrs)
             }
-
-            print(f"  Pair ({t1},{t2}): dx={mean_shift[1]:.1f}±{std_shift[1]:.1f}, "
-                  f"dy={mean_shift[0]:.1f}±{std_shift[0]:.1f}, corr={np.mean(corrs):.3f}, "
-                  f"({len(shifts_by_z)}/{len(z_planes)} planes)")
         else:
             warnings.warn(f"No valid correlation for pair ({t1},{t2})")
             consensus_shifts[(t1, t2)] = {
@@ -236,8 +229,6 @@ def compute_global_positions(
     Compute global tile positions from pairwise shifts.
     Tile 1 at origin, positions accumulate sequentially.
     """
-    print(f"\nComputing global tile positions...")
-
     n_valid = sum(1 for s in pair_shifts.values() if s['shift'] is not None)
     if n_valid == 0:
         raise StitchingError("No valid pairwise shifts found.")
@@ -251,7 +242,6 @@ def compute_global_positions(
         if pair in pair_shifts and pair_shifts[pair]['shift'] is not None:
             dy, dx = pair_shifts[pair]['shift']
             positions[i] = (prev_y + dy, prev_x + dx)
-            print(f"  Tile {i}: shift=({dy:.1f}, {dx:.1f}) -> pos=({prev_y + dy:.1f}, {prev_x + dx:.1f})")
         else:
             # Fallback: nominal spacing
             nominal_dx = tile_width * 0.6
@@ -406,56 +396,7 @@ def stitch_volume_per_plane(
         h, w = plane_stitched.shape
         stitched[z_idx, c, :h, :w] = plane_stitched
 
-    print(f"\nStitched volume: {stitched.shape} (ZCYX)")
     return stitched
-
-
-def print_shift_analysis(
-    per_plane_shifts: Dict[Tuple[int, int], Dict[int, Dict]],
-    consensus_shifts: Dict[Tuple[int, int], Dict],
-    z_planes: List[int]
-) -> None:
-    """Print per-plane shift analysis for diagnostics."""
-    print(f"\n{'='*60}")
-    print("PER-PLANE SHIFT ANALYSIS")
-    print(f"{'='*60}")
-
-    for pair in sorted(per_plane_shifts.keys()):
-        t1, t2 = pair
-        z_data = per_plane_shifts[pair]
-
-        if len(z_data) < 2:
-            print(f"\nPair {t1}-{t2}: insufficient data ({len(z_data)} planes)")
-            continue
-
-        dx_values = [s['shift'][1] for s in z_data.values()]
-        dy_values = [s['shift'][0] for s in z_data.values()]
-        corr_values = [s['correlation'] for s in z_data.values()]
-
-        consensus = consensus_shifts.get(pair, {})
-        dx_cons = consensus['shift'][1] if consensus.get('shift') is not None else np.mean(dx_values)
-        dy_cons = consensus['shift'][0] if consensus.get('shift') is not None else np.mean(dy_values)
-
-        dx_range = max(dx_values) - min(dx_values)
-        dy_range = max(dy_values) - min(dy_values)
-
-        print(f"\nPair {t1}-{t2} ({len(z_data)}/{len(z_planes)} planes):")
-        print(f"  Consensus: dx={dx_cons:.1f}, dy={dy_cons:.1f}")
-        print(f"  dx range: {dx_range:.1f}px, dy range: {dy_range:.1f}px")
-        print(f"  correlation: {np.mean(corr_values):.3f}")
-
-        print(f"  Per-plane:")
-        for z in sorted(z_data.keys()):
-            s = z_data[z]
-            dx, dy = s['shift'][1], s['shift'][0]
-            print(f"    z={z:2d}: dx={dx:6.1f} ({dx-dx_cons:+5.1f}), dy={dy:6.1f} ({dy-dy_cons:+5.1f}), corr={s['correlation']:.3f}")
-
-        if dx_range > 5 or dy_range > 5:
-            print(f"  -> Per-plane stitching RECOMMENDED (>5px variation)")
-        else:
-            print(f"  -> Consensus stitching OK (<5px variation)")
-
-    print(f"{'='*60}\n")
 
 
 def auto_stitch_tiles(
@@ -486,23 +427,18 @@ def auto_stitch_tiles(
     """
     from tifffile import imread as tif_imread, imwrite as tif_imwrite
 
-    print(f"\n{'='*60}")
-    print("AUTOMATED TILE STITCHING")
-    print(f"{'='*60}\n")
+    rprint("[bold]Automated tile stitching[/bold]")
 
     # Load tiles
     source_dir = tile_dir / ('unwarped' if use_unwarped else 'warped')
     tile_data = {}
 
-    print(f"Loading {num_tiles} tiles from {source_dir}...")
-
-    for i in range(1, num_tiles + 1):
+    for i in tqdm(range(1, num_tiles + 1), desc=f"Loading {num_tiles} tiles"):
         tile_path = source_dir / f"stack_{'un' if use_unwarped else ''}warped_C12_{i:03d}.tiff"
 
         if not tile_path.exists():
             raise StitchingError(f"Missing tile {i}/{num_tiles}: {tile_path}")
 
-        print(f"  Loading tile {i}: {tile_path.name}")
         data = tif_imread(tile_path)
 
         if data.ndim != 4:
@@ -521,17 +457,12 @@ def auto_stitch_tiles(
     z_planes = list(range(num_z))
     tile_width = tile_data[1].shape[3]
 
-    print(f"Loaded {num_tiles} tiles, {num_z} z-planes each\n")
-
     # Find pairs and compute shifts
     pairs = find_horizontal_pairs(num_tiles)
 
     consensus_shifts, per_plane_shifts = compute_pairwise_shifts(
         tile_data, pairs, z_planes, overlap_fraction, noise_floor
     )
-
-    # Print analysis
-    print_shift_analysis(per_plane_shifts, consensus_shifts, z_planes)
 
     # Compute positions
     positions_by_z = compute_global_positions_per_plane(
@@ -540,12 +471,7 @@ def auto_stitch_tiles(
 
     consensus_positions = compute_global_positions(num_tiles, consensus_shifts, tile_width)
 
-    print(f"\nFinal positions (consensus):")
-    for i, (y, x) in sorted(consensus_positions.items()):
-        print(f"  Tile {i}: ({y:.1f}, {x:.1f})")
-
     # Stitch
-    print(f"\nStitching {num_z} planes x 2 channels...")
     stitched = stitch_volume_per_plane(
         tile_data, positions_by_z, z_planes, overlap_fraction, show_progress=True
     )
@@ -560,8 +486,6 @@ def auto_stitch_tiles(
         tif_imwrite(plane_dir / output_path.name, stitched[plane].astype(np.float32),
                    imagej=True, metadata={'axes': 'CYX'})
 
-    print(f"\nStitching complete!")
-    print(f"  Output: {output_path}")
-    print(f"{'='*60}\n")
+    rprint(f"[green]Stitching complete:[/green] {output_path}")
 
     return stitched

@@ -12,8 +12,6 @@ from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imwrite
 from bigstream.align import feature_point_ransac_affine_align
 from bigstream.application_pipelines import easifish_registration_pipeline
-from bigstream.transform import apply_transform
-from bigstream.piecewise_transform import distributed_apply_transform
 
 def custom_easifish_registration_pipeline(
     fix_lowres,
@@ -323,10 +321,7 @@ def register_lowres(
     alignment_spacing = np.min(fix_lowres_spacing)*4
     blob_min = int(round(np.min(fix_lowres_spacing)*4))
     blob_max = int(round(np.min(fix_lowres_spacing)*16))
-    #print(f'1, {blob_min=} , {blob_max=}')
     a = {'alignment_spacing':alignment_spacing,'blob_sizes':[blob_min, blob_max]}
-    
-    #numberOfIterations = 10 instead of 100
     global_ransac_kwargs_full = {**a, **global_ransac_kwargs}
 
     affine = feature_point_ransac_affine_align(fix_lowres, mov_lowres, 

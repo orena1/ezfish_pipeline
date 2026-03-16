@@ -1,9 +1,6 @@
 from pathlib import Path
 
-import hjson
-import matplotlib.pyplot as plt
 import numpy as np
-import scipy.io as sio
 from rich import print as rprint
 from rich.progress import track
 from skimage.transform import rotate
@@ -56,21 +53,25 @@ def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combi
     functional_plane = int(session['functional_plane'][0])
     planes = get_number_of_suite2p_planes(suite2p_path)
     channels_needed = 'C0'
-    skipped_planes = []
-    for plane in track(range(planes), description='Extracting suite2p registered planes'):
-        ## Extract the mean of the registered plane
 
+    # Check which planes need extraction
+    planes_to_extract = []
+    for plane in range(planes):
         save_filename = save_path / f'lowres_meanImg_C0_plane{plane}.tiff'
-        if save_filename.exists():
-            skipped_planes.append(plane)
-            continue
-        ops = np.load(suite2p_path / f'plane{plane}/ops.npy',allow_pickle=True).item()
-        img = ops['meanImg']
-        assert len(img.shape)==2, f"meanImg - should be 2D, not 3D!"
-        tif_imwrite(save_filename, img)
+        if not save_filename.exists():
+            planes_to_extract.append(plane)
 
-    if skipped_planes:
-        rprint(f"[dim]Planes {skipped_planes}: already exist[/dim]")
+    if not planes_to_extract:
+        # All planes already extracted - skip silently (this runs once per session)
+        pass
+    else:
+        # Only show progress bar if there's work to do
+        for plane in track(planes_to_extract, description=f'Extracting {len(planes_to_extract)}/{planes} suite2p planes'):
+            save_filename = save_path / f'lowres_meanImg_C0_plane{plane}.tiff'
+            ops = np.load(suite2p_path / f'plane{plane}/ops.npy',allow_pickle=True).item()
+            img = ops['meanImg']
+            assert len(img.shape)==2, f"meanImg - should be 2D, not 3D!"
+            tif_imwrite(save_filename, img)
 
     if combine_with_red:
         save_filename_C01 = save_path / f'lowres_meanImg_C01_plane{functional_plane}.tiff'
@@ -88,18 +89,8 @@ def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combi
                         imagej=True, metadata={'axes': 'CYX'})
         channels_needed = 'C01'
 
-    # Determine which planes to rotate
-    # Support both old and new manifest formats
-    if 'functional_planes' in session:
-        # New format: all planes in one list
-        planes_to_rotate = session['functional_planes']
-    else:
-        # Old format: functional_plane + optional additional_functional_planes
-        planes_to_rotate = [functional_plane]
-        if 'additional_functional_planes' in session:
-            planes_to_rotate.extend(session['additional_functional_planes'])
-
-    # Rotate and flip all planes that will be used
+    # Rotate the current functional plane
+    # (The pipeline calls this function once per plane being processed)
     reference_HCR_round = verify_rounds(full_manifest)[1]['image_path']
     while not check_rotation(full_manifest):
         output_string = f'''
@@ -112,47 +103,37 @@ def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combi
 
     rotation_config = get_rotation_config(full_manifest['params'])
 
-    skipped_rotations = []
-    for plane_to_rotate in planes_to_rotate:
-        # For additional planes, always use C0 (no red channel combination)
-        if plane_to_rotate == functional_plane:
-            channels = channels_needed
-        else:
-            channels = 'C0'
+    # Rotate only the current functional plane
+    save_filename_C = save_path / f'lowres_meanImg_{channels_needed}_plane{functional_plane}.tiff'
+    save_filename_rotated = save_path_registered / f'{save_filename_C.stem}_rotated.tiff'
 
-        save_filename_C = save_path / f'lowres_meanImg_{channels}_plane{plane_to_rotate}.tiff'
-        save_filename_rotated = save_path_registered / f'{save_filename_C.stem}_rotated.tiff'
+    if save_filename_rotated.exists():
+        rprint(f"[dim]Plane {functional_plane}: rotated file already exists[/dim]")
+        return
 
-        if save_filename_rotated.exists():
-            skipped_rotations.append(plane_to_rotate)
-            continue
+    data = tif_imread(save_filename_C)
+    if data.ndim == 2:
+        for k in rotation_config:
+            if k == 'rotation' and rotation_config[k]:
+                data = rotate(data, rotation_config['rotation'], resize=True, preserve_range=True)
+            if k == 'fliplr' and rotation_config[k]:
+                data = data[:,::-1]
+            if k == 'flipud' and rotation_config[k]:
+                data =data[::-1,:]
+        file_specs = {'axes': 'YX'}
+    if data.ndim == 3:
+        for k in rotation_config:
+            if k == 'rotation' and rotation_config[k]:
+                data = np.stack([rotate(data[0], rotation_config['rotation'], resize=True, preserve_range=True),
+                                 rotate(data[1], rotation_config['rotation'], resize=True, preserve_range=True)])
+            if k == 'fliplr' and rotation_config[k]:
+                data = data[:,:,::-1]
+            if k == 'flipud' and rotation_config[k]:
+                data =data[:,::-1,:]
+        file_specs = {'axes': 'CYX'}
 
-        data = tif_imread(save_filename_C)
-        if data.ndim == 2:
-            for k in rotation_config:
-                if k == 'rotation' and rotation_config[k]:
-                    data = rotate(data, rotation_config['rotation'], resize=True, preserve_range=True)
-                if k == 'fliplr' and rotation_config[k]:
-                    data = data[:,::-1]
-                if k == 'flipud' and rotation_config[k]:
-                    data =data[::-1,:]
-            file_specs = {'axes': 'YX'}
-        if data.ndim == 3:
-            for k in rotation_config:
-                if k == 'rotation' and rotation_config[k]:
-                    data = np.stack([rotate(data[0], rotation_config['rotation'], resize=True, preserve_range=True),
-                                     rotate(data[1], rotation_config['rotation'], resize=True, preserve_range=True)])
-                if k == 'fliplr' and rotation_config[k]:
-                    data = data[:,:,::-1]
-                if k == 'flipud' and rotation_config[k]:
-                    data =data[:,::-1,:]
-            file_specs = {'axes': 'CYX'}
-
-        tif_imwrite(save_filename_rotated,
-                    data.astype(np.float32),
-                    imagej=True,
-                    metadata=file_specs)
-        rprint(f"[green]Rotated plane {plane_to_rotate}[/green]")
-
-    if skipped_rotations:
-        rprint(f"[dim]Planes {skipped_rotations}: rotated files already exist[/dim]")
+    tif_imwrite(save_filename_rotated,
+                data.astype(np.float32),
+                imagej=True,
+                metadata=file_specs)
+    rprint(f"[green]Rotated plane {functional_plane}[/green]")

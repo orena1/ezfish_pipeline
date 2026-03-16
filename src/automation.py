@@ -9,7 +9,7 @@ from rich import print as rprint
 from rich.prompt import Prompt
 
 
-def find_landmark_file(base_dir, plane, prefix="", suffix="_landmarks.csv"):
+def find_landmark_file(base_dir, plane, prefix="", suffix="_landmarks.csv", hcr_ref="1"):
     """
     Find landmark file, preferring manual over auto.
 
@@ -23,6 +23,8 @@ def find_landmark_file(base_dir, plane, prefix="", suffix="_landmarks.csv"):
         File prefix (e.g., "lowres_to_hires_" or "hires_stitched_")
     suffix : str
         File suffix (default: "_landmarks.csv")
+    hcr_ref : str
+        HCR reference round number (default: "1")
 
     Returns
     -------
@@ -31,11 +33,11 @@ def find_landmark_file(base_dir, plane, prefix="", suffix="_landmarks.csv"):
     base_dir = Path(base_dir)
 
     # Manual file (user-created)
-    manual_name = f"{prefix}plane{plane}_TO_HCR1{suffix}"
+    manual_name = f"{prefix}plane{plane}_to_HCR{hcr_ref}{suffix}"
     manual_path = base_dir / manual_name
 
     # Auto file (pipeline-generated)
-    auto_name = f"{prefix}plane{plane}_TO_HCR1_auto{suffix}"
+    auto_name = f"{prefix}plane{plane}_to_HCR{hcr_ref}_auto{suffix}"
     auto_path = base_dir / auto_name
 
     if manual_path.exists():
@@ -109,6 +111,7 @@ def export_landmarks_to_bigwarp_csv(output_path, landmarks_df, pixel_spacing):
         HCR coords should already be corrected by registration shifts
     pixel_spacing : tuple
         (z_spacing, y_spacing, x_spacing) in microns for coordinate conversion
+        
     """
     output_path = Path(output_path)
 

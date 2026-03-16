@@ -1,35 +1,51 @@
-import sys
 from collections import defaultdict
 from pathlib import Path
-import hjson
 import shutil
 from cellpose import models
 from cellpose import io
 import numpy as np
 import pandas as pd
 import scipy.io as sio
-import scipy
-import skimage
-from skimage import filters
+from scipy.ndimage import median_filter as scipy_median_filter
 import pickle as pkl
 from suite2p.io import binary
 from scipy.sparse import csr_matrix
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imsave
 from tqdm.auto import tqdm
-from skimage.transform import rotate
 from rich import print as rprint
-from scipy.spatial import Delaunay, ConvexHull
+from scipy.spatial import ConvexHull
 from scipy.interpolate import LinearNDInterpolator
 from .registrations import verify_rounds
 from .functional import get_number_of_suite2p_planes
-from .meta import get_intensity_extraction_config
+from .meta import get_intensity_extraction_config, get_round_folder_name
 
 
 
 # Module-level cache for Cellpose models (optimization: avoid reloading per function call)
 # Key: (model_path, gpu), Value: CellposeModel instance
 _cellpose_model_cache = {}
+
+
+def _apply_neuropil_pooling(pooling_method: str, values: np.ndarray) -> np.ndarray:
+    """Apply a pooling method to neuropil values.
+
+    Args:
+        pooling_method: One of 'mean', 'median', or 'percentile-N' (e.g., 'percentile-25')
+        values: Array of neuropil values, shape (n_pixels, n_channels)
+
+    Returns:
+        Pooled values, shape (n_channels,)
+    """
+    if pooling_method == 'mean':
+        return values.mean(axis=0)
+    elif pooling_method == 'median':
+        return np.median(values, axis=0)
+    elif pooling_method.startswith('percentile-'):
+        percentile = int(pooling_method.split('-')[1])
+        return np.percentile(values, percentile, axis=0)
+    else:
+        raise ValueError(f"Unsupported pooling method: {pooling_method}")
 
 def _get_cached_cellpose_model(model_path: str, gpu: bool):
     """Get or create a cached Cellpose model instance."""
@@ -84,10 +100,7 @@ def run_cellpose(full_manifest):
     skipped = []
     to_process = []
     for HCR_round_to_register in all_rounds:
-        if HCR_round_to_register == reference_round['round']:
-            round_folder_name = f"HCR{HCR_round_to_register}"
-        else:
-            round_folder_name = f"HCR{HCR_round_to_register}_to_HCR{reference_round['round']}"
+        round_folder_name = get_round_folder_name(HCR_round_to_register, reference_round['round'])
         output_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
         if output_path.exists():
             skipped.append(round_folder_name)
@@ -102,7 +115,7 @@ def run_cellpose(full_manifest):
     rprint(f"HCR cellpose: processing {len(to_process)}/{len(all_rounds)} rounds")
     model_wrapper = CellposeModelWrapper(params)
 
-    for HCR_round_to_register, round_folder_name in to_process:
+    for HCR_round_to_register, round_folder_name in tqdm(to_process, desc="HCR cellpose"):
         full_stack_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
         output_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -110,10 +123,8 @@ def run_cellpose(full_manifest):
         raw_image = tif_imread(full_stack_path)
         cellpose_input = raw_image[:, cellpose_channel_index, :, :]
 
-        print(f"  {round_folder_name}: running...", end="", flush=True)
         masks, _, _ = model_wrapper.eval(cellpose_input)
         tif_imsave(output_path, masks)
-        print(" done")
 
 def run_cellpose_2p(tiff_path: Path, output_path: Path, cellpose_params: dict):
     """
@@ -149,29 +160,26 @@ def run_cellpose_2p(tiff_path: Path, output_path: Path, cellpose_params: dict):
     tif_imsave(masks_tiff_path, masks.astype(np.uint16))
 
 def extract_2p_cellpose_masks(full_manifest: dict, session: dict):
-    print("\nCellpose on 2P planes")
-
     manifest = full_manifest['data']
     params = full_manifest['params']
     cellpose_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'cellpose'
-    all_planes_for_cellpose = session['functional_plane']
 
-    for plane_to_segment in all_planes_for_cellpose:
-        twop_cellpose_file = cellpose_path / f'lowres_meanImg_C0_plane{plane_to_segment}_seg.npy'
-        tiff_path = cellpose_path / f'lowres_meanImg_C0_plane{plane_to_segment}.tiff'
+    # Get the current plane being processed
+    current_plane = session['functional_plane'][0]
 
-        if not twop_cellpose_file.exists():
-            if not tiff_path.exists():
-                raise FileNotFoundError(f"2P tiff file not found: {tiff_path}")
-            print(f"  Plane {plane_to_segment}: running...", end="", flush=True)
-            run_cellpose_2p(tiff_path, twop_cellpose_file, params['2p_cellpose'])
-            print(" done")
-        else:
-            rprint(f"  [dim]Plane {plane_to_segment}: exists, skipping[/dim]")
+    twop_cellpose_file = cellpose_path / f'lowres_meanImg_C0_plane{current_plane}_seg.npy'
+    tiff_path = cellpose_path / f'lowres_meanImg_C0_plane{current_plane}.tiff'
 
-    rprint(f"\n[bold]Verify 2P cellpose segmentation:[/bold]")
-    rprint(f"  Directory: [yellow]{cellpose_path}[/yellow]")
-    rprint(f"  Files: lowres_meanImg_C0_plane{{N}}_seg.npy")
+    if twop_cellpose_file.exists():
+        rprint(f"[dim]2P cellpose plane {current_plane}: exists[/dim]")
+    else:
+        if not tiff_path.exists():
+            raise FileNotFoundError(f"2P tiff file not found: {tiff_path}")
+        rprint(f"[bold]Running Cellpose on 2P plane {current_plane}[/bold]")
+        run_cellpose_2p(tiff_path, twop_cellpose_file, params['2p_cellpose'])
+
+    rprint(f"\n[bold]Verify 2P cellpose segmentation for plane {current_plane}:[/bold]")
+    rprint(f"  File: [yellow]{twop_cellpose_file}[/yellow]")
     rprint("\nPress [green]Enter[/green] to continue...")
     input()
     return 
@@ -230,15 +238,16 @@ def get_neuropil_mask_square(volume, radius, bound, inds):
     # Neuropil will only be sampled from pixels outside this dilated region
     # We dilate each z-plane independently (no dilation in z direction)
     if bound > 0:
-        # Create 2D structuring element (disk) - no z connectivity
+        # Create 2D structuring element extended to 3D with no z-connectivity
+        # Shape (1, 3, 3) means: 1 slice in z, 3x3 in XY
+        # This is equivalent to per-plane 2D dilation but runs as single 3D operation
         from scipy.ndimage import generate_binary_structure, iterate_structure
         struct_2d = generate_binary_structure(2, 1)  # 2D cross
         struct_2d = iterate_structure(struct_2d, 1)  # Makes it a 3x3 square
+        struct_3d = struct_2d[np.newaxis, :, :]  # Extend to 3D: shape (1, 3, 3)
 
-        # Dilate each z-plane independently
-        exclusion_zone = np.zeros_like(volume, dtype=bool)
-        for z in range(volume.shape[0]):
-            exclusion_zone[z] = binary_dilation(volume[z] > 0, structure=struct_2d, iterations=bound)
+        # Single vectorized dilation across entire volume (faster than per-z loop)
+        exclusion_zone = binary_dilation(volume > 0, structure=struct_3d, iterations=bound)
     else:
         exclusion_zone = volume > 0
 
@@ -286,11 +295,10 @@ def extract_probs_intensities(full_manifest):
     # Check which rounds need processing
     to_process = []
     for HCR_round_to_register in all_rounds:
+        round_folder_name = get_round_folder_name(HCR_round_to_register, reference_round['round'])
         if HCR_round_to_register == reference_round['round']:
-            round_folder_name = f"HCR{HCR_round_to_register}"
             channels_names = reference_round['channels']
         else:
-            round_folder_name = f"HCR{HCR_round_to_register}_to_HCR{reference_round['round']}"
             channels_names = round_to_rounds[HCR_round_to_register]['channels']
         output_folder = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'extract_intensities'
         pkl_output_path = output_folder / f"{round_folder_name}_probs_intensities.pkl"
@@ -333,65 +341,79 @@ def extract_probs_intensities(full_manifest):
         raw_image = tif_imread(full_stack_path)
         masks = tif_imread(full_stack_masks_path)
         assert raw_image[:,0,:,:].shape == masks.shape
-        print(f"  {round_folder_name}: extracting...", end="", flush=True)
+
+        # Apply median filter if configured (with disk caching for re-runs)
+        med_filter_stack = None
         if median_filter is not None:
-            med_filter_stack = filters.median(raw_image, median_filter)
+            # Cache path for filtered stack (avoids recomputation on re-runs)
+            medfilt_cache_path = output_folder / f"{round_folder_name}_{median_filter_label}_cache.npy"
+            if medfilt_cache_path.exists():
+                med_filter_stack = np.load(medfilt_cache_path, mmap_mode='r')
+            else:
+                # Use scipy directly (faster than skimage wrapper for simple footprints)
+                # median_filter shape is (z, 1, y, x) - the 1 means channels are independent
+                med_filter_stack = scipy_median_filter(raw_image, footprint=median_filter)
+                np.save(medfilt_cache_path, med_filter_stack)
         # acceleration step
         inds = get_indices_sparse(masks)
         neuropil_masks_inds = get_neuropil_mask_square(masks, neuropil_radius, neuropil_boundary, inds)
 
         number_of_channels = int(raw_image.shape[1])
-        
+
+        # Pre-compute reusable arrays and column names (optimization: avoid recreation per mask)
+        channel_indices = np.arange(number_of_channels)
+
+        # Pre-compute neuropil column names (moved outside mask loop)
+        neuropil_col_names = {}
+        for pooling_method in neuropil_pooling:
+            if pooling_method.startswith('percentile-'):
+                percentile = pooling_method.split('-')[1]
+                col_suffix = f'neuropil_{percentile}pct_nr{neuropil_radius}_nb_{neuropil_boundary}'
+            else:
+                col_suffix = f'neuropil_{pooling_method}_nr{neuropil_radius}_nb_{neuropil_boundary}'
+            neuropil_col_names[pooling_method] = col_suffix
+
         to_pnd = defaultdict(list)
-        for mask_id, mask_inds in enumerate(tqdm(inds)):
+        for mask_id, mask_inds in enumerate(tqdm(inds, desc=f"HCR {round_folder_name}")):
             if mask_id == 0:
                 continue
             if len(mask_inds[0]) == 0:
                 raise Exception("Mask with zero pixels")
             Z, Y, X = mask_inds
-            
-            vals_per_mask_per_channel = raw_image[Z, :, Y, X]
-            
-            to_pnd['mask_id'].extend([mask_id]*number_of_channels)
-            to_pnd['channel'].extend(list(range(number_of_channels)))
-            to_pnd['channel_name'].extend(channels_names)
-            to_pnd['mean'].extend(list(vals_per_mask_per_channel.mean(axis=0)))
 
-            # add X,Y,Z 
-            to_pnd['Z'].extend([Z.mean()]*number_of_channels)
-            to_pnd['X'].extend([X.mean()]*number_of_channels)
-            to_pnd['Y'].extend([Y.mean()]*number_of_channels)
-            
+            vals_per_mask_per_channel = raw_image[Z, :, Y, X]
+
+            # Compute means once and reuse
+            mean_vals = vals_per_mask_per_channel.mean(axis=0)
+            z_mean, x_mean, y_mean = Z.mean(), X.mean(), Y.mean()
+
+            # Use numpy arrays directly with extend (avoids list() conversions)
+            to_pnd['mask_id'].extend(np.full(number_of_channels, mask_id))
+            to_pnd['channel'].extend(channel_indices)
+            to_pnd['channel_name'].extend(channels_names)
+            to_pnd['mean'].extend(mean_vals)
+
+            # Add X,Y,Z (pre-computed means, extend with numpy full arrays)
+            to_pnd['Z'].extend(np.full(number_of_channels, z_mean))
+            to_pnd['X'].extend(np.full(number_of_channels, x_mean))
+            to_pnd['Y'].extend(np.full(number_of_channels, y_mean))
+
             # Extract neuropil values
             neuropil_Z, neuropil_Y, neuropil_X = neuropil_masks_inds[mask_id]
             neuropil_vals_per_channel = raw_image[neuropil_Z, :, neuropil_Y, neuropil_X]
 
             if median_filter is not None:
-                to_pnd['mean_' + median_filter_label].extend(list(med_filter_stack[Z, :, Y, X].mean(axis=0)))
+                to_pnd['mean_' + median_filter_label].extend(med_filter_stack[Z, :, Y, X].mean(axis=0))
                 neuropil_vals_per_channel_median = med_filter_stack[neuropil_Z, :, neuropil_Y, neuropil_X]
-            
 
-            # UGLY CODE, create function.
-            # Use the neuropil_pooling list to extract the correct values
+            # Apply neuropil pooling methods (using pre-computed column names)
             for pooling_method in neuropil_pooling:
-                if pooling_method == 'mean':
-                    to_pnd[f'neuropil_mean_nr{neuropil_radius}_nb_{neuropil_boundary}'].extend(neuropil_vals_per_channel.mean(0))
-                    if median_filter is not None:
-                        to_pnd[f'{median_filter_label}_neuropil_mean_nr{neuropil_radius}_nb_{neuropil_boundary}'].extend(neuropil_vals_per_channel_median.mean(0))
-                
-                elif pooling_method == 'median':
-                    to_pnd[f'neuropil_median_nr{neuropil_radius}_nb_{neuropil_boundary}'].extend(np.median(neuropil_vals_per_channel, axis=0))
-                    if median_filter is not None:
-                        to_pnd[f'{median_filter_label}_neuropil_median_nr{neuropil_radius}_nb_{neuropil_boundary}'].extend(np.median(neuropil_vals_per_channel_median, axis=0))
-                
-                elif pooling_method.startswith('percentile-'):
-                    percentile = int(pooling_method.split('-')[1])
-                    to_pnd[f'neuropil_{percentile}pct_nr{neuropil_radius}_nb_{neuropil_boundary}'].extend(np.percentile(neuropil_vals_per_channel, percentile, axis=0))
-                    if median_filter is not None:
-                        to_pnd[f'{median_filter_label}_neuropil_{percentile}pct_nr{neuropil_radius}_nb_{neuropil_boundary}'].extend(np.percentile(neuropil_vals_per_channel_median, percentile, axis=0))
-
-                else:
-                    raise ValueError(f"Unsupported pooling method: {pooling_method}")
+                col_suffix = neuropil_col_names[pooling_method]
+                to_pnd[col_suffix].extend(_apply_neuropil_pooling(pooling_method, neuropil_vals_per_channel))
+                if median_filter is not None:
+                    to_pnd[f'{median_filter_label}_{col_suffix}'].extend(
+                        _apply_neuropil_pooling(pooling_method, neuropil_vals_per_channel_median)
+                    )
 
         #Save to `masks_path` folder
         df = pd.DataFrame(to_pnd)
@@ -400,11 +422,10 @@ def extract_probs_intensities(full_manifest):
         df.attrs['HCR_round_number'] = HCR_round_to_register
         df.to_csv(csv_output_path)
         df.to_pickle(pkl_output_path)
-        print(" done")
 
 
 def extract_electrophysiology_intensities(full_manifest: dict , session: dict):
-    print("\nExtract 2P Intensities")
+    rprint("[bold]Extract 2P Intensities[/bold]")
 
     manifest = full_manifest['data'] 
     mouse_name = manifest['mouse_name']
@@ -422,9 +443,9 @@ def extract_electrophysiology_intensities(full_manifest: dict , session: dict):
     for plane in [functional_plane]:
         pkl_save_path = save_path / f'lowres_meanImg_C0_plane{plane}.pkl'
         if pkl_save_path.exists():
-            rprint(f"  [dim]Plane {plane}: exists, skipping[/dim]")
+            rprint(f"[dim]2P intensities: plane {plane} exists[/dim]")
             continue
-        print(f"  Plane {plane}: extracting...", end="", flush=True)
+
         ops = np.load(suite2p_path / f'plane0/ops.npy', allow_pickle=True).item()
         # Set up binary file
         bin_file = binary.BinaryFile(filename=suite2p_path / f'plane{plane}' / 'data.bin', Lx=ops['Lx'], Ly=ops['Ly'])
@@ -433,12 +454,12 @@ def extract_electrophysiology_intensities(full_manifest: dict , session: dict):
         # Load masks
         stats = np.load(cellpose_path / f'lowres_meanImg_C0_plane{plane}_seg.npy', allow_pickle=True).item()
         masks_locs = get_indices_sparse(stats['masks'])  # Get (x, y) indices per mask
-    
+
         # Process each mask to get mean values
         mean_frames = []
-        for mask_loc in tqdm(masks_locs[1:]):
+        for mask_loc in tqdm(masks_locs[1:], desc=f"2P plane {plane}"):
             mean_frames.append(all_data[:, mask_loc[0], mask_loc[1]].mean(axis=1))
-        
+
         mean_frames = np.array(mean_frames)
         # Save masks_locs as a dictionary
         masks_locs_dict = {f'cell_{i}': masks_locs[i] for i in range(len(masks_locs))}
@@ -451,25 +472,21 @@ def extract_electrophysiology_intensities(full_manifest: dict , session: dict):
         pkl.dump({'masks_locs': masks_locs_dict,
                   'mean_frames': mean_frames},
                   open(pkl_save_path, 'wb'))
-        print(" done")
-
-    print("2P intensity extraction complete.")
 
 def bigwarp_pixel_adjustment(stack1, stack2, name1="Stack1", name2="Stack2"):
     """Pad smaller array to match larger dimensions when bigwarp causes size mismatch."""
     if stack1.shape == stack2.shape:
         return stack1, stack2
-    
-    print(f"WARNING: Dimension mismatch - {name1}: {stack1.shape}, {name2}: {stack2.shape}")
+
+    rprint(f"[yellow]Dimension mismatch - {name1}: {stack1.shape}, {name2}: {stack2.shape}[/yellow]")
     # Check if padding exceeds 5 pixels in any dimension
     if any(abs(s1 - s2) > 5 for s1, s2 in zip(stack1.shape, stack2.shape)):
         raise ValueError(
             f"ERROR: Padding exceeds 5 pixels: {name1}={stack1.shape}, {name2}={stack2.shape}, "
             "this means that there is a serious issue with bigwarp, please re-do the registration"
         )
-    
+
     max_dims = tuple(max(s1, s2) for s1, s2 in zip(stack1.shape, stack2.shape))
-    print(f"Padding to: {max_dims}")
     
     def pad_if_needed(arr, target):
         if arr.shape != target:
@@ -492,6 +509,13 @@ def match_masks(stack1_masks_path, stack2_masks_path):
     stack1_masks = tif_imread(stack1_masks_path)
     stack2_masks = tif_imread(stack2_masks_path)
 
+    # Validate mask dtypes upfront (float masks cause indexing issues)
+    if not np.issubdtype(stack1_masks.dtype, np.integer):
+        raise ValueError(
+            f"stack1_masks has non-integer dtype {stack1_masks.dtype}. "
+            f"Masks must be stored as integers. Check file: {stack1_masks_path}"
+        )
+
     # Handle dimension mismatches from bigwarp
     stack1_masks, stack2_masks = bigwarp_pixel_adjustment(stack1_masks, stack2_masks, "Stack1", "Stack2")
 
@@ -503,21 +527,11 @@ def match_masks(stack1_masks_path, stack2_masks_path):
 
     to_pandas = {'mask1': [], 'mask2': [], 'iou': []}
 
-    for mask1_inds in stack1_masks_inds[1:]:  # skip background
+    # Enumerate masks starting from 1 (index 0 is background)
+    for mask1_id, mask1_inds in enumerate(stack1_masks_inds[1:], start=1):
         if len(mask1_inds[0]) == 0:
             continue
 
-        mask1_values = stack1_masks[mask1_inds]
-        # Validate mask integrity
-        unique_mask1_values = set(mask1_values)
-        if len(unique_mask1_values) != 1:
-            raise ValueError(
-                f"Mask index contains multiple values {unique_mask1_values}. "
-                f"This usually means masks are stored as floats instead of integers. "
-                f"Check mask file: {stack1_masks_path}"
-            )
-
-        mask1_id = mask1_values[0]
         mask1_size = len(mask1_inds[0])
 
         mask2_at_mask1 = stack2_masks[mask1_inds]
@@ -632,8 +646,6 @@ def convex_mask(landmarks_path: str, stack_path: str, Ydist: int, full_manifest:
         Returns:
             numpy.ndarray: Extrapolated Z values for each X,Y position
         """
-        print("Extrapolating surface Z-values to image edges...")
-        
         X, Y = np.meshgrid(np.arange(width), np.arange(height))
         xy_grid = np.column_stack([X.ravel(), Y.ravel()])
 
@@ -651,7 +663,6 @@ def convex_mask(landmarks_path: str, stack_path: str, Ydist: int, full_manifest:
                 nearest_point = hull_points[np.argmin(np.linalg.norm(hull_points[:, :2] - np.array([x, y]), axis=1))]
                 z_values[i, j] = nearest_point[2]
 
-        print("Extrapolation complete.")
         return z_values
     
     # Generate boundary surfaces
@@ -672,16 +683,10 @@ def convex_mask(landmarks_path: str, stack_path: str, Ydist: int, full_manifest:
         """
         volume = np.copy(tiff_stack)
 
-        total_slices = tiff_stack.shape[0]
-        for z in range(total_slices):
-            if z % 5 == 0:
-                progress = (z / total_slices) * 100
-                print(f"Processing slice {z + 1}/{total_slices} - {progress:.2f}% complete")
-
+        for z in range(tiff_stack.shape[0]):
             mask = (z > top_z_values) | (z < bottom_z_values)
             volume[z, mask] = 0
 
-        print("Masking complete.")
         return volume
 
     # Apply masking to image stack
@@ -724,8 +729,8 @@ def adjust_landmarks_for_plane(reference_landmarks_path, new_landmarks_path, ref
     # Write back
     with open(new_landmarks_path, 'w') as f:
         f.writelines(adjusted_lines)
-    
-    print(f"Adjusted landmarks: Z offset = {z_offset_hcr:.1f} µm (HCR space)")
+
+    rprint(f"[dim]Adjusted landmarks: Z offset = {z_offset_hcr:.1f} µm[/dim]")
 
 
 def print_matching_summary(df: pd.DataFrame, source_name: str, target_name: str):
@@ -802,7 +807,7 @@ def align_masks(full_manifest: dict,
     if reference_plane is None:  # Only process HCR rounds for the reference plane
 
         for HCR_round_to_register in register_rounds:
-            round_folder_name = f"HCR{HCR_round_to_register}_to_HCR{reference_round['round']}"
+            round_folder_name = get_round_folder_name(HCR_round_to_register, reference_round['round'])
 
             mov_stack_masks = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
 
@@ -938,8 +943,8 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
                 features_to_extract.append(f'{median_filter_label}_{base_feature}')
         else:
             raise ValueError(f"Unsupported pooling method: {pooling_method}")
-    
-    print(f"Building merged tables for {len(features_to_extract)} features: {features_to_extract}")
+
+    rprint(f"[bold]Building merged tables[/bold] ({len(features_to_extract)} features)")
 
     # ========== PRE-LOAD ALL DATA ONCE (optimization: avoid reloading per feature) ==========
 
@@ -1011,12 +1016,12 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
 
     # ========== PROCESS EACH FEATURE (now only pivots, no file I/O) ==========
 
-    for feature in features_to_extract:
+    skipped_features = []
+    for feature in tqdm(features_to_extract, desc="Merging features"):
         merged_table_file_path = merged_table_path / f'full_table_{feature}_twop_plane{plane}.pkl'
         if merged_table_file_path.exists():
-            print(f"Feature extraction already merged for {feature} - skipping")
+            skipped_features.append(feature)
             continue
-        print(f"Extracting feature: {feature}")
 
         # Pivot reference round for this feature
         reference_round_intensities_pivot = pd.pivot(reference_round_intensities, index='mask_id', columns=['channel_name'], values=[feature]).reset_index()
@@ -1024,10 +1029,10 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
 
         # Pivot each HCR round for this feature
         HCR_rounds_intensities_pivot = []
-        for idx, HCR_round_to_register in enumerate(register_rounds):
+        for HCR_round_to_register in register_rounds:
             HCR_round_intensities = preloaded_round_intensities[HCR_round_to_register]
             if feature not in HCR_round_intensities.columns:
-                print(f"Warning: Feature '{feature}' not found in round {HCR_round_to_register} data - skipping this round")
+                rprint(f"[yellow]Feature '{feature}' not found in round {HCR_round_to_register}[/yellow]")
                 HCR_rounds_intensities_pivot.append(pd.DataFrame())
                 continue
             HCR_rounds_intensities_pivot.append(pd.pivot(HCR_round_intensities, index='mask_id', columns=['channel_name'], values=[feature]).reset_index())
@@ -1070,11 +1075,9 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
 
         for j in range(len(HCR_round_mapping_dict)):
             round_mask_name = f'mask_round_{HCR_rounds_names[j]}'
-            print(round_mask_name)
 
             # Skip merge if the intensities DataFrame is empty (feature was missing for this round)
             if HCR_rounds_intensities_pivot[j].empty:
-                rprint(f"[yellow]Skipping merge for round {HCR_rounds_names[j]} - no intensity data available[/yellow]")
                 continue
 
             HCR_main_pivot_merged = pd.merge(HCR_main_pivot_merged,
@@ -1086,10 +1089,10 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
 
         # Add 'plane' column for clarity (each plane gets separate file)
         HCR_main_pivot_merged['plane'] = plane
-
-        pd.set_option('display.max_columns', None)
-        print(f'final table saved to {merged_table_file_path}')
         HCR_main_pivot_merged.to_pickle(merged_table_file_path)
+
+    if skipped_features:
+        rprint(f"[dim]Skipped {len(skipped_features)} existing features[/dim]")
 
     rprint("\n" + "="*80)
     rprint("[bold green] Match Aligned Masks COMPLETE[/bold green]")

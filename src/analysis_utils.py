@@ -50,6 +50,23 @@ except ImportError:
 
 
 # =============================================================================
+# UTILITIES
+# =============================================================================
+
+def get_col(df, col_name):
+    """Get column name handling both flat and MultiIndex DataFrames.
+
+    For MultiIndex columns, finds the first column containing col_name.
+    For flat columns, returns col_name unchanged.
+    """
+    if isinstance(df.columns, pd.MultiIndex):
+        for col in df.columns:
+            if col_name in str(col):
+                return col
+    return col_name
+
+
+# =============================================================================
 # CONSTANTS
 # =============================================================================
 
@@ -77,6 +94,8 @@ class AnalysisConfig:
     output_dir: Path = None
 
     # Stimulus response
+    stim_run: str = None             # run to use for ephys/stimulus (None = use functional_run)
+    concatenated_runs: list = None   # runs concatenated in Suite2p, e.g. ['001', '002', '003']
     pre_stim: float = 10.0           # seconds before stimulus
     post_stim: float = 20.0          # seconds after stimulus
     sort_window: float = 5.0         # seconds for response sorting
@@ -97,6 +116,7 @@ class AnalysisConfig:
     # Feature selection
     feature_type: str = 'mean_medflt_3x4x4'
     neuropil_type: str = 'medflt_3x4x4_neuropil_mean_nr50_nb_1'
+    neuropil_weight: float = 1.0  # weight for neuropil subtraction (0-1, typically 0.7-1.0)
 
     # Output
     save_figures: bool = True
@@ -514,13 +534,20 @@ def get_gene_column(df: pd.DataFrame, gene: str, round_num: str = '01',
     """
     Get the correct column name for a gene in the current format.
 
-    Handles both flat columns and MultiIndex columns.
+    Handles three column formats:
+    1. MultiIndex columns (before smart_merge_planes flattening)
+    2. Flattened MultiIndex columns (after smart_merge_planes)
+    3. Simple flat columns (legacy format)
 
     MultiIndex format (current pipeline):
     - Round 01: ('mean_medflt_3x4x4', 'PDYN')
     - Round 02: ('mean_medflt_3x4x4_round_02', 'TAC1')
 
-    Flat format (alternative):
+    Flattened MultiIndex format (after smart_merge_planes):
+    - Round 01: 'mean_medflt_3x4x4_PDYN'
+    - Round 02: 'mean_medflt_3x4x4_round_02_TAC1'
+
+    Simple flat format (legacy):
     - Round 01: 'PDYN'
     - Round 02: 'TAC1_round_02'
 
@@ -560,29 +587,53 @@ def get_gene_column(df: pd.DataFrame, gene: str, round_num: str = '01',
         raise KeyError(f"Column for gene '{gene}' round '{round_num}' not found. "
                       f"Tried: {alt_cols}. Available level-1: {list(df.columns.get_level_values(1).unique())}")
     else:
-        # Flat column format
+        # Flat column format - check multiple naming conventions
+        # Build list of alternatives in order of preference
+        alternatives = []
+
+        # 1. Flattened MultiIndex format (from smart_merge_planes)
+        # e.g., 'mean_medflt_3x4x4_PDYN' or 'mean_medflt_3x4x4_round_02_TAC1'
         if round_num == '01':
-            if gene in df.columns:
-                return gene
+            alternatives.append(f'{feature_type}_{gene}')
         else:
-            col = f'{gene}_round_{round_num}'
-            if col in df.columns:
-                return col
+            alternatives.append(f'{feature_type}_round_{round_num}_{gene}')
 
-        # Try alternatives
-        alternatives = [
-            gene,
-            f'{gene}_round_{round_num}',
-            f'mean_{gene}',
-            f'mean_round_{round_num}_{gene}',
-        ]
+        # 2. Simple gene name (round 01 only)
+        alternatives.append(gene)
 
+        # 3. Gene with round suffix
+        alternatives.append(f'{gene}_round_{round_num}')
+
+        # 4. Legacy 'mean_' prefix formats
+        alternatives.append(f'mean_{gene}')
+        alternatives.append(f'mean_round_{round_num}_{gene}')
+
+        # 5. Also try matching any column that ends with the gene name
+        # (handles various prefixes we might not anticipate)
+        for col in df.columns:
+            if isinstance(col, str) and col.endswith(f'_{gene}'):
+                # Check round matches if not round 01
+                if round_num == '01':
+                    if 'round_' not in col or f'round_{round_num}' in col:
+                        alternatives.append(col)
+                else:
+                    if f'round_{round_num}' in col:
+                        alternatives.append(col)
+
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_alternatives = []
         for alt in alternatives:
+            if alt not in seen:
+                seen.add(alt)
+                unique_alternatives.append(alt)
+
+        for alt in unique_alternatives:
             if alt in df.columns:
                 return alt
 
         raise KeyError(f"Column for gene '{gene}' round '{round_num}' not found. "
-                      f"Tried: {alternatives}")
+                      f"Tried: {unique_alternatives[:10]}...")
 
 
 def exclude_genes(genes: List[str], exclude: List[str] = None) -> List[str]:
@@ -612,15 +663,16 @@ def subtract_neuropil_with_qc(
     rounds: List[dict],
     clip_zero: bool = True,
     signal_feature_type: str = 'mean_medflt_3x4x4',
-    neuropil_feature_type: str = 'medflt_3x4x4_neuropil_mean_nr50_nb_1'
+    neuropil_feature_type: str = 'medflt_3x4x4_neuropil_mean_nr50_nb_1',
+    neuropil_weight: float = 1.0
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Subtract neuropil from neuron intensities with QC.
 
     Returns three versions:
     - original: Raw signal values (unchanged)
-    - subtracted: Signal - neuropil, clipped to 0 (for visualization)
-    - unclipped: Signal - neuropil, can be negative (for mode classification)
+    - subtracted: Signal - weight*neuropil, clipped to 0 (for visualization)
+    - unclipped: Signal - weight*neuropil, can be negative (for mode classification)
 
     Args:
         signal_df: DataFrame with signal values
@@ -630,6 +682,7 @@ def subtract_neuropil_with_qc(
         clip_zero: If True, clip subtracted values to minimum of 0
         signal_feature_type: Feature type prefix for signal columns
         neuropil_feature_type: Feature type prefix for neuropil columns
+        neuropil_weight: Weight for neuropil subtraction (0-1, typically 0.7-1.0)
 
     Returns:
         Tuple of (original_df, subtracted_df, unclipped_df)
@@ -662,8 +715,8 @@ def subtract_neuropil_with_qc(
             signal_vals = signal_df[signal_col].values
             neuropil_vals = neuropil_df[neuropil_col].values
 
-            # Subtract
-            diff = signal_vals - neuropil_vals
+            # Subtract with weight: signal - weight * neuropil
+            diff = signal_vals - neuropil_weight * neuropil_vals
 
             # Store unclipped version (for mode-shift classification)
             unclipped_df[signal_col] = diff
@@ -802,15 +855,6 @@ def smart_merge_planes(
     """
     import time
     t0 = time.time()
-
-    # Handle MultiIndex columns
-    def get_col(df, col_name):
-        """Get column handling both flat and MultiIndex"""
-        if isinstance(df.columns, pd.MultiIndex):
-            for col in df.columns:
-                if col_name in str(col):
-                    return col
-        return col_name
 
     # First concat all planes
     all_dfs = []
@@ -1404,6 +1448,156 @@ def apply_spatial_selection_to_dataframe(
     return filtered_df, keep_mask
 
 
+class SpatialSelector:
+    """
+    Interactive lasso selector for 2P cells. Use with %matplotlib widget backend.
+
+    Usage (two cells):
+        # Cell 1: Create selector and draw your selection
+        selector = SpatialSelector(plane_data, reference_plane, merged_df=merged_subtracted)
+        # Draw lasso on the plot, then press Enter to confirm
+
+        # Cell 2: After confirming, get the result
+        selection_path = selector.get_selection()
+        if selection_path is not None:
+            spatial_masks = create_spatial_mask_from_path(selection_path, plane_data)
+    """
+
+    def __init__(
+        self,
+        plane_data: Dict[int, dict],
+        reference_plane: int,
+        merged_df: pd.DataFrame = None,
+        highlight_matched: bool = True,
+        figsize: Tuple[int, int] = (14, 7)
+    ):
+        if not HAS_MATPLOTLIB:
+            raise ImportError("matplotlib is required for interactive selection")
+
+        from matplotlib.widgets import LassoSelector
+        from matplotlib.path import Path as MplPath
+
+        if reference_plane not in plane_data:
+            raise ValueError(f"Reference plane {reference_plane} not found in plane_data")
+
+        self.selected_path = None
+        self.selected_indices = []
+        self.confirmed = False
+        self.cancelled = False
+
+        ref_data = plane_data[reference_plane]
+        self.x_coords = ref_data['x_centroids']
+        self.y_coords = ref_data['y_centroids']
+        cell_ids = ref_data['cell_ids']
+        n_cells = len(self.x_coords)
+
+        if n_cells == 0:
+            rprint("[yellow]Warning: No cells in reference plane[/yellow]")
+            return
+
+        # Determine cell colors based on HCR match status
+        if highlight_matched and merged_df is not None:
+            colors = np.full(n_cells, 0.3)
+
+            if isinstance(merged_df.columns, pd.MultiIndex):
+                plane_col = ('best_plane', '') if ('best_plane', '') in merged_df.columns else 'best_plane'
+                mask_col = ('twoP_mask', '') if ('twoP_mask', '') in merged_df.columns else 'twoP_mask'
+            else:
+                plane_col = 'best_plane'
+                mask_col = 'twoP_mask'
+
+            plane_rows = merged_df[merged_df[plane_col] == reference_plane]
+            matched_masks = set(plane_rows[mask_col].dropna().astype(int))
+
+            for i, cell_id in enumerate(cell_ids):
+                try:
+                    mask_id = int(cell_id.split('_')[1])
+                    if mask_id in matched_masks:
+                        colors[i] = 1.0
+                except (ValueError, IndexError):
+                    continue
+        else:
+            if 'mean_frames' in ref_data and ref_data['mean_frames'] is not None:
+                mean_activity = np.mean(ref_data['mean_frames'], axis=1)
+                colors = (mean_activity - np.percentile(mean_activity, 5)) / \
+                         (np.percentile(mean_activity, 95) - np.percentile(mean_activity, 5) + 1e-10)
+                colors = np.clip(colors, 0, 1)
+            else:
+                colors = np.ones(n_cells) * 0.5
+
+        # Create figure
+        self.fig, self.ax = plt.subplots(1, 1, figsize=figsize)
+
+        scatter = self.ax.scatter(self.x_coords, self.y_coords, c=colors, cmap='viridis', s=15, alpha=0.7)
+        self.ax.set_title(f"Reference Plane {reference_plane} - Draw selection region\n"
+                     f"(Click+drag to select, Enter to confirm, Escape to cancel)")
+        self.ax.set_xlabel("X (2P pixels)")
+        self.ax.set_ylabel("Y (2P pixels)")
+        self.ax.invert_yaxis()
+        self.ax.set_aspect('equal')
+
+        cbar = self.fig.colorbar(scatter, ax=self.ax)
+        if highlight_matched and merged_df is not None:
+            cbar.set_label('HCR match (bright=matched)')
+        else:
+            cbar.set_label('Activity (normalized)')
+
+        # Status text
+        self.status = self.ax.text(0.5, 0.02, "No selection yet - draw a lasso around cells",
+                             ha='center', va='bottom', transform=self.ax.transAxes,
+                             bbox=dict(boxstyle="round", facecolor='white', alpha=0.9))
+
+        # Lasso selector
+        self.lasso = LassoSelector(self.ax, onselect=self._on_select, button=1)
+
+        # Key callback
+        self.fig.canvas.mpl_connect('key_press_event', self._on_key)
+
+        # Store MplPath for later use
+        self._MplPath = MplPath
+
+        plt.show()
+        rprint("[cyan]Draw a lasso around cells, then press Enter to confirm (Escape to cancel)[/cyan]")
+
+    def _on_select(self, verts):
+        path = self._MplPath(verts)
+        points = np.column_stack((self.x_coords, self.y_coords))
+        self.selected_indices = np.nonzero(path.contains_points(points))[0]
+        self.selected_path = path
+
+        self.status.set_text(f"Selected {len(self.selected_indices)} cells. Press Enter to confirm.")
+        self.fig.canvas.draw_idle()
+
+    def _on_key(self, event):
+        if event.key == 'enter':
+            if self.selected_path is not None:
+                self.confirmed = True
+                rprint(f"[green]Selection confirmed: {len(self.selected_indices)} cells[/green]")
+                plt.close(self.fig)
+            else:
+                self.status.set_text("No selection made. Draw a region first.")
+                self.fig.canvas.draw_idle()
+        elif event.key == 'escape':
+            self.cancelled = True
+            self.selected_path = None
+            rprint("[yellow]Selection cancelled[/yellow]")
+            plt.close(self.fig)
+
+    def get_selection(self):
+        """Get the confirmed selection path. Returns None if not confirmed or cancelled."""
+        if self.confirmed and self.selected_path is not None:
+            return self.selected_path
+        elif self.cancelled:
+            rprint("[yellow]Selection was cancelled[/yellow]")
+            return None
+        elif self.selected_path is not None and not self.confirmed:
+            rprint("[yellow]Selection not yet confirmed. Press Enter on the plot to confirm.[/yellow]")
+            return None
+        else:
+            rprint("[yellow]No selection made[/yellow]")
+            return None
+
+
 def create_spatial_selection_interactive(
     plane_data: Dict[int, dict],
     reference_plane: int,
@@ -1413,6 +1607,8 @@ def create_spatial_selection_interactive(
 ):
     """
     Create interactive lasso selector on reference plane 2P FOV.
+
+    DEPRECATED: Use SpatialSelector class instead for reliable widget backend support.
 
     User draws polygon on 2P pixel coordinates. Same region applies to all planes
     since they share the same FOV.
@@ -1427,144 +1623,88 @@ def create_spatial_selection_interactive(
         figsize: Figure size (width, height)
 
     Returns:
-        matplotlib.path.Path object defining selected region in 2P pixel coordinates.
-        Returns None if no selection made or cancelled.
+        SpatialSelector object. Call .get_selection() in a separate cell after confirming.
 
     Usage:
         %matplotlib widget
-        selection_path = create_spatial_selection_interactive(plane_data, reference_plane)
-        # User draws region and presses Enter
+
+        # Cell 1:
+        selector = create_spatial_selection_interactive(plane_data, reference_plane)
+        # Draw region and press Enter
+
+        # Cell 2:
+        selection_path = selector.get_selection()
         if selection_path is not None:
             spatial_masks = create_spatial_mask_from_path(selection_path, plane_data)
-
-    Coordinate System:
-        - X, Y are 2P pixel coordinates (typically 0-512 range)
-        - Y increases downward (image coordinates)
-        - Same XY region applies to all planes (shared FOV)
-
-    Instructions (shown on figure):
-        - Click and drag to draw selection region (lasso)
-        - Press Enter to confirm selection
-        - Press Escape to cancel
     """
-    if not HAS_MATPLOTLIB:
-        raise ImportError("matplotlib is required for interactive selection")
-
-    from matplotlib.widgets import LassoSelector
-    from matplotlib.path import Path as MplPath
-
-    if reference_plane not in plane_data:
-        raise ValueError(f"Reference plane {reference_plane} not found in plane_data")
-
-    ref_data = plane_data[reference_plane]
-    x_coords = ref_data['x_centroids']
-    y_coords = ref_data['y_centroids']
-    cell_ids = ref_data['cell_ids']
-    n_cells = len(x_coords)
-
-    if n_cells == 0:
-        rprint("[yellow]Warning: No cells in reference plane[/yellow]")
-        return None
-
-    # Determine cell colors based on HCR match status
-    if highlight_matched and merged_df is not None:
-        # Find which cells have HCR matches
-        colors = np.full(n_cells, 0.3)  # Default gray
-
-        # Handle multi-index columns
-        if isinstance(merged_df.columns, pd.MultiIndex):
-            plane_col = ('best_plane', '') if ('best_plane', '') in merged_df.columns else 'best_plane'
-            mask_col = ('twoP_mask', '') if ('twoP_mask', '') in merged_df.columns else 'twoP_mask'
-        else:
-            plane_col = 'best_plane'
-            mask_col = 'twoP_mask'
-
-        # Get matched masks for this plane
-        plane_rows = merged_df[merged_df[plane_col] == reference_plane]
-        matched_masks = set(plane_rows[mask_col].dropna().astype(int))
-
-        for i, cell_id in enumerate(cell_ids):
-            try:
-                mask_id = int(cell_id.split('_')[1])
-                if mask_id in matched_masks:
-                    colors[i] = 1.0  # Bright for matched
-            except (ValueError, IndexError):
-                continue
-    else:
-        # Use activity-based coloring if mean_frames available
-        if 'mean_frames' in ref_data and ref_data['mean_frames'] is not None:
-            mean_activity = np.mean(ref_data['mean_frames'], axis=1)
-            colors = (mean_activity - np.percentile(mean_activity, 5)) / \
-                     (np.percentile(mean_activity, 95) - np.percentile(mean_activity, 5) + 1e-10)
-            colors = np.clip(colors, 0, 1)
-        else:
-            colors = np.ones(n_cells) * 0.5
-
-    # Create figure
-    fig, ax = plt.subplots(1, 1, figsize=figsize)
-
-    # Plot cells
-    scatter = ax.scatter(x_coords, y_coords, c=colors, cmap='viridis', s=15, alpha=0.7)
-    ax.set_title(f"Reference Plane {reference_plane} - Draw selection region\n"
-                 f"(Click+drag to select, Enter to confirm, Escape to cancel)")
-    ax.set_xlabel("X (2P pixels)")
-    ax.set_ylabel("Y (2P pixels)")
-    ax.invert_yaxis()  # Image coordinates: Y increases downward
-    ax.set_aspect('equal')
-
-    # Add colorbar
-    cbar = fig.colorbar(scatter, ax=ax)
-    if highlight_matched and merged_df is not None:
-        cbar.set_label('HCR match (bright=matched)')
-    else:
-        cbar.set_label('Activity (normalized)')
-
-    # Selection manager class
-    class SelectionManager:
-        def __init__(self):
-            self.selected_path = None
-            self.selected_indices = []
-            self.lasso = LassoSelector(ax, onselect=self.on_select, button=1)
-
-            # Status text
-            self.status = ax.text(0.5, 0.02, "No selection yet",
-                                 ha='center', va='bottom', transform=ax.transAxes,
-                                 bbox=dict(boxstyle="round", facecolor='white', alpha=0.9))
-
-            # Key callback
-            fig.canvas.mpl_connect('key_press_event', self.on_key)
-
-        def on_select(self, verts):
-            path = MplPath(verts)
-            points = np.column_stack((x_coords, y_coords))
-            self.selected_indices = np.nonzero(path.contains_points(points))[0]
-            self.selected_path = path
-
-            self.status.set_text(f"Selected {len(self.selected_indices)} cells. Press Enter to confirm.")
-            fig.canvas.draw_idle()
-
-        def on_key(self, event):
-            if event.key == 'enter':
-                if self.selected_path is not None:
-                    rprint(f"[green]Selection confirmed: {len(self.selected_indices)} cells on reference plane[/green]")
-                    plt.close(fig)
-                else:
-                    self.status.set_text("No selection made. Draw a region first.")
-                    fig.canvas.draw_idle()
-            elif event.key == 'escape':
-                rprint("[yellow]Selection cancelled[/yellow]")
-                self.selected_path = None
-                plt.close(fig)
-
-    manager = SelectionManager()
-    plt.show()
-
-    return manager.selected_path
+    return SpatialSelector(
+        plane_data, reference_plane, merged_df, highlight_matched, figsize
+    )
 
 
 # =============================================================================
 # STIMULUS RESPONSE ANALYSIS
 # =============================================================================
+
+def build_frame_mapping(
+    base_path: Path,
+    mouse_name: str,
+    date: str,
+    runs: list,
+    nplanes: int
+) -> Tuple[dict, dict, int]:
+    """Build cumulative frame offsets for concatenated runs.
+
+    When multiple runs are concatenated in Suite2p, this function determines
+    where each run starts in the concatenated trace array.
+
+    Parameters
+    ----------
+    base_path : Path
+        Base path to data (e.g., /mnt/nasquatch/data/2p/jonna/EASI_FISH/pipeline)
+    mouse_name : str
+        Mouse name (e.g., 'PS274_1R')
+    date : str
+        Session date (e.g., '250826')
+    runs : list
+        List of run IDs in concatenation order (e.g., ['001', '002', '003'])
+    nplanes : int
+        Number of imaging planes
+
+    Returns
+    -------
+    cumulative_frames : dict
+        {run_id: start_frame} - where each run begins in concatenated array
+    frame_counts : dict
+        {run_id: n_frames} - frames per plane in each run
+    total_frames : int
+        Total frames in concatenated movie
+    """
+    import scipy.io as sio
+
+    cumulative_frames = {}
+    frame_counts = {}
+    total = 0
+
+    for run_id in runs:
+        run_dir = base_path / mouse_name / '2P' / f'{mouse_name}_{date}_{run_id}'
+        mat_path = run_dir / f'{mouse_name}_{date}_{run_id}.mat'
+
+        if not run_dir.exists():
+            raise FileNotFoundError(f"Run directory not found: {run_dir}")
+        if not mat_path.exists():
+            raise FileNotFoundError(f"MAT file not found: {mat_path}")
+
+        mat_data = sio.loadmat(str(mat_path))
+        total_frames_in_file = int(mat_data['info']['config'][0][0]['frames'][0][0])
+        frames_per_plane = total_frames_in_file // nplanes
+
+        cumulative_frames[run_id] = total
+        frame_counts[run_id] = frames_per_plane
+        total += frames_per_plane
+
+    return cumulative_frames, frame_counts, total
+
 
 def load_ephys_stimulus(
     ephys_path: Path,
@@ -1940,6 +2080,95 @@ def classify_responses(
 
 
 # =============================================================================
+# ARTIFACT FILTERING
+# =============================================================================
+
+def create_artifact_mask(
+    plane_data: Dict,
+    y_artifact_threshold: float = 100,
+    edge_margin: float = 20
+) -> Dict[int, np.ndarray]:
+    """
+    Create boolean masks identifying neurons to KEEP (True) vs filter (False).
+
+    Filters out neurons that are:
+    - In artifact region: Y < y_artifact_threshold (top of FOV in image coords where Y=0 is TOP)
+    - Near edges: within edge_margin pixels of any FOV edge
+
+    Args:
+        plane_data: Dict[plane, dict] with 'x_centroids', 'y_centroids' arrays
+        y_artifact_threshold: Neurons with Y < this are filtered (image coords)
+        edge_margin: Neurons within this many pixels of FOV edge are filtered
+
+    Returns:
+        Dict[plane, np.ndarray[bool]] - True = keep, False = filter
+    """
+    masks = {}
+    for plane, pdata in plane_data.items():
+        x = np.array(pdata['x_centroids'])
+        y = np.array(pdata['y_centroids'])
+
+        # FOV bounds (estimate from data)
+        x_max = np.max(x)
+        y_max = np.max(y)
+
+        # Keep neurons that pass all filters
+        keep = (
+            (y >= y_artifact_threshold) &  # Not in top artifact region
+            (x >= edge_margin) &            # Not too close to left edge
+            (x <= x_max - edge_margin) &    # Not too close to right edge
+            (y <= y_max - edge_margin)      # Not too close to bottom edge
+        )
+        masks[plane] = keep
+
+    return masks
+
+
+def apply_artifact_filter_to_responses(
+    all_responses: Dict,
+    artifact_masks: Dict[int, np.ndarray]
+) -> Dict:
+    """
+    Apply artifact masks to response classifications.
+
+    Sets excited_mask and inhibited_mask to False for neurons in artifact regions.
+    Other response data (p_values, magnitudes) are preserved unchanged.
+
+    Args:
+        all_responses: Dict[plane, dict] with 'excited_mask', 'inhibited_mask', etc.
+        artifact_masks: Dict[plane, np.ndarray[bool]] from create_artifact_mask
+
+    Returns:
+        Dict with same structure as all_responses, masks updated
+    """
+    filtered = {}
+    for plane, responses in all_responses.items():
+        if plane not in artifact_masks:
+            filtered[plane] = responses
+            continue
+
+        keep_mask = artifact_masks[plane]
+
+        # Ensure mask lengths match
+        if len(keep_mask) != len(responses['excited_mask']):
+            rprint(f"  [WARNING] Plane {plane}: artifact mask length ({len(keep_mask)}) != "
+                   f"response mask length ({len(responses['excited_mask'])}), skipping filter")
+            filtered[plane] = responses
+            continue
+
+        filtered[plane] = {
+            'excited_mask': responses['excited_mask'] & keep_mask,
+            'inhibited_mask': responses['inhibited_mask'] & keep_mask,
+            'p_values': responses.get('p_values'),
+            't_stats': responses.get('t_stats'),
+            'response_magnitudes': responses.get('response_magnitudes'),
+            'mean_responses': responses.get('mean_responses'),
+        }
+
+    return filtered
+
+
+# =============================================================================
 # GENE CLASSIFICATION
 # =============================================================================
 
@@ -2007,24 +2236,328 @@ def classify_gene_mode_shift(
     return positive_mask, threshold, stats
 
 
-def classify_all_genes(
+@dataclass
+class ClassificationConfig:
+    """
+    Configuration for gene classification method.
+
+    Allows explicit specification of each component:
+    - normalization: how to transform values before classification
+    - classifier: how to determine threshold
+    - clip_negative: whether to clip negative values to 0 before classification
+    - noisy_genes: genes that need higher sigma (more conservative threshold)
+
+    Example usage in notebook:
+        clf_config = ClassificationConfig(
+            normalization='robust_iqr',  # 'none', 'log1p', 'robust_iqr'
+            classifier='mode_shift',     # 'mode_shift', 'gmm'
+            clip_negative=False,         # keep negatives from neuropil subtraction
+            base_sigma=3.5,              # base sigma for mode_shift
+            noisy_sigma=5.0,             # sigma for noisy genes
+            noisy_genes=('PDYN',),       # genes needing higher sigma
+        )
+
+    Note: noisy_genes matches by gene name, so if a gene appears in multiple
+    rounds (re-staining), all instances will use noisy_sigma.
+    """
+    normalization: str = 'none'       # 'none', 'log1p', 'robust_iqr'
+    classifier: str = 'mode_shift'    # 'mode_shift', 'gmm'
+    clip_negative: bool = False       # clip negative values to 0
+    base_sigma: float = 3.5           # base sigma for mode_shift
+    noisy_sigma: float = 5.0          # sigma for noisy genes
+    noisy_genes: tuple = ()           # gene names needing higher sigma
+
+
+def normalize_log1p(values: np.ndarray) -> Tuple[np.ndarray, dict]:
+    """
+    Log transform: log(1+x). Compresses high values, handles zeros.
+
+    For negative values (from neuropil subtraction), shifts data to positive first.
+
+    Args:
+        values: Array of expression values (can include negatives and NaN)
+
+    Returns:
+        Tuple of (normalized_values, stats_dict)
+    """
+    min_val = np.nanmin(values)
+    if min_val < 0:
+        shifted = values - min_val + 1e-6
+    else:
+        shifted = values
+    return np.log1p(shifted), {'method': 'log1p', 'shift': min_val if min_val < 0 else 0}
+
+
+def normalize_robust_iqr(values: np.ndarray) -> Tuple[np.ndarray, dict]:
+    """
+    Robust scaling: (x - median) / IQR.
+
+    This normalization is robust to outliers and works well for gene expression
+    data that may have heavy tails or skewed distributions.
+
+    Args:
+        values: Array of expression values (can include negatives and NaN)
+
+    Returns:
+        Tuple of (normalized_values, stats_dict)
+    """
+    clean = values[~np.isnan(values)]
+    median = np.median(clean)
+    q75, q25 = np.percentile(clean, [75, 25])
+    iqr = q75 - q25
+    if iqr < 1e-6:
+        # Fallback if IQR is too small
+        iqr = np.std(clean) + 1e-6
+    scaled = (values - median) / iqr
+    return scaled, {'method': 'robust_iqr', 'median': median, 'iqr': iqr}
+
+
+def classify_gmm(
+    values: np.ndarray,
+    n_components: int = 2
+) -> Tuple[np.ndarray, float, dict]:
+    """
+    2-component Gaussian Mixture Model classification.
+
+    Fits a GMM and uses posterior probability for classification.
+    The positive component is the one with higher mean.
+
+    Args:
+        values: Array of expression values
+        n_components: Number of GMM components (default 2)
+
+    Returns:
+        Tuple of (positive_mask, threshold, stats_dict)
+    """
+    from sklearn.mixture import GaussianMixture
+
+    clean = values[~np.isnan(values)]
+    if len(clean) < 50:
+        return np.zeros(len(values), dtype=bool), np.nan, {'error': 'insufficient_data'}
+
+    # Fit GMM
+    gmm = GaussianMixture(
+        n_components=n_components,
+        covariance_type='full',
+        reg_covar=1e-4,
+        n_init=5,
+        random_state=42
+    )
+    gmm.fit(clean.reshape(-1, 1))
+
+    means = gmm.means_.flatten()
+    stds = np.sqrt(gmm.covariances_.flatten())
+    weights = gmm.weights_
+
+    # Identify positive component (higher mean)
+    pos_idx = np.argmax(means)
+    neg_idx = 1 - pos_idx
+
+    # Threshold: 2 std above negative mean
+    threshold = means[neg_idx] + 2 * stds[neg_idx]
+
+    # Use posterior probability for classification
+    mask = np.zeros(len(values), dtype=bool)
+    valid = ~np.isnan(values)
+    probs = gmm.predict_proba(values[valid].reshape(-1, 1))
+    mask[valid] = probs[:, pos_idx] > 0.5
+
+    n_positive = np.sum(mask)
+    n_valid = np.sum(valid)
+
+    stats = {
+        'method': 'gmm',
+        'threshold': threshold,
+        'n_positive': n_positive,
+        'n_valid': n_valid,
+        'pct_positive': 100 * n_positive / n_valid if n_valid > 0 else 0,
+        'means': means.tolist(),
+        'stds': stds.tolist(),
+        'weights': weights.tolist(),
+        'pos_component': int(pos_idx),
+    }
+
+    return mask, threshold, stats
+
+
+def classify_gene_expression(
+    values: np.ndarray,
+    clf_config: ClassificationConfig = None,
+    gene_name: str = None
+) -> Tuple[np.ndarray, float, dict]:
+    """
+    Unified gene classification function with configurable pipeline.
+
+    Applies the full classification pipeline:
+    1. Optional clipping (negative values -> 0)
+    2. Optional normalization (log1p, robust_iqr)
+    3. Classification (mode_shift, gmm) with per-gene sigma support
+
+    Args:
+        values: Raw expression values (can include negatives from neuropil subtraction)
+        clf_config: ClassificationConfig specifying the method
+        gene_name: Optional gene name for noisy_genes lookup (matches by name,
+                   so re-stained genes in multiple rounds will all use noisy_sigma)
+
+    Returns:
+        Tuple of (positive_mask, threshold, stats_dict)
+    """
+    if clf_config is None:
+        clf_config = ClassificationConfig()
+
+    # Determine sigma based on whether gene is in noisy_genes list
+    # Matches by gene name only, so same gene in multiple rounds all get same treatment
+    is_noisy = gene_name is not None and gene_name in clf_config.noisy_genes
+    sigma = clf_config.noisy_sigma if is_noisy else clf_config.base_sigma
+
+    stats = {'config': {
+        'normalization': clf_config.normalization,
+        'classifier': clf_config.classifier,
+        'clip_negative': clf_config.clip_negative,
+        'base_sigma': clf_config.base_sigma,
+        'noisy_sigma': clf_config.noisy_sigma,
+        'noisy_genes': clf_config.noisy_genes,
+    }}
+
+    # Step 1: Optional clipping
+    working_values = values.copy()
+    if clf_config.clip_negative:
+        working_values = np.where(working_values < 0, 0, working_values)
+        stats['n_clipped'] = np.sum(values < 0)
+
+    # Step 2: Optional normalization
+    if clf_config.normalization == 'log1p':
+        working_values, norm_stats = normalize_log1p(working_values)
+        stats.update(norm_stats)
+    elif clf_config.normalization == 'robust_iqr':
+        working_values, norm_stats = normalize_robust_iqr(working_values)
+        stats.update(norm_stats)
+    # else: 'none' - use raw values
+
+    # Step 3: Classification
+    if clf_config.classifier == 'gmm':
+        mask, threshold, clf_stats = classify_gmm(working_values)
+    else:  # 'mode_shift' (default)
+        mask, threshold, clf_stats = classify_gene_mode_shift(working_values, sigma)
+
+    stats.update(clf_stats)
+    stats['sigma_used'] = sigma
+    stats['is_noisy_gene'] = is_noisy
+    stats['method'] = f"{clf_config.normalization}|{clf_config.classifier}"
+    if clf_config.clip_negative:
+        stats['method'] = f"clipped|{stats['method']}"
+
+    return mask, threshold, stats
+
+
+def compute_gene_thresholds(
     df: pd.DataFrame,
     genes: List[str],
     rounds: List[dict],
-    config: AnalysisConfig
-) -> pd.DataFrame:
+    config: AnalysisConfig,
+    custom_thresholds: Dict[str, float] = None,
+    method: str = 'mode_shift',
+    clf_config: ClassificationConfig = None
+) -> Dict[str, dict]:
     """
-    Classify all genes across all rounds using mode-shift method.
+    Compute thresholds for all genes WITHOUT classifying.
+
+    Use this to preview thresholds before running classification.
+    Allows custom threshold overrides for specific genes.
 
     Args:
         df: DataFrame with gene expression columns
         genes: List of gene names
         rounds: List of round info dicts
         config: AnalysisConfig with normal_sigma, noisy_sigma, noisy_genes
+        custom_thresholds: Optional dict mapping gene names to custom thresholds
+        method: Classification method - 'mode_shift' or 'robust_adaptive' (legacy)
+        clf_config: ClassificationConfig for full control over classification pipeline.
+                   If provided, takes precedence over 'method' parameter.
+
+    Returns:
+        Dict mapping gene name to stats dict (mode, threshold, noise_std, etc.)
+    """
+    if custom_thresholds is None:
+        custom_thresholds = {}
+
+    stats_dict = {}
+
+    for round_info in rounds:
+        round_num = round_info['round']
+        channels = [c for c in round_info['channels'] if c not in EXCLUDE_GENES]
+
+        for gene in channels:
+            if gene not in genes:
+                continue
+
+            try:
+                col = get_gene_column(df, gene, round_num)
+            except KeyError:
+                continue
+
+            values = df[col].values
+
+            # Compute stats based on configuration
+            if clf_config is not None:
+                # Use new unified classification (pass gene name for noisy_genes lookup)
+                _, auto_threshold, stats = classify_gene_expression(values, clf_config, gene_name=gene)
+            else:
+                # Legacy: Use standard mode_shift with sigma from config
+                sigma = config.noisy_sigma if gene in config.noisy_genes else config.normal_sigma
+                _, auto_threshold, stats = classify_gene_mode_shift(values, sigma)
+                stats['sigma_used'] = sigma
+
+            # Use custom threshold if provided
+            if gene in custom_thresholds:
+                threshold = custom_thresholds[gene]
+                # Recompute counts with custom threshold
+                clean_vals = values[~np.isnan(values)]
+                n_positive = np.sum(clean_vals > threshold)
+                n_valid = len(clean_vals)
+                stats['threshold'] = threshold
+                stats['n_positive'] = n_positive
+                stats['pct_positive'] = 100 * n_positive / n_valid if n_valid > 0 else 0
+                stats['custom_threshold'] = True
+                stats['auto_threshold'] = auto_threshold
+            else:
+                stats['custom_threshold'] = False
+
+            stats['round'] = round_num
+            stats_dict[gene] = stats
+
+    return stats_dict
+
+
+def classify_all_genes(
+    df: pd.DataFrame,
+    genes: List[str],
+    rounds: List[dict],
+    config: AnalysisConfig,
+    custom_thresholds: Dict[str, float] = None,
+    method: str = 'mode_shift',
+    clf_config: ClassificationConfig = None
+) -> pd.DataFrame:
+    """
+    Classify all genes across all rounds.
+
+    Args:
+        df: DataFrame with gene expression columns
+        genes: List of gene names
+        rounds: List of round info dicts
+        config: AnalysisConfig with normal_sigma, noisy_sigma, noisy_genes
+        custom_thresholds: Optional dict mapping gene names to custom thresholds.
+                          Overrides auto-computed thresholds.
+        method: Classification method - 'mode_shift' or 'robust_adaptive' (legacy)
+        clf_config: ClassificationConfig for full control over classification pipeline.
+                   If provided, takes precedence over 'method' parameter.
 
     Returns:
         DataFrame with new '{gene}_positive' columns for each gene
     """
+    if custom_thresholds is None:
+        custom_thresholds = {}
+
     result_df = df.copy()
     classification_stats = {}
 
@@ -2043,14 +2576,40 @@ def classify_all_genes(
 
             values = df[col].values
 
-            # Use higher sigma for noisy genes
-            sigma = config.noisy_sigma if gene in config.noisy_genes else config.normal_sigma
+            # Classify based on configuration
+            if clf_config is not None:
+                # Use new unified classification (pass gene name for noisy_genes lookup)
+                positive_mask, auto_threshold, stats = classify_gene_expression(values, clf_config, gene_name=gene)
+                sigma = stats.get('sigma_used', clf_config.base_sigma)
+            else:
+                # Legacy: Use standard mode_shift with sigma from config
+                sigma = config.noisy_sigma if gene in config.noisy_genes else config.normal_sigma
+                positive_mask, auto_threshold, stats = classify_gene_mode_shift(values, sigma)
 
-            positive_mask, threshold, stats = classify_gene_mode_shift(values, sigma)
+            # Override with custom threshold if provided
+            if gene in custom_thresholds:
+                threshold = custom_thresholds[gene]
+                # Recompute mask with custom threshold
+                positive_mask = np.zeros(len(values), dtype=bool)
+                non_nan_mask = ~np.isnan(values)
+                positive_mask[non_nan_mask] = values[non_nan_mask] > threshold
+                stats['threshold'] = threshold
+                stats['n_positive'] = np.sum(positive_mask)
+                stats['pct_positive'] = 100 * stats['n_positive'] / stats['n_valid'] if stats['n_valid'] > 0 else 0
+                stats['custom_threshold'] = True
+                stats['auto_threshold'] = auto_threshold
+            else:
+                stats['custom_threshold'] = False
 
             # Store result
             pos_col = f'{gene}_positive'
             result_df[pos_col] = positive_mask
+
+            # Determine method string for display
+            if clf_config is not None:
+                method_str = stats.get('method', str(clf_config))
+            else:
+                method_str = method
 
             classification_stats[gene] = {
                 **stats,
@@ -2061,8 +2620,15 @@ def classify_all_genes(
     # Print summary
     rprint("\n  Gene classification summary:")
     for gene, stats in classification_stats.items():
+        custom_marker = " (custom)" if stats.get('custom_threshold') else ""
+        method_info = f" [{stats.get('method', 'mode_shift')}"
+        if stats.get('sigma_used'):
+            method_info += f", σ={stats['sigma_used']:.1f}"
+        if stats.get('is_noisy_gene'):
+            method_info += ", noisy"
+        method_info += "]"
         rprint(f"    {gene}: {stats['n_positive']} positive ({stats['pct_positive']:.1f}%), "
-               f"threshold={stats['threshold']:.2f}")
+               f"threshold={stats['threshold']:.2f}{custom_marker}{method_info}")
 
     # Store stats as attribute
     result_df.attrs['classification_stats'] = classification_stats
@@ -2078,7 +2644,8 @@ def align_masks_to_hcr_table(
     responses: dict,
     plane_data: Dict[int, dict],
     hcr_df: pd.DataFrame,
-    all_responses: Dict[int, dict] = None
+    all_responses: Dict[int, dict] = None,
+    all_plane_results: Dict[int, dict] = None
 ) -> dict:
     """
     Align 2P-based response masks to HCR table indices.
@@ -2095,6 +2662,9 @@ def align_masks_to_hcr_table(
         all_responses: Optional dict mapping plane -> response dict with per-plane masks.
                        If provided, uses this instead of combined responses for more
                        accurate per-plane indexing.
+        all_plane_results: Optional dict mapping plane -> {cell_ids, ...} from artifact-filtered
+                          response analysis. If provided with all_responses, uses these cell_ids
+                          for indexing (critical when artifact filtering was applied).
 
     Returns:
         dict with 'excited_aligned', 'inhibited_aligned' arrays matching HCR table
@@ -2103,19 +2673,11 @@ def align_masks_to_hcr_table(
     excited_aligned = np.zeros(n_rows, dtype=bool)
     inhibited_aligned = np.zeros(n_rows, dtype=bool)
 
-    # Handle MultiIndex columns
-    def get_col(col_name):
-        if isinstance(hcr_df.columns, pd.MultiIndex):
-            for col in hcr_df.columns:
-                if col_name in str(col):
-                    return col
-        return col_name
-
     # Find the actual column names
-    twop_mask_col = get_col('twoP_mask')
-    plane_col = get_col('best_plane')
+    twop_mask_col = get_col(hcr_df, 'twoP_mask')
+    plane_col = get_col(hcr_df, 'best_plane')
     if plane_col not in hcr_df.columns:
-        plane_col = get_col('plane')
+        plane_col = get_col(hcr_df, 'plane')
 
     if twop_mask_col not in hcr_df.columns:
         rprint(f"[yellow]Warning: twoP_mask column not found, cannot align responses[/yellow]")
@@ -2129,11 +2691,22 @@ def align_masks_to_hcr_table(
     if all_responses is not None and len(all_responses) > 0:
         # Per-plane alignment (more accurate)
         # Build lookup: (plane, cell_id) -> response index within that plane
+        # CRITICAL: If all_plane_results is provided, use its cell_ids because
+        # all_responses masks are indexed relative to the filtered cell list,
+        # not the full plane_data cell list
         plane_cell_to_idx = {}
-        for plane, pdata in plane_data.items():
-            cell_ids = pdata.get('cell_ids', [])
-            for idx, cell_id in enumerate(cell_ids):
-                plane_cell_to_idx[(plane, cell_id)] = idx
+        if all_plane_results is not None:
+            # Use filtered cell IDs from response analysis (correct indexing)
+            for plane, presult in all_plane_results.items():
+                cell_ids = presult.get('cell_ids', [])
+                for idx, cell_id in enumerate(cell_ids):
+                    plane_cell_to_idx[(plane, cell_id)] = idx
+        else:
+            # Fallback to plane_data (assumes no artifact filtering)
+            for plane, pdata in plane_data.items():
+                cell_ids = pdata.get('cell_ids', [])
+                for idx, cell_id in enumerate(cell_ids):
+                    plane_cell_to_idx[(plane, cell_id)] = idx
 
         # Count HCR rows with 2P matches
         has_2p_mask = hcr_df[twop_mask_col].notna()
@@ -2262,6 +2835,10 @@ def compute_overlaps(
     """
     Compute overlap between gene+ neurons and excited/inhibited neurons.
 
+    IMPORTANT: This function computes statistics ONLY for 2P-matched neurons
+    (where excited/inhibited classification is available). Gene+ counts are
+    restricted to this subset for accurate percentage calculations.
+
     Args:
         classified_df: DataFrame with '{gene}_positive' columns
         aligned_masks: Dict with 'excited_aligned', 'inhibited_aligned' arrays
@@ -2269,11 +2846,12 @@ def compute_overlaps(
 
     Returns:
         DataFrame with overlap statistics per gene:
-        - n_positive: Total gene+ cells
+        - n_positive_2p: Gene+ cells in 2P-matched subset (used for % calculations)
+        - n_positive_total: Gene+ cells in full volume (for reference)
         - n_excited, n_inhibited: Total excited/inhibited cells
         - n_pos_excited, n_pos_inhibited: Overlap counts
-        - pct_pos_in_excited: % of gene+ that are excited
-        - pct_pos_in_inhibited: % of gene+ that are inhibited
+        - pct_pos_in_excited: % of 2P-matched gene+ that are excited
+        - pct_pos_in_inhibited: % of 2P-matched gene+ that are inhibited
         - pct_excited_in_pos: % of excited that are gene+
         - pct_inhibited_in_pos: % of inhibited that are gene+
     """
@@ -2290,29 +2868,46 @@ def compute_overlaps(
     n_excited_total = np.sum(excited)
     n_inhibited_total = np.sum(inhibited)
 
+    # Create mask for 2P-matched neurons (where excited/inhibited are defined)
+    # These are neurons where the excited/inhibited masks are meaningful
+    has_2p_match = (excited | inhibited | ~excited)  # All neurons in aligned_masks
+    # Actually, we need neurons that COULD be excited/inhibited (i.e., have 2P data)
+    # The aligned_masks arrays are already restricted to 2P-matched cells,
+    # but classified_df may include non-matched cells with NaN/False for excited
+    # We identify 2P-matched cells as those where has_2p_match column is True
+    if 'has_2p_match' in classified_df.columns:
+        twop_matched = classified_df['has_2p_match'].fillna(False).astype(bool).values
+    else:
+        # Fallback: assume all cells in excited/inhibited arrays are 2P-matched
+        twop_matched = np.ones(len(classified_df), dtype=bool)
+
+    # Ensure arrays are same length
+    min_len = min(len(twop_matched), len(excited), len(inhibited))
+    twop_matched = twop_matched[:min_len]
+    exc = excited[:min_len]
+    inh = inhibited[:min_len]
+
     for gene in genes:
         pos_col = f'{gene}_positive'
         if pos_col not in classified_df.columns:
             continue
 
-        positive = classified_df[pos_col].values
+        positive = classified_df[pos_col].values[:min_len]
 
-        # Ensure arrays are same length (handle NaN alignment)
-        min_len = min(len(positive), len(excited), len(inhibited))
-        positive = positive[:min_len]
-        exc = excited[:min_len]
-        inh = inhibited[:min_len]
+        # Total gene+ in full volume
+        n_positive_total = np.sum(positive)
 
-        n_positive = np.sum(positive)
+        # Gene+ in 2P-matched subset only (for accurate % calculations)
+        positive_2p = positive & twop_matched
+        n_positive_2p = np.sum(positive_2p)
 
-        # Overlaps
+        # Overlaps (by definition, excited/inhibited are in 2P-matched subset)
         n_pos_excited = np.sum(positive & exc)
         n_pos_inhibited = np.sum(positive & inh)
 
-        # Percentages
-        # % of gene+ neurons that are excited/inhibited
-        pct_pos_in_excited = 100 * n_pos_excited / n_positive if n_positive > 0 else 0
-        pct_pos_in_inhibited = 100 * n_pos_inhibited / n_positive if n_positive > 0 else 0
+        # Percentages - use 2P-matched gene+ count for "% of gene+ that are excited"
+        pct_pos_in_excited = 100 * n_pos_excited / n_positive_2p if n_positive_2p > 0 else 0
+        pct_pos_in_inhibited = 100 * n_pos_inhibited / n_positive_2p if n_positive_2p > 0 else 0
 
         # % of excited/inhibited neurons that are gene+
         pct_excited_in_pos = 100 * n_pos_excited / n_excited_total if n_excited_total > 0 else 0
@@ -2320,11 +2915,14 @@ def compute_overlaps(
 
         results.append({
             'gene': gene,
-            'n_positive': n_positive,
+            'n_positive_2p': n_positive_2p,  # Gene+ in 2P-matched subset
+            'n_positive_total': n_positive_total,  # Gene+ in full volume
+            'n_positive': n_positive_2p,  # For backward compatibility (use 2P subset)
             'n_excited': n_excited_total,
             'n_inhibited': n_inhibited_total,
             'n_pos_excited': n_pos_excited,
             'n_pos_inhibited': n_pos_inhibited,
+            'n_twop_matched': np.sum(twop_matched),  # Total 2P-matched neurons
             'pct_pos_in_excited': pct_pos_in_excited,
             'pct_pos_in_inhibited': pct_pos_in_inhibited,
             'pct_excited_in_pos': pct_excited_in_pos,
@@ -2335,9 +2933,10 @@ def compute_overlaps(
 
     # Print summary
     if len(overlap_df) > 0:
-        rprint(f"\n  Overlap summary ({n_excited_total} excited, {n_inhibited_total} inhibited):")
+        n_2p = overlap_df['n_twop_matched'].iloc[0] if len(overlap_df) > 0 else 0
+        rprint(f"\n  Overlap summary ({n_excited_total} excited, {n_inhibited_total} inhibited, {n_2p} 2P-matched):")
         for _, row in overlap_df.iterrows():
-            rprint(f"    {row['gene']}: {row['n_positive']} positive, "
+            rprint(f"    {row['gene']}: {row['n_positive_2p']}/{row['n_positive_total']} positive (2P/total), "
                    f"{row['n_pos_excited']} excited ({row['pct_pos_in_excited']:.1f}%), "
                    f"{row['n_pos_inhibited']} inhibited ({row['pct_pos_in_inhibited']:.1f}%)")
 
@@ -2511,17 +3110,32 @@ def plot_gene_cdf_by_response(
     excited_mask: np.ndarray,
     inhibited_mask: np.ndarray,
     gene_name: str,
-    ax: plt.Axes = None
+    ax: plt.Axes = None,
+    p_values: np.ndarray = None,
+    p_cutoffs: Tuple[float, ...] = (0.1, 0.05, 0.01),
+    min_neurons_per_category: int = 10,
+    clip_percentile: float = 99.0,
+    use_log_scale: bool = False
 ) -> plt.Axes:
     """
     Plot CDF of gene expression split by response type.
 
+    Grey line shows NON-SIGNIFICANT neurons (neither excited nor inhibited).
+    If p_values provided, shows excited/inhibited split by p-value ranges
+    with overlapping sets (e.g., p<0.05 includes all neurons with p<0.05,
+    including those with p<0.01).
+
     Args:
         values: Expression values
-        excited_mask: Boolean mask of excited neurons
-        inhibited_mask: Boolean mask of inhibited neurons
+        excited_mask: Boolean mask of excited neurons (p < most lenient cutoff)
+        inhibited_mask: Boolean mask of inhibited neurons (p < most lenient cutoff)
         gene_name: Gene name for title
         ax: Matplotlib axes
+        p_values: Per-neuron p-values (required for p-value stratification)
+        p_cutoffs: Tuple of p-value cutoffs (e.g., (0.1, 0.05, 0.01))
+        min_neurons_per_category: Minimum neurons to plot a category
+        clip_percentile: Clip x-axis to this percentile of data (default 99)
+        use_log_scale: Use log scale for x-axis (useful for skewed data)
 
     Returns:
         Matplotlib Axes
@@ -2532,29 +3146,362 @@ def plot_gene_cdf_by_response(
     if ax is None:
         fig, ax = plt.subplots(figsize=(8, 5))
 
-    def plot_cdf(data, label, color):
-        sorted_data = np.sort(data[~np.isnan(data)])
+    def plot_cdf(data, label, color, linewidth=2, alpha=1.0, linestyle='-'):
+        clean_data = data[~np.isnan(data)]
+        if len(clean_data) == 0:
+            return 0
+        sorted_data = np.sort(clean_data)
         cdf = np.arange(1, len(sorted_data) + 1) / len(sorted_data)
-        ax.plot(sorted_data, cdf, label=label, color=color, linewidth=2)
+        ax.plot(sorted_data, cdf, label=label, color=color, linewidth=linewidth,
+                alpha=alpha, linestyle=linestyle)
+        return len(clean_data)
 
-    # All neurons
-    plot_cdf(values, 'All', 'gray')
+    # Non-significant neurons (neither excited nor inhibited)
+    non_sig_mask = ~excited_mask & ~inhibited_mask
+    n_non_sig = np.sum(non_sig_mask & ~np.isnan(values))
+    if n_non_sig > 0:
+        plot_cdf(values[non_sig_mask], f'Non-sig (n={n_non_sig})', 'gray')
 
-    # Excited neurons
-    if np.sum(excited_mask) > 0:
-        plot_cdf(values[excited_mask], 'Excited', 'red')
+    # Color palettes for p-value stratification (darker = more significant)
+    red_shades = ['#FFAAAA', '#FF6666', '#CC0000']  # light to dark red
+    blue_shades = ['#AAAAFF', '#6666FF', '#0000CC']  # light to dark blue
 
-    # Inhibited neurons
-    if np.sum(inhibited_mask) > 0:
-        plot_cdf(values[inhibited_mask], 'Inhibited', 'blue')
+    # Sort p_cutoffs from most lenient to most stringent
+    sorted_cutoffs = sorted(p_cutoffs, reverse=True)
 
-    ax.set_xlabel('Expression')
+    if p_values is not None and len(p_values) == len(values):
+        # Plot excited neurons by p-value (overlapping sets)
+        for i, p_cut in enumerate(sorted_cutoffs):
+            # Excited at this p-value (includes all more significant too)
+            excited_at_p = excited_mask & (p_values < p_cut)
+            n_exc = np.sum(excited_at_p & ~np.isnan(values))
+
+            if n_exc >= min_neurons_per_category:
+                color = red_shades[min(i, len(red_shades)-1)]
+                plot_cdf(values[excited_at_p], f'Exc p<{p_cut} (n={n_exc})', color)
+
+        # Plot inhibited neurons by p-value (overlapping sets)
+        for i, p_cut in enumerate(sorted_cutoffs):
+            inhibited_at_p = inhibited_mask & (p_values < p_cut)
+            n_inh = np.sum(inhibited_at_p & ~np.isnan(values))
+
+            if n_inh >= min_neurons_per_category:
+                color = blue_shades[min(i, len(blue_shades)-1)]
+                plot_cdf(values[inhibited_at_p], f'Inh p<{p_cut} (n={n_inh})', color)
+    else:
+        # No p-values provided - use simple excited/inhibited masks
+        n_excited = np.sum(excited_mask & ~np.isnan(values))
+        if n_excited >= min_neurons_per_category:
+            plot_cdf(values[excited_mask], f'Excited (n={n_excited})', 'red')
+
+        n_inhibited = np.sum(inhibited_mask & ~np.isnan(values))
+        if n_inhibited >= min_neurons_per_category:
+            plot_cdf(values[inhibited_mask], f'Inhibited (n={n_inhibited})', 'blue')
+
+    # Clip x-axis to percentile to handle outliers/skewed data
+    clean_values = values[~np.isnan(values)]
+    if len(clean_values) > 0 and clip_percentile < 100:
+        x_max = np.percentile(clean_values, clip_percentile)
+        x_min = np.percentile(clean_values, 100 - clip_percentile) if (100 - clip_percentile) > 0 else clean_values.min()
+        ax.set_xlim(x_min, x_max)
+
+    if use_log_scale:
+        ax.set_xscale('log')
+        ax.set_xlabel('Expression (log scale)')
+    else:
+        ax.set_xlabel('Expression')
+
     ax.set_ylabel('Cumulative probability')
     ax.set_title(f'{gene_name} expression by response type')
-    ax.legend()
+    ax.legend(fontsize=8, loc='lower right')
     ax.grid(True, alpha=0.3)
 
     return ax
+
+
+def plot_gene_histogram_by_response(
+    values: np.ndarray,
+    excited_mask: np.ndarray,
+    inhibited_mask: np.ndarray,
+    gene_name: str,
+    ax: plt.Axes = None,
+    p_values: np.ndarray = None,
+    p_cutoffs: Tuple[float, ...] = (0.1, 0.05, 0.01),
+    min_neurons_per_category: int = 10,
+    n_bins: int = 50,
+    threshold: float = None
+) -> plt.Axes:
+    """
+    Plot histogram of gene expression with response categories overlaid.
+
+    Shows full population as grey filled histogram, with excited/inhibited neurons
+    overlaid as step outlines (probability-normalized) in red/blue shades by p-value.
+
+    Args:
+        values: Expression values for all neurons
+        excited_mask: Boolean mask of excited neurons (at most lenient p threshold)
+        inhibited_mask: Boolean mask of inhibited neurons (at most lenient p threshold)
+        gene_name: Gene name for title
+        ax: Matplotlib axes
+        p_values: Per-neuron p-values (required for p-value stratification)
+        p_cutoffs: Tuple of p-value cutoffs (e.g., (0.1, 0.05, 0.01))
+        min_neurons_per_category: Minimum neurons to plot a category (default 10)
+        n_bins: Number of histogram bins
+        threshold: Optional gene-positive threshold to show as vertical line
+
+    Returns:
+        Matplotlib Axes
+    """
+    if not HAS_MATPLOTLIB:
+        raise ImportError("matplotlib required for plotting")
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+    # Clean data
+    valid_mask = ~np.isnan(values)
+    clean_values = values[valid_mask]
+
+    if len(clean_values) == 0:
+        ax.text(0.5, 0.5, 'No valid data', ha='center', va='center', transform=ax.transAxes)
+        ax.set_title(gene_name)
+        return ax
+
+    # Compute histogram range (clip to 1-99 percentile for visualization)
+    vmin, vmax = np.percentile(clean_values, [1, 99])
+    bins = np.linspace(vmin, vmax, n_bins + 1)
+    bin_centers = (bins[:-1] + bins[1:]) / 2
+
+    # Plot full population histogram (grey filled, normalized to probability)
+    counts_all, _ = np.histogram(clean_values, bins=bins)
+    prob_all = counts_all / counts_all.sum()
+    ax.fill_between(bin_centers, 0, prob_all, alpha=0.3, color='grey', step='mid',
+                    label=f'All (n={len(clean_values)})')
+    ax.step(bin_centers, prob_all, where='mid', color='grey', linewidth=1, alpha=0.7)
+
+    # Color palettes for p-value stratification (darker = more significant)
+    red_shades = ['#FFAAAA', '#FF6666', '#CC0000']  # light to dark red
+    blue_shades = ['#AAAAFF', '#6666FF', '#0000CC']  # light to dark blue
+
+    # Sort p_cutoffs from most lenient to most stringent
+    sorted_cutoffs = sorted(p_cutoffs, reverse=True)
+
+    # Align masks to valid_mask
+    excited_valid = excited_mask[valid_mask] if len(excited_mask) == len(values) else excited_mask
+    inhibited_valid = inhibited_mask[valid_mask] if len(inhibited_mask) == len(values) else inhibited_mask
+    p_valid = p_values[valid_mask] if p_values is not None and len(p_values) == len(values) else p_values
+
+    if p_valid is not None and len(p_valid) == len(clean_values):
+        # Plot excited neurons by p-value as step outlines
+        for i, p_cut in enumerate(sorted_cutoffs):
+            excited_at_p = excited_valid & (p_valid < p_cut)
+            n_exc = np.sum(excited_at_p)
+
+            if n_exc >= min_neurons_per_category:
+                color = red_shades[min(i, len(red_shades)-1)]
+                counts_exc, _ = np.histogram(clean_values[excited_at_p], bins=bins)
+                prob_exc = counts_exc / counts_exc.sum() if counts_exc.sum() > 0 else counts_exc
+                linewidth = 2.5 - i * 0.5  # thicker for more significant
+                ax.step(bin_centers, prob_exc, where='mid', color=color,
+                        linewidth=linewidth, label=f'Exc p<{p_cut} (n={n_exc})')
+
+        # Plot inhibited neurons by p-value as step outlines
+        for i, p_cut in enumerate(sorted_cutoffs):
+            inhibited_at_p = inhibited_valid & (p_valid < p_cut)
+            n_inh = np.sum(inhibited_at_p)
+
+            if n_inh >= min_neurons_per_category:
+                color = blue_shades[min(i, len(blue_shades)-1)]
+                counts_inh, _ = np.histogram(clean_values[inhibited_at_p], bins=bins)
+                prob_inh = counts_inh / counts_inh.sum() if counts_inh.sum() > 0 else counts_inh
+                linewidth = 2.5 - i * 0.5
+                ax.step(bin_centers, prob_inh, where='mid', color=color,
+                        linewidth=linewidth, label=f'Inh p<{p_cut} (n={n_inh})')
+    else:
+        # No p-values - use simple masks
+        n_excited = np.sum(excited_valid)
+        if n_excited >= min_neurons_per_category:
+            counts_exc, _ = np.histogram(clean_values[excited_valid], bins=bins)
+            prob_exc = counts_exc / counts_exc.sum() if counts_exc.sum() > 0 else counts_exc
+            ax.step(bin_centers, prob_exc, where='mid', color='red',
+                    linewidth=2, label=f'Excited (n={n_excited})')
+
+        n_inhibited = np.sum(inhibited_valid)
+        if n_inhibited >= min_neurons_per_category:
+            counts_inh, _ = np.histogram(clean_values[inhibited_valid], bins=bins)
+            prob_inh = counts_inh / counts_inh.sum() if counts_inh.sum() > 0 else counts_inh
+            ax.step(bin_centers, prob_inh, where='mid', color='blue',
+                    linewidth=2, label=f'Inhibited (n={n_inhibited})')
+
+    # Add threshold line if provided
+    if threshold is not None and vmin <= threshold <= vmax:
+        ax.axvline(threshold, color='green', linestyle='--', linewidth=2,
+                   label=f'Thresh ({threshold:.2f})')
+
+    ax.set_xlabel('Expression')
+    ax.set_ylabel('Probability')
+    ax.set_title(f'{gene_name}')
+    ax.legend(fontsize=7, loc='upper right')
+    ax.set_xlim(vmin, vmax)
+
+    return ax
+
+
+def plot_gene_response_spatial(
+    classified_df: pd.DataFrame,
+    aligned_masks: dict,
+    genes: List[str],
+    x_col: str = 'hcr_x',
+    y_col: str = 'hcr_y',
+    n_cols: int = 4,
+    figsize_per_gene: Tuple[float, float] = (4, 4),
+    analysis_mask: np.ndarray = None,
+    response_type: str = 'excited'
+) -> plt.Figure:
+    """
+    Create spatial plots showing neurons colored by category for each gene.
+
+    Categories (for excited):
+    - Grey: Neither (not gene+, not responding)
+    - Green: Responding only (responding but not gene+)
+    - Magenta: Gene+ only (gene+ but not responding)
+    - Yellow: Both (gene+ AND responding)
+
+    For inhibited, Green becomes Blue.
+
+    Args:
+        classified_df: DataFrame with gene classification and coordinates
+        aligned_masks: Dict with 'excited_aligned' and 'inhibited_aligned' arrays
+        genes: List of gene names
+        x_col, y_col: Coordinate column names
+        n_cols: Number of columns in grid
+        figsize_per_gene: Size per gene subplot
+        analysis_mask: Optional boolean array indicating which cells were included in
+                       the response analysis (2P-matched + non-artifact). If None,
+                       uses has_2p_match column.
+        response_type: 'excited' or 'inhibited'
+
+    Returns:
+        Matplotlib Figure
+    """
+    if not HAS_MATPLOTLIB:
+        raise ImportError("matplotlib required for plotting")
+
+    # Get response mask based on type
+    mask_key = f'{response_type}_aligned'
+    if mask_key not in aligned_masks:
+        rprint(f"[yellow]Response type '{response_type}' not found in aligned_masks[/yellow]")
+        return None
+    response_mask = aligned_masks[mask_key]
+
+    # Color scheme: excited=green, inhibited=blue for response-only cells
+    response_color = 'green' if response_type == 'excited' else 'blue'
+
+    # Auto-detect coordinate columns
+    x_alternatives = [x_col, 'hcr_x', 'centroid_x_main', 'x_main', 'centroid_x', 'X']
+    y_alternatives = [y_col, 'hcr_y', 'centroid_y_main', 'y_main', 'centroid_y', 'Y']
+
+    actual_x_col = None
+    actual_y_col = None
+    for alt in x_alternatives:
+        if alt in classified_df.columns:
+            actual_x_col = alt
+            break
+    for alt in y_alternatives:
+        if alt in classified_df.columns:
+            actual_y_col = alt
+            break
+
+    if actual_x_col is None or actual_y_col is None:
+        rprint("[yellow]Could not find coordinate columns for spatial plot[/yellow]")
+        return None
+
+    # Use provided analysis_mask or fall back to has_2p_match
+    if analysis_mask is not None:
+        valid_mask = analysis_mask
+    elif 'has_2p_match' in classified_df.columns:
+        valid_mask = classified_df['has_2p_match'].fillna(False).astype(bool).values
+    else:
+        valid_mask = np.ones(len(classified_df), dtype=bool)
+
+    # Ensure same length
+    min_len = min(len(valid_mask), len(response_mask))
+    valid_mask = valid_mask[:min_len]
+    resp = response_mask[:min_len]
+
+    x_all = classified_df[actual_x_col].values[:min_len]
+    y_all = classified_df[actual_y_col].values[:min_len]
+
+    # Only plot cells that were in the analysis
+    x = x_all[valid_mask]
+    y = y_all[valid_mask]
+    resp_2p = resp[valid_mask]
+
+    n_rows = (len(genes) + n_cols - 1) // n_cols
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(figsize_per_gene[0] * n_cols, figsize_per_gene[1] * n_rows))
+    if n_rows == 1:
+        axes = axes.reshape(1, -1)
+    axes = axes.flatten()
+
+    for i, gene in enumerate(genes):
+        ax = axes[i]
+        pos_col = f'{gene}_positive'
+
+        if pos_col not in classified_df.columns:
+            ax.text(0.5, 0.5, f'{gene}\nNot found', ha='center', va='center',
+                   transform=ax.transAxes)
+            ax.set_title(gene)
+            continue
+
+        positive = classified_df[pos_col].values[:min_len][valid_mask]
+
+        # Create category masks
+        neither = ~positive & ~resp_2p
+        resp_only = ~positive & resp_2p
+        gene_only = positive & ~resp_2p
+        both = positive & resp_2p
+
+        # Labels based on response type
+        resp_label = 'Exc' if response_type == 'excited' else 'Inh'
+
+        # Plot in order: neither (background), then categories
+        # Grey - neither
+        if np.sum(neither) > 0:
+            ax.scatter(x[neither], y[neither], c='lightgrey', s=8, alpha=0.3,
+                      label=f'Neither ({np.sum(neither)})', rasterized=True)
+
+        # Response only (green for excited, blue for inhibited)
+        if np.sum(resp_only) > 0:
+            ax.scatter(x[resp_only], y[resp_only], c=response_color, s=20, alpha=0.8,
+                      label=f'{resp_label} only ({np.sum(resp_only)})', rasterized=True)
+
+        # Magenta - gene+ only
+        if np.sum(gene_only) > 0:
+            ax.scatter(x[gene_only], y[gene_only], c='magenta', s=20, alpha=0.8,
+                      label=f'{gene}+ only ({np.sum(gene_only)})', rasterized=True)
+
+        # Yellow - both (on top)
+        if np.sum(both) > 0:
+            ax.scatter(x[both], y[both], c='gold', s=30, alpha=1.0,
+                      edgecolors='black', linewidths=0.5,
+                      label=f'Both ({np.sum(both)})', rasterized=True)
+
+        ax.set_title(f'{gene}', fontsize=11, fontweight='bold')
+        ax.invert_yaxis()
+        ax.set_aspect('equal')
+        ax.legend(fontsize=7, loc='upper right', framealpha=0.8)
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+
+    # Hide unused axes
+    for j in range(i + 1, len(axes)):
+        axes[j].set_visible(False)
+
+    title_resp = 'Excited' if response_type == 'excited' else 'Inhibited'
+    fig.suptitle(f'Spatial Distribution: Gene+ vs {title_resp}', fontsize=14, fontweight='bold', y=1.01)
+    plt.tight_layout()
+    return fig
 
 
 def plot_overlap_bars(
@@ -3068,16 +4015,14 @@ def plot_spatial_match_summary(
     reference_plane: int,
     mask_id_col: str = 'mask_id_main',
     twop_mask_col: str = 'twoP_mask',
-    figsize: Tuple[int, int] = (16, 6)
+    figsize: Tuple[int, int] = (12, 6)
 ) -> plt.Figure:
     """
     Diagnostic plot: spatial match summary showing 2P and HCR coordinate spaces.
 
-    4-panel layout:
-    1. 2P space: All 2P cell centroids (gray)
-    2. 2P space: Matched 2P cells (colored by single/multi match)
-    3. HCR space: All retained HCR cells
-    4. HCR space: Matched HCR cells (colored by match type)
+    2-panel layout:
+    1. Original 2P space: All cells (gray) + matched cells (red, plotted last)
+    2. HCR space: By match type (unmatched gray, single blue, multi orange)
 
     Args:
         plane_data: Dict from load_2p_spatial_data
@@ -3093,112 +4038,90 @@ def plot_spatial_match_summary(
     if not HAS_MATPLOTLIB:
         raise ImportError("matplotlib required for plotting")
 
-    fig, axes = plt.subplots(1, 4, figsize=figsize)
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
 
-    # Get column names handling MultiIndex
-    def get_col(col_name):
-        if isinstance(merged_df.columns, pd.MultiIndex):
-            for col in merged_df.columns:
-                if col_name in str(col):
-                    return col
-        return col_name
-
-    mask_col = get_col(mask_id_col)
-    twop_col = get_col(twop_mask_col)
+    twop_col = get_col(merged_df, twop_mask_col)
 
     # Colors
     c_unmatched = 'lightgray'
+    c_matched = 'orange'  # Matched 2P cells in first panel
     c_single = 'dodgerblue'
     c_multi = 'orange'
 
-    # ========== Panel 1: All 2P centroids (reference plane) ==========
+    # ========== Panel 1: Original 2P Space - All (gray) + Matched (orange) ==========
     ax1 = axes[0]
     if reference_plane in plane_data:
         pdata = plane_data[reference_plane]
-        x_all = pdata['x_centroids']
-        y_all = pdata['y_centroids']
-        ax1.scatter(x_all, y_all, c=c_unmatched, s=10, alpha=0.5)
-        ax1.set_title(f'2P Space: All Cells\n(plane {reference_plane}, n={len(x_all)})')
-    else:
-        ax1.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax1.transAxes)
-        ax1.set_title('2P Space: All Cells')
-    ax1.set_xlabel('X (2P)')
-    ax1.set_ylabel('Y (2P)')
-    ax1.set_aspect('equal')
-
-    # ========== Panel 2: Matched 2P centroids (colored by match type) ==========
-    ax2 = axes[1]
-    if reference_plane in plane_data:
-        pdata = plane_data[reference_plane]
         cell_ids = pdata['cell_ids']
-        x_cents = np.array(pdata['x_centroids'])
-        y_cents = np.array(pdata['y_centroids'])
+        x_all = np.array(pdata['x_centroids'])
+        y_all = np.array(pdata['y_centroids'])
 
         # Build lookup from cell_id to centroid position
         cell_to_idx = {cid: i for i, cid in enumerate(cell_ids)}
 
-        # Get matched 2P cells from merged_df - VECTORIZED approach
-        # Access columns safely - convert to numpy arrays immediately to avoid Series issues
-        has_2p_col = get_col('has_2p_match')
-        best_plane_col = get_col('best_plane')
-        match_type_col = get_col('match_type')
+        # Get matched 2P cells from merged_df
+        has_2p_col = get_col(merged_df, 'has_2p_match')
+        best_plane_col = get_col(merged_df, 'best_plane')
 
         has_2p_arr = merged_df[has_2p_col].values if has_2p_col in merged_df.columns else np.zeros(len(merged_df), dtype=bool)
         best_plane_arr = merged_df[best_plane_col].values if best_plane_col in merged_df.columns else np.full(len(merged_df), -1)
-        match_type_arr = merged_df[match_type_col].values if match_type_col in merged_df.columns else np.full(len(merged_df), 'none')
         twop_arr = merged_df[twop_col].values
 
-        # Build boolean masks as numpy arrays
+        # Build boolean masks
         is_matched = np.array([bool(x) if pd.notna(x) else False for x in has_2p_arr])
         is_ref_plane = (best_plane_arr == reference_plane)
         ref_matched_mask = is_matched & is_ref_plane
 
-        # Get indices and values for matched cells
+        # Get matched cell positions
+        # Note: twop_arr contains mask IDs (int), cell_ids are strings like "plane0_123"
+        # Build lookup from mask_id (int) to centroid index
+        mask_to_idx = {}
+        for i, cid in enumerate(cell_ids):
+            try:
+                # Extract mask ID from cell_id string (e.g., "plane0_123" -> 123)
+                mask_id = int(cid.split('_')[1])
+                mask_to_idx[mask_id] = i
+            except (ValueError, IndexError):
+                continue
+
         ref_indices = np.where(ref_matched_mask)[0]
-
-        x_single, y_single = [], []
-        x_multi, y_multi = [], []
-
+        x_matched, y_matched = [], []
         for idx in ref_indices:
             twop_id = twop_arr[idx]
-            mtype = match_type_arr[idx]
-            if twop_id in cell_to_idx:
-                cent_idx = cell_to_idx[twop_id]
-                if mtype == 'single':
-                    x_single.append(x_cents[cent_idx])
-                    y_single.append(y_cents[cent_idx])
-                else:
-                    x_multi.append(x_cents[cent_idx])
-                    y_multi.append(y_cents[cent_idx])
+            if pd.notna(twop_id):
+                twop_id_int = int(twop_id)
+                if twop_id_int in mask_to_idx:
+                    cent_idx = mask_to_idx[twop_id_int]
+                    x_matched.append(x_all[cent_idx])
+                    y_matched.append(y_all[cent_idx])
 
-        ax2.scatter(x_all, y_all, c=c_unmatched, s=5, alpha=0.3, label='Unmatched')
-        if len(x_single) > 0:
-            ax2.scatter(x_single, y_single, c=c_single, s=15, alpha=0.7,
-                       label=f'Single ({len(x_single)})')
-        if len(x_multi) > 0:
-            ax2.scatter(x_multi, y_multi, c=c_multi, s=15, alpha=0.7,
-                       label=f'Multi ({len(x_multi)})')
-        ax2.legend(fontsize=8, loc='upper right')
-        ax2.set_title(f'2P Space: Matched Cells\n(plane {reference_plane})')
+        # Plot all cells first (gray), then matched (orange) on top
+        ax1.scatter(x_all, y_all, c=c_unmatched, s=10, alpha=0.5, label=f'All ({len(x_all)})')
+        if len(x_matched) > 0:
+            ax1.scatter(x_matched, y_matched, c=c_matched, s=15, alpha=0.7,
+                       label=f'Matched ({len(x_matched)})')
+        ax1.legend(fontsize=8, loc='upper right')
+        ax1.set_title(f'Original 2P Space\n(plane {reference_plane}, pre-registration)')
     else:
-        ax2.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax2.transAxes)
-        ax2.set_title('2P Space: Matched Cells')
-    ax2.set_xlabel('X (2P)')
-    ax2.set_ylabel('Y (2P)')
-    ax2.set_aspect('equal')
+        ax1.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax1.transAxes)
+        ax1.set_title('Original 2P Space')
+    ax1.set_xlabel('X (2P pixels)')
+    ax1.set_ylabel('Y (2P pixels)')
+    ax1.invert_yaxis()  # Image coordinates
+    ax1.set_aspect('equal')
 
-    # ========== Panel 3: All HCR centroids ==========
-    ax3 = axes[2]
+    # ========== Panel 2: HCR Space - By Match Type ==========
+    ax2 = axes[1]
 
     # Try to get HCR coordinates from merged_df
-    hcr_x_col = get_col('centroid_x_main') if 'centroid_x_main' in str(merged_df.columns) else None
-    hcr_y_col = get_col('centroid_y_main') if 'centroid_y_main' in str(merged_df.columns) else None
+    hcr_x_col = get_col(merged_df, 'centroid_x_main') if 'centroid_x_main' in str(merged_df.columns) else None
+    hcr_y_col = get_col(merged_df, 'centroid_y_main') if 'centroid_y_main' in str(merged_df.columns) else None
 
-    # Alternative column names - include hcr_x/hcr_y from load_hcr_coordinates
+    # Alternative column names
     for alt_x in ['hcr_x', 'x_main', 'centroid_x', 'x', 'X']:
         if hcr_x_col is None:
             try:
-                hcr_x_col = get_col(alt_x)
+                hcr_x_col = get_col(merged_df, alt_x)
                 if hcr_x_col in merged_df.columns:
                     break
                 hcr_x_col = None
@@ -3208,7 +4131,7 @@ def plot_spatial_match_summary(
     for alt_y in ['hcr_y', 'y_main', 'centroid_y', 'y', 'Y']:
         if hcr_y_col is None:
             try:
-                hcr_y_col = get_col(alt_y)
+                hcr_y_col = get_col(merged_df, alt_y)
                 if hcr_y_col in merged_df.columns:
                     break
                 hcr_y_col = None
@@ -3216,28 +4139,12 @@ def plot_spatial_match_summary(
                 pass
 
     if hcr_x_col is not None and hcr_y_col is not None:
-        hcr_x = merged_df[hcr_x_col].values
-        hcr_y = merged_df[hcr_y_col].values
-        ax3.scatter(hcr_x, hcr_y, c=c_unmatched, s=5, alpha=0.3)
-        ax3.set_title(f'HCR Space: All Cells\n(n={len(hcr_x)})')
-    else:
-        ax3.text(0.5, 0.5, 'HCR coords not found\nCheck column names',
-                ha='center', va='center', transform=ax3.transAxes, fontsize=9)
-        ax3.set_title('HCR Space: All Cells')
-    ax3.set_xlabel('X (HCR)')
-    ax3.set_ylabel('Y (HCR)')
-    ax3.set_aspect('equal')
-
-    # ========== Panel 4: HCR cells colored by match status ==========
-    ax4 = axes[3]
-    if hcr_x_col is not None and hcr_y_col is not None:
-        # Extract all data as numpy arrays to avoid any Series ambiguity
         hcr_x_arr = merged_df[hcr_x_col].values
         hcr_y_arr = merged_df[hcr_y_col].values
 
-        # Reuse arrays from Panel 2 logic (or recompute if not in scope)
-        has_2p_col = get_col('has_2p_match')
-        match_type_col = get_col('match_type')
+        # Get match info
+        has_2p_col = get_col(merged_df, 'has_2p_match')
+        match_type_col = get_col(merged_df, 'match_type')
 
         if has_2p_col in merged_df.columns:
             has_2p_arr = merged_df[has_2p_col].values
@@ -3253,35 +4160,35 @@ def plot_spatial_match_summary(
             is_single_mask = np.zeros(len(merged_df), dtype=bool)
             is_multi_mask = np.zeros(len(merged_df), dtype=bool)
 
-        # Unmatched
+        # Unmatched (gray, plotted first)
         unmatched_mask = ~has_match_mask
-        ax4.scatter(hcr_x_arr[unmatched_mask], hcr_y_arr[unmatched_mask],
+        ax2.scatter(hcr_x_arr[unmatched_mask], hcr_y_arr[unmatched_mask],
                    c=c_unmatched, s=5, alpha=0.3, label=f'No match ({unmatched_mask.sum()})')
 
-        # Single match
+        # Single match (blue)
         if is_single_mask.sum() > 0:
-            ax4.scatter(hcr_x_arr[is_single_mask], hcr_y_arr[is_single_mask],
+            ax2.scatter(hcr_x_arr[is_single_mask], hcr_y_arr[is_single_mask],
                        c=c_single, s=10, alpha=0.7, label=f'Single ({is_single_mask.sum()})')
 
-        # Multi match
+        # Multi match (orange)
         if is_multi_mask.sum() > 0:
-            ax4.scatter(hcr_x_arr[is_multi_mask], hcr_y_arr[is_multi_mask],
+            ax2.scatter(hcr_x_arr[is_multi_mask], hcr_y_arr[is_multi_mask],
                        c=c_multi, s=10, alpha=0.7, label=f'Multi ({is_multi_mask.sum()})')
 
-        ax4.legend(fontsize=8, loc='upper right')
-        ax4.set_title(f'HCR Space: By Match Type')
+        ax2.legend(fontsize=8, loc='upper right')
+        ax2.set_title('HCR Space: By Match Type')
     else:
-        ax4.text(0.5, 0.5, 'HCR coords not found',
-                ha='center', va='center', transform=ax4.transAxes)
-        ax4.set_title('HCR Space: By Match Type')
-    ax4.set_xlabel('X (HCR)')
-    ax4.set_ylabel('Y (HCR)')
-    ax4.set_aspect('equal')
+        ax2.text(0.5, 0.5, 'HCR coords not found\nCheck column names',
+                ha='center', va='center', transform=ax2.transAxes, fontsize=9)
+        ax2.set_title('HCR Space: By Match Type')
+    ax2.set_xlabel('X (HCR)')
+    ax2.set_ylabel('Y (HCR)')
+    ax2.set_aspect('equal')
 
-    # Summary stats - use numpy arrays to avoid Series issues
+    # Summary stats
     n_total = len(merged_df)
-    has_2p_col = get_col('has_2p_match')
-    match_type_col = get_col('match_type')
+    has_2p_col = get_col(merged_df, 'has_2p_match')
+    match_type_col = get_col(merged_df, 'match_type')
 
     if has_2p_col in merged_df.columns:
         has_2p_arr = merged_df[has_2p_col].values
@@ -3524,14 +4431,6 @@ def plot_expression_grid(
         rprint("[yellow]No genes to plot in expression grid[/yellow]")
         return None
 
-    # Handle MultiIndex columns
-    def get_col(col_name):
-        if isinstance(merged_df.columns, pd.MultiIndex):
-            for col in merged_df.columns:
-                if col_name in str(col):
-                    return col
-        return col_name
-
     # Auto-detect coordinate columns with fallback alternatives
     x_col_actual = None
     y_col_actual = None
@@ -3541,13 +4440,13 @@ def plot_expression_grid(
     y_alternatives = [y_col, 'hcr_y', 'centroid_y_main', 'y_main', 'centroid_y', 'Y']
 
     for alt_x in x_alternatives:
-        candidate = get_col(alt_x)
+        candidate = get_col(merged_df, alt_x)
         if candidate in merged_df.columns:
             x_col_actual = candidate
             break
 
     for alt_y in y_alternatives:
-        candidate = get_col(alt_y)
+        candidate = get_col(merged_df, alt_y)
         if candidate in merged_df.columns:
             y_col_actual = candidate
             break
@@ -3604,14 +4503,15 @@ def plot_gene_classification_diagnostic(
     feature_type: str = 'mean_medflt_3x4x4',
     neuropil_subtracted: bool = True,
     axes: List = None,
-    pctile: Tuple[float, float] = (2, 98)
+    pctile: Tuple[float, float] = (2, 98),
+    custom_threshold: float = None
 ) -> List:
     """
     Create a 3-panel diagnostic row for a single gene.
 
-    Panel 1: Per-plane expression strips for matched neurons (sorted, normalized)
-    Panel 2: Distribution histogram with threshold and metadata
-    Panel 3: Spatial map showing gene-positive (magenta) vs gene-negative (grey)
+    Panel 1: Spatial map with normalized gene expression (colormap, 0-99th pctile)
+    Panel 2: Spatial map showing gene-positive (magenta) vs gene-negative (grey)
+    Panel 3: Distribution histogram with threshold line (x-axis 0 to 99th pctile)
 
     Args:
         merged_df: DataFrame with gene expression and classification columns
@@ -3625,6 +4525,8 @@ def plot_gene_classification_diagnostic(
         neuropil_subtracted: Whether data is neuropil-subtracted (for labeling)
         axes: List of 3 matplotlib Axes (if None, creates new figure)
         pctile: Percentile range for normalization
+        custom_threshold: Optional threshold to use instead of classification_stats threshold.
+                         If provided, positive mask is recomputed using this threshold.
 
     Returns:
         List of 3 matplotlib Axes
@@ -3649,152 +4551,47 @@ def plot_gene_classification_diagnostic(
 
     ax1, ax2, ax3 = axes
 
-    # Get gene values and positive mask
+    # Get gene values
     gene_values = merged_df[gene_col].values
-    pos_col = f'{gene}_positive'
-    if pos_col in merged_df.columns:
-        positive_mask = merged_df[pos_col].values
+
+    # Determine threshold to use (custom overrides stored stats)
+    stats = classification_stats.get(gene, {})
+    stored_threshold = stats.get('threshold', None)
+
+    if custom_threshold is not None:
+        threshold = custom_threshold
     else:
-        positive_mask = np.zeros(len(merged_df), dtype=bool)
+        threshold = stored_threshold
 
-    # ========== PANEL 1: Per-plane expression strips (matched neurons only) ==========
-
-    # Check if we have the required columns
-    has_2p_match_col = 'has_2p_match' in merged_df.columns
-    best_plane_col = 'best_plane' in merged_df.columns
-
-    if has_2p_match_col and best_plane_col:
-        matched_mask = merged_df['has_2p_match'].values == True
-
-        # Get all matched values for normalization
-        matched_values = gene_values[matched_mask]
-        valid_matched = matched_values[~np.isnan(matched_values)]
-
-        if len(valid_matched) > 0:
-            vmin = np.percentile(valid_matched, pctile[0])
-            vmax = np.percentile(valid_matched, pctile[1])
-
-            # Create strips for each plane
-            strips = []
-            labels = []
-            max_width = 0
-
-            for plane in sorted(planes):
-                plane_mask = (merged_df['best_plane'].values == plane) & matched_mask
-                plane_values = gene_values[plane_mask]
-                valid_plane = plane_values[~np.isnan(plane_values)]
-
-                if len(valid_plane) > 0:
-                    # Sort and normalize
-                    sorted_vals = np.sort(valid_plane)
-                    normalized = np.clip((sorted_vals - vmin) / (vmax - vmin + 1e-10), 0, 1)
-                    strips.append(normalized)
-                    max_width = max(max_width, len(normalized))
-
-                    # Label with plane number and count
-                    ref_marker = "*" if plane == reference_plane else ""
-                    labels.append(f"P{plane}{ref_marker} (n={len(valid_plane)})")
+    # Compute positive mask based on threshold
+    # Always recompute if custom_threshold provided, otherwise use stored column if available
+    if custom_threshold is not None or f'{gene}_positive' not in merged_df.columns:
+        if threshold is not None:
+            # Check if normalization was applied during classification
+            # If so, we need to apply the same normalization before thresholding
+            norm_method = stats.get('config', {}).get('normalization', 'none')
+            if norm_method == 'none':
+                norm_method = stats.get('method', 'mode_shift')
+                # Check if method string contains normalization info (e.g., 'robust_iqr|adaptive_sigma')
+                if '|' in str(norm_method):
+                    norm_method = norm_method.split('|')[0]
                 else:
-                    strips.append(np.array([]))
-                    labels.append(f"P{plane} (n=0)")
+                    norm_method = 'none'
 
-            # Pad strips to same width and stack
-            if max_width > 0:
-                padded_strips = []
-                for strip in strips:
-                    if len(strip) > 0:
-                        pad_width = max_width - len(strip)
-                        padded = np.pad(strip, (0, pad_width), constant_values=np.nan)
-                    else:
-                        padded = np.full(max_width, np.nan)
-                    padded_strips.append(padded)
-
-                strip_array = np.array(padded_strips)
-
-                # Plot with imshow
-                im = ax1.imshow(strip_array, aspect='auto', cmap='viridis',
-                               vmin=0, vmax=1, interpolation='nearest')
-                ax1.set_yticks(range(len(labels)))
-                ax1.set_yticklabels(labels, fontsize=9)
-                ax1.set_xlabel('Neurons (sorted by expression)')
-                ax1.set_title(f'{gene}: Matched neurons\n({pctile[0]}-{pctile[1]} pctile norm)')
-
-                # Colorbar with original value range
-                cbar = plt.colorbar(im, ax=ax1, shrink=0.8, pad=0.02)
-                cbar.set_label(f'Expression ({vmin:.2f}-{vmax:.2f})', fontsize=8)
+            # Apply normalization if needed
+            if norm_method == 'robust_iqr':
+                normalized_values, _ = normalize_robust_iqr(gene_values)
+                positive_mask = normalized_values > threshold
+            elif norm_method == 'log1p':
+                normalized_values, _ = normalize_log1p(gene_values)
+                positive_mask = normalized_values > threshold
             else:
-                ax1.text(0.5, 0.5, 'No matched neurons', ha='center', va='center',
-                        transform=ax1.transAxes)
-                ax1.set_title(f'{gene}: Matched neurons')
+                # No normalization - compare raw values
+                positive_mask = gene_values > threshold
         else:
-            ax1.text(0.5, 0.5, 'No valid values', ha='center', va='center',
-                    transform=ax1.transAxes)
-            ax1.set_title(f'{gene}: Matched neurons')
+            positive_mask = np.zeros(len(merged_df), dtype=bool)
     else:
-        ax1.text(0.5, 0.5, 'No 2P match info\navailable', ha='center', va='center',
-                transform=ax1.transAxes, fontsize=10)
-        ax1.set_title(f'{gene}: Matched neurons')
-
-    # ========== PANEL 2: Distribution histogram with metadata ==========
-
-    valid_values = gene_values[~np.isnan(gene_values)]
-
-    if len(valid_values) > 0:
-        # Histogram
-        ax2.hist(valid_values, bins=75, alpha=0.7, edgecolor='black', linewidth=0.5,
-                color='steelblue')
-
-        # Get stats
-        stats = classification_stats.get(gene, {})
-        threshold = stats.get('threshold', np.nan)
-        mode = stats.get('mode', np.nan)
-        noise_std = stats.get('noise_std', np.nan)
-        sigma_used = stats.get('sigma_used', 2.0)
-        n_positive = stats.get('n_positive', np.sum(positive_mask))
-        pct_positive = stats.get('pct_positive', 100 * n_positive / len(valid_values))
-
-        # Threshold line
-        if not np.isnan(threshold):
-            ax2.axvline(threshold, color='red', linestyle='--', linewidth=2,
-                       label=f'Threshold: {threshold:.3f}')
-
-            # Shade positive region
-            ylim = ax2.get_ylim()
-            ax2.axvspan(threshold, ax2.get_xlim()[1], alpha=0.15, color='magenta')
-            ax2.set_ylim(ylim)
-
-        # Mode line (optional)
-        if not np.isnan(mode):
-            ax2.axvline(mode, color='grey', linestyle=':', linewidth=1.5,
-                       label=f'Mode: {mode:.3f}')
-
-        # Text box with metadata
-        neuropil_str = "subtracted (unclipped)" if neuropil_subtracted else "raw"
-        text_lines = [
-            f"Source: {feature_type}",
-            f"Neuropil: {neuropil_str}",
-            f"Mode: {mode:.3f}, σ: {noise_std:.3f}",
-            f"Threshold: {threshold:.3f} ({sigma_used:.1f}σ)",
-            f"Positive: {n_positive:,} ({pct_positive:.1f}%)"
-        ]
-        text_str = '\n'.join(text_lines)
-
-        # Position text box
-        ax2.text(0.97, 0.97, text_str, transform=ax2.transAxes,
-                fontsize=8, verticalalignment='top', horizontalalignment='right',
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8),
-                family='monospace')
-
-        ax2.set_xlabel('Expression value')
-        ax2.set_ylabel('Count')
-        ax2.set_title(f'{gene}: Distribution')
-        ax2.legend(loc='upper left', fontsize=8)
-    else:
-        ax2.text(0.5, 0.5, 'No valid values', ha='center', va='center',
-                transform=ax2.transAxes)
-        ax2.set_title(f'{gene}: Distribution')
-
-    # ========== PANEL 3: Spatial classification map ==========
+        positive_mask = merged_df[f'{gene}_positive'].values.astype(bool)
 
     # Auto-detect coordinate columns
     x_col_actual = None
@@ -3813,35 +4610,174 @@ def plot_gene_classification_diagnostic(
             y_col_actual = alt
             break
 
+    # Get coordinates
     if x_col_actual and y_col_actual:
         x = merged_df[x_col_actual].values
         y = merged_df[y_col_actual].values
-
-        # Valid coordinates
         valid_coords = ~(np.isnan(x) | np.isnan(y))
+    else:
+        x = y = None
+        valid_coords = np.zeros(len(merged_df), dtype=bool)
 
+    # Valid values for normalization
+    valid_values = gene_values[~np.isnan(gene_values)]
+    if len(valid_values) > 0:
+        vmin = 0
+        vmax = np.percentile(valid_values, 99)
+    else:
+        vmin, vmax = 0, 1
+
+    # ========== PANEL 1: Spatial expression map (normalized colormap) ==========
+
+    if x is not None and np.sum(valid_coords) > 0:
+        # Only plot neurons with valid coords and non-nan expression
+        plot_mask = valid_coords & ~np.isnan(gene_values)
+
+        scatter = ax1.scatter(
+            x[plot_mask], y[plot_mask],
+            c=gene_values[plot_mask],
+            cmap='viridis',
+            vmin=vmin, vmax=vmax,
+            s=10, alpha=0.7,
+            rasterized=True
+        )
+        plt.colorbar(scatter, ax=ax1, shrink=0.8, label='Expression')
+        ax1.set_title(f'{gene}: Expression (0-99th pctile)')
+        ax1.set_xlabel('X')
+        ax1.set_ylabel('Y')
+        ax1.invert_yaxis()
+        ax1.set_aspect('equal')
+    else:
+        ax1.text(0.5, 0.5, 'Coordinates\nnot found', ha='center', va='center',
+                transform=ax1.transAxes)
+        ax1.set_title(f'{gene}: Expression')
+
+    # ========== PANEL 2: Spatial positive/negative map ==========
+
+    if x is not None and np.sum(valid_coords) > 0:
         # Negative neurons (grey background)
-        neg_mask = valid_coords & ~positive_mask
-        ax3.scatter(x[neg_mask], y[neg_mask], c='grey', s=5, alpha=0.3,
-                   label='Negative', rasterized=True)
+        neg_mask = valid_coords & ~positive_mask & ~np.isnan(gene_values)
+        ax2.scatter(x[neg_mask], y[neg_mask], c='grey', s=5, alpha=0.3,
+                   label=f'Negative ({np.sum(neg_mask)})', rasterized=True)
 
-        # Positive neurons (magenta foreground)
-        pos_mask = valid_coords & positive_mask
-        ax3.scatter(x[pos_mask], y[pos_mask], c='magenta', s=15, alpha=0.8,
-                   label='Positive', rasterized=True)
+        # Positive neurons (magenta foreground, plotted last)
+        pos_mask = valid_coords & positive_mask & ~np.isnan(gene_values)
+        ax2.scatter(x[pos_mask], y[pos_mask], c='magenta', s=15, alpha=0.8,
+                   label=f'Positive ({np.sum(pos_mask)})', rasterized=True)
 
         n_pos = np.sum(pos_mask)
-        n_total = np.sum(valid_coords)
+        n_total = np.sum(neg_mask) + n_pos
         pct = 100 * n_pos / n_total if n_total > 0 else 0
 
-        ax3.set_xlabel('X')
-        ax3.set_ylabel('Y')
-        ax3.set_title(f'{gene}: {n_pos:,} positive ({pct:.1f}%)')
-        ax3.set_aspect('equal')
-        ax3.legend(loc='upper right', fontsize=8, markerscale=2)
+        ax2.set_xlabel('X')
+        ax2.set_ylabel('Y')
+        ax2.set_title(f'{gene}: {n_pos} positive ({pct:.1f}%)')
+        ax2.invert_yaxis()
+        ax2.set_aspect('equal')
+        ax2.legend(loc='upper right', fontsize=8, markerscale=2)
     else:
-        ax3.text(0.5, 0.5, 'Coordinates\nnot found', ha='center', va='center',
+        ax2.text(0.5, 0.5, 'Coordinates\nnot found', ha='center', va='center',
+                transform=ax2.transAxes)
+        ax2.set_title(f'{gene}: Classification')
+
+    # ========== PANEL 3: Histogram with threshold ==========
+
+    if len(valid_values) > 0:
+        # Check if normalization was used - if so, show normalized histogram
+        norm_method = stats.get('config', {}).get('normalization', 'none')
+        if norm_method == 'none':
+            method_str = stats.get('method', 'mode_shift')
+            if '|' in str(method_str):
+                norm_method = method_str.split('|')[0]
+                if norm_method == 'clipped':
+                    parts = method_str.split('|')
+                    norm_method = parts[1] if len(parts) > 1 else 'none'
+            else:
+                norm_method = 'none'
+
+        # Determine what values to plot in histogram
+        if norm_method == 'robust_iqr':
+            hist_values, _ = normalize_robust_iqr(gene_values)
+            hist_valid = hist_values[~np.isnan(hist_values)]
+            hist_label = f'{gene} (robust_iqr normalized)'
+            # For normalized data, use symmetric range around 0
+            hist_vmax = np.percentile(np.abs(hist_valid), 99)
+            hist_vmin = -hist_vmax * 0.5  # Allow some negative values to show
+            bins = np.linspace(hist_vmin, hist_vmax, 75)
+        elif norm_method == 'log1p':
+            hist_values, _ = normalize_log1p(gene_values)
+            hist_valid = hist_values[~np.isnan(hist_values)]
+            hist_label = f'{gene} (log1p normalized)'
+            hist_vmin = 0
+            hist_vmax = np.percentile(hist_valid, 99)
+            bins = np.linspace(hist_vmin, hist_vmax, 75)
+        else:
+            hist_valid = valid_values
+            hist_label = gene
+            hist_vmin = 0
+            hist_vmax = vmax
+            bins = np.linspace(0, vmax, 75)
+
+        ax3.hist(hist_valid[(hist_valid >= hist_vmin) & (hist_valid <= hist_vmax)],
+                bins=bins, alpha=0.7, edgecolor='black', linewidth=0.5, color='steelblue')
+
+        # Use stats from earlier (threshold already set based on custom_threshold)
+        mode = stats.get('mode', np.nan)
+        noise_std = stats.get('noise_std', np.nan)
+        sigma_used = stats.get('sigma_used', stats.get('adaptive_sigma', 2.0))
+        n_positive = np.sum(positive_mask)
+        pct_positive = 100 * n_positive / len(valid_values) if len(valid_values) > 0 else 0
+
+        # Threshold line (use the threshold we computed earlier - it's in normalized space if normalized)
+        if threshold is not None and hist_vmin <= threshold <= hist_vmax:
+            threshold_label = f'Threshold: {threshold:.3f}'
+            if custom_threshold is not None:
+                threshold_label += ' (custom)'
+            ax3.axvline(threshold, color='red', linestyle='--', linewidth=2,
+                       label=threshold_label)
+
+            # Shade positive region
+            ylim = ax3.get_ylim()
+            ax3.axvspan(threshold, hist_vmax, alpha=0.15, color='magenta')
+            ax3.set_ylim(ylim)
+
+        # Mode line (also in normalized space if normalized)
+        if not np.isnan(mode) and hist_vmin <= mode <= hist_vmax:
+            ax3.axvline(mode, color='grey', linestyle=':', linewidth=1.5,
+                       label=f'Mode: {mode:.3f}')
+
+        # Set x-axis limits
+        ax3.set_xlim(hist_vmin, hist_vmax)
+
+        # Text box with metadata
+        neuropil_str = "subtracted" if neuropil_subtracted else "raw"
+        threshold_val = threshold if threshold is not None else np.nan
+        text_lines = [
+            f"n = {len(valid_values)}",
+            f"Mode: {mode:.3f}" if not np.isnan(mode) else "",
+            f"Threshold: {threshold_val:.3f}" if not np.isnan(threshold_val) else "",
+            f"Positive: {n_positive} ({pct_positive:.1f}%)"
+        ]
+        if norm_method != 'none':
+            text_lines.insert(1, f"[{norm_method}]")
+        if custom_threshold is not None:
+            text_lines.insert(2, "(custom threshold)")
+        text_str = '\n'.join([l for l in text_lines if l])
+
+        ax3.text(0.97, 0.97, text_str, transform=ax3.transAxes,
+                fontsize=8, verticalalignment='top', horizontalalignment='right',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8),
+                family='monospace')
+
+        xlabel = 'Expression (normalized)' if norm_method != 'none' else 'Expression value'
+        ax3.set_xlabel(xlabel)
+        ax3.set_ylabel('Count')
+        ax3.set_title(f'{gene}: Distribution')
+        ax3.legend(loc='upper left', fontsize=8)
+    else:
+        ax3.text(0.5, 0.5, 'No valid values', ha='center', va='center',
                 transform=ax3.transAxes)
+        ax3.set_title(f'{gene}: Distribution')
         ax3.set_title(f'{gene}: Spatial')
 
     return axes
@@ -3858,20 +4794,25 @@ def plot_gene_classification_grid(
     y_col: str = 'hcr_y',
     feature_type: str = 'mean_medflt_3x4x4',
     neuropil_subtracted: bool = True,
-    figsize_per_row: Tuple[float, float] = (15, 4)
+    figsize_per_row: Tuple[float, float] = (18, 4),
+    custom_thresholds: Dict[str, float] = None,
+    full_hcr_df: pd.DataFrame = None,
+    density_bins: int = 50
 ) -> plt.Figure:
     """
     Create comprehensive gene classification diagnostic grid organized by round.
 
-    Each gene gets a row with 3 panels:
-    - Panel 1: Per-plane expression strips (matched neurons)
-    - Panel 2: Distribution histogram with threshold
-    - Panel 3: Spatial classification map
+    Each gene gets a row with 3 panels (or 5 if full_hcr_df provided):
+    - Panel 1: Spatial expression map (2P-matched neurons)
+    - Panel 2: Spatial classification map (2P-matched neurons)
+    - Panel 3: Distribution histogram with threshold
+    - Panel 4 (optional): Full HCR volume classification scatter
+    - Panel 5 (optional): Full HCR positive cell density heatmap
 
     Genes are grouped by HCR round with clear separators.
 
     Args:
-        merged_df: DataFrame with gene expression and classification columns
+        merged_df: DataFrame with gene expression and classification columns (2P-matched subset)
         genes: List of gene names to plot
         rounds: List of round info dicts (with 'round' and 'channels' keys)
         classification_stats: Dict from classified_df.attrs['classification_stats']
@@ -3881,6 +4822,11 @@ def plot_gene_classification_grid(
         feature_type: Feature type used (for labeling)
         neuropil_subtracted: Whether data is neuropil-subtracted (for labeling)
         figsize_per_row: Figure size per gene row
+        custom_thresholds: Optional dict mapping gene names to custom thresholds.
+                          Overrides classification_stats thresholds for visualization.
+        full_hcr_df: Optional DataFrame with full HCR volume (all cells, not just 2P-matched).
+                    If provided, adds panels 4 and 5 showing classification across the entire sample.
+        density_bins: Number of bins for density heatmap (default 50)
 
     Returns:
         Matplotlib Figure
@@ -3889,36 +4835,84 @@ def plot_gene_classification_grid(
         raise ImportError("matplotlib required for plotting")
 
     # Build gene-to-round mapping and group genes by round
+    # Use a set to track genes we've already added (avoid duplicates)
     gene_round_map = {}
     genes_by_round = {}
+    seen_genes = set()
 
     for round_info in rounds:
         round_num = round_info['round']
         genes_by_round[round_num] = []
         for channel in round_info['channels']:
-            if channel not in EXCLUDE_GENES and channel in genes:
+            if channel not in EXCLUDE_GENES and channel in genes and channel not in seen_genes:
                 gene_round_map[channel] = round_num
                 genes_by_round[round_num].append(channel)
+                seen_genes.add(channel)
 
-    # Filter to available genes and count total
-    available_genes = [g for g in genes if g in gene_round_map]
-    n_genes = len(available_genes)
+    # Count total genes to plot (should match seen_genes)
+    n_genes = len(seen_genes)
 
     if n_genes == 0:
         rprint("[yellow]No genes to plot in classification grid[/yellow]")
         return None
 
+    # Determine number of columns (3, or 5 if full_hcr_df provided)
+    n_cols = 5 if full_hcr_df is not None else 3
+
     # Create figure with extra space for round headers
     n_rounds = len([r for r in genes_by_round.values() if len(r) > 0])
     total_height = figsize_per_row[1] * n_genes + 0.5 * n_rounds  # Extra for headers
-    fig = plt.figure(figsize=(figsize_per_row[0], total_height))
+    # Adjust width for 5 columns
+    fig_width = figsize_per_row[0] * (n_cols / 3)
+    fig = plt.figure(figsize=(fig_width, total_height))
 
     # Use GridSpec for precise control
     from matplotlib.gridspec import GridSpec
 
     # Calculate rows needed (genes + round separators)
     gs_rows = n_genes
-    gs = GridSpec(gs_rows, 3, figure=fig, hspace=0.4, wspace=0.3)
+    gs = GridSpec(gs_rows, n_cols, figure=fig, hspace=0.4, wspace=0.3)
+
+    # Pre-compute full HCR coordinates if provided
+    twop_fov_bounds = None  # Will store (x_min, x_max, y_min, y_max) of 2P FOV
+    if full_hcr_df is not None:
+        # Auto-detect coordinate columns for full HCR
+        full_x_col = None
+        full_y_col = None
+        x_alternatives = [x_col, 'hcr_x', 'centroid_x_main', 'x_main', 'centroid_x', 'X']
+        y_alternatives = [y_col, 'hcr_y', 'centroid_y_main', 'y_main', 'centroid_y', 'Y']
+
+        for alt in x_alternatives:
+            if alt in full_hcr_df.columns:
+                full_x_col = alt
+                break
+        for alt in y_alternatives:
+            if alt in full_hcr_df.columns:
+                full_y_col = alt
+                break
+
+        if full_x_col and full_y_col:
+            full_x = full_hcr_df[full_x_col].values
+            full_y = full_hcr_df[full_y_col].values
+            full_valid_coords = ~(np.isnan(full_x) | np.isnan(full_y))
+
+            # Compute 2P FOV bounds from cells with 2P matches
+            # Use min/max (not percentiles) to get the actual FOV extent
+            if 'has_2p_match' in full_hcr_df.columns:
+                twop_matched = full_hcr_df['has_2p_match'].fillna(False).astype(bool)
+                twop_x = full_x[twop_matched & full_valid_coords]
+                twop_y = full_y[twop_matched & full_valid_coords]
+                if len(twop_x) > 10:
+                    # Use actual min/max of matched cells (this is the true 2P FOV extent)
+                    twop_fov_bounds = (
+                        np.min(twop_x),   # x_min
+                        np.max(twop_x),   # x_max
+                        np.min(twop_y),   # y_min
+                        np.max(twop_y),   # y_max
+                    )
+        else:
+            full_x = full_y = None
+            full_valid_coords = None
 
     row_idx = 0
 
@@ -3936,6 +4930,11 @@ def plot_gene_classification_grid(
             if gene not in gene_round_map:
                 continue
 
+            # Safety check to avoid index out of bounds
+            if row_idx >= n_genes:
+                rprint(f"[yellow]Warning: row_idx {row_idx} >= n_genes {n_genes}, skipping {gene}[/yellow]")
+                continue
+
             # Create axes for this gene
             ax1 = fig.add_subplot(gs[row_idx, 0])
             ax2 = fig.add_subplot(gs[row_idx, 1])
@@ -3947,6 +4946,11 @@ def plot_gene_classification_grid(
                            fontsize=11, fontweight='bold', color='darkblue')
 
             # Plot diagnostic for this gene
+            # Check for custom threshold for this gene
+            custom_thresh = None
+            if custom_thresholds is not None and gene in custom_thresholds:
+                custom_thresh = custom_thresholds[gene]
+
             plot_gene_classification_diagnostic(
                 merged_df=merged_df,
                 gene=gene,
@@ -3959,13 +4963,151 @@ def plot_gene_classification_grid(
                 feature_type=feature_type,
                 neuropil_subtracted=neuropil_subtracted,
                 axes=[ax1, ax2, ax3],
-                pctile=(2, 98)
+                pctile=(2, 98),
+                custom_threshold=custom_thresh
             )
+
+            # Panel 4 & 5: Full HCR volume classification (if provided)
+            if full_hcr_df is not None and n_cols == 5:
+                ax4 = fig.add_subplot(gs[row_idx, 3])
+                ax5 = fig.add_subplot(gs[row_idx, 4])
+
+                if full_x is not None and full_valid_coords is not None:
+                    # Get gene values from full HCR
+                    try:
+                        full_gene_col = get_gene_column(full_hcr_df, gene, round_num, feature_type)
+                        full_gene_values = full_hcr_df[full_gene_col].values
+
+                        # Get threshold and normalization method
+                        stats = classification_stats.get(gene, {})
+                        threshold = custom_thresh if custom_thresh is not None else stats.get('threshold', None)
+
+                        if threshold is not None:
+                            # Check if normalization was applied during classification
+                            norm_method = stats.get('config', {}).get('normalization', 'none')
+                            if norm_method == 'none':
+                                method_str = stats.get('method', 'mode_shift')
+                                if '|' in str(method_str):
+                                    norm_method = method_str.split('|')[0]
+                                    if norm_method == 'clipped':
+                                        # Handle 'clipped|robust_iqr|...' format
+                                        parts = method_str.split('|')
+                                        norm_method = parts[1] if len(parts) > 1 else 'none'
+                                else:
+                                    norm_method = 'none'
+
+                            # Apply same normalization before thresholding
+                            if norm_method == 'robust_iqr':
+                                normalized_values, _ = normalize_robust_iqr(full_gene_values)
+                                full_positive = normalized_values > threshold
+                            elif norm_method == 'log1p':
+                                normalized_values, _ = normalize_log1p(full_gene_values)
+                                full_positive = normalized_values > threshold
+                            else:
+                                full_positive = full_gene_values > threshold
+
+                            # ===== PANEL 4: Scatter plot =====
+                            # Plot negatives first (grey, small)
+                            neg_mask = full_valid_coords & ~full_positive & ~np.isnan(full_gene_values)
+                            ax4.scatter(full_x[neg_mask], full_y[neg_mask],
+                                       c='lightgrey', s=1, alpha=0.3, rasterized=True)
+
+                            # Plot positives on top (magenta, larger)
+                            pos_mask = full_valid_coords & full_positive & ~np.isnan(full_gene_values)
+                            ax4.scatter(full_x[pos_mask], full_y[pos_mask],
+                                       c='magenta', s=3, alpha=0.7, rasterized=True)
+
+                            # Add 2P FOV rectangle
+                            if twop_fov_bounds is not None:
+                                from matplotlib.patches import Rectangle
+                                x_min, x_max, y_min, y_max = twop_fov_bounds
+                                rect = Rectangle((x_min, y_min), x_max - x_min, y_max - y_min,
+                                                linewidth=2, edgecolor='cyan', facecolor='none',
+                                                linestyle='--', label='2P FOV')
+                                ax4.add_patch(rect)
+
+                            n_pos = np.sum(pos_mask)
+                            n_total = np.sum(full_valid_coords & ~np.isnan(full_gene_values))
+                            pct_pos = 100 * n_pos / n_total if n_total > 0 else 0
+
+                            ax4.set_title(f'Full HCR: {n_pos}/{n_total} ({pct_pos:.1f}%)')
+                            ax4.invert_yaxis()
+                            ax4.set_aspect('equal')
+                            ax4.set_xlabel('X')
+                            ax4.set_ylabel('Y')
+
+                            # ===== PANEL 5: Density heatmap of positive cells =====
+                            pos_x = full_x[pos_mask]
+                            pos_y = full_y[pos_mask]
+
+                            if len(pos_x) > 10:
+                                # Create 2D histogram (density)
+                                x_range = (np.nanmin(full_x[full_valid_coords]),
+                                          np.nanmax(full_x[full_valid_coords]))
+                                y_range = (np.nanmin(full_y[full_valid_coords]),
+                                          np.nanmax(full_y[full_valid_coords]))
+
+                                # Compute density of positive cells
+                                H, xedges, yedges = np.histogram2d(
+                                    pos_x, pos_y,
+                                    bins=density_bins,
+                                    range=[x_range, y_range]
+                                )
+
+                                # Plot as heatmap (transpose H for correct orientation)
+                                extent = [xedges[0], xedges[-1], yedges[-1], yedges[0]]  # Note: y inverted
+                                im = ax5.imshow(H.T, extent=extent, origin='upper',
+                                               cmap='magma', aspect='auto', interpolation='gaussian')
+
+                                # Add colorbar
+                                cbar = plt.colorbar(im, ax=ax5, fraction=0.046, pad=0.04)
+                                cbar.set_label('Count', fontsize=8)
+
+                                # Add 2P FOV rectangle
+                                if twop_fov_bounds is not None:
+                                    x_min, x_max, y_min, y_max = twop_fov_bounds
+                                    rect = Rectangle((x_min, y_min), x_max - x_min, y_max - y_min,
+                                                    linewidth=2, edgecolor='cyan', facecolor='none',
+                                                    linestyle='--')
+                                    ax5.add_patch(rect)
+
+                                ax5.set_title(f'Positive Density')
+                                ax5.set_xlabel('X')
+                                ax5.set_ylabel('Y')
+                            else:
+                                ax5.text(0.5, 0.5, 'Too few positive cells', ha='center', va='center',
+                                        transform=ax5.transAxes)
+                                ax5.set_title('Positive Density')
+
+                        else:
+                            ax4.text(0.5, 0.5, 'No threshold', ha='center', va='center',
+                                    transform=ax4.transAxes)
+                            ax4.set_title(f'{gene}: Full HCR')
+                            ax5.text(0.5, 0.5, 'No threshold', ha='center', va='center',
+                                    transform=ax5.transAxes)
+                            ax5.set_title('Positive Density')
+
+                    except KeyError:
+                        ax4.text(0.5, 0.5, 'Column not found', ha='center', va='center',
+                                transform=ax4.transAxes)
+                        ax4.set_title(f'{gene}: Full HCR')
+                        ax5.text(0.5, 0.5, 'Column not found', ha='center', va='center',
+                                transform=ax5.transAxes)
+                        ax5.set_title('Positive Density')
+                else:
+                    ax4.text(0.5, 0.5, 'No coordinates', ha='center', va='center',
+                            transform=ax4.transAxes)
+                    ax4.set_title(f'{gene}: Full HCR')
+                    ax5.text(0.5, 0.5, 'No coordinates', ha='center', va='center',
+                            transform=ax5.transAxes)
+                    ax5.set_title('Positive Density')
 
             row_idx += 1
 
     # Overall title
-    fig.suptitle('Gene Classification Diagnostics by Round', fontsize=14, fontweight='bold', y=1.01)
+    title_suffix = ' (with Full HCR + Density)' if full_hcr_df is not None else ''
+    fig.suptitle(f'Gene Classification Diagnostics by Round{title_suffix}',
+                fontsize=14, fontweight='bold', y=1.01)
 
     plt.tight_layout()
     return fig

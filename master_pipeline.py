@@ -39,13 +39,17 @@ def main(args = None):
         sg.merge_masks(full_manifest, session, only_hcr=True)
 
     else:
-        session = full_manifest['data']['two_photons_imaging']['sessions'][0]
+        # TODO: Refactor plane iteration - currently we copy session and mutate
+        # functional_plane each iteration, while functions also read from the original
+        # manifest to get reference_plane. This works but is confusing. Consider passing
+        # current_plane and reference_plane as explicit parameters instead.
+        session = full_manifest['data']['two_photons_imaging']['sessions'][0].copy()
 
         # Get all planes to process
         # Support both old and new manifest formats
         if 'functional_planes' in session:
             # New format: all planes in one list
-            all_planes = session['functional_planes']
+            all_planes = list(session['functional_planes'])
         else:
             # Old format: functional_plane + optional additional_functional_planes
             all_planes = list(session['functional_plane'])
@@ -80,20 +84,23 @@ def main(args = None):
             else:
                 rprint(f"\n[bold cyan]Running landmark-based low-res to high-res registration[/bold cyan]\n")
                 rf_landmarks.register_lowres_to_hires_landmarks(full_manifest, session_with_all_planes)
+        else:
+            # Standard mode: create rotated masks (in hi-res mode, register_lowres_to_hires does this)
+            session_with_all_planes = session.copy()
+            if 'functional_planes' not in full_manifest['data']['two_photons_imaging']['sessions'][0]:
+                session_with_all_planes['functional_plane'] = [reference_plane]
+                session_with_all_planes['additional_functional_planes'] = [p for p in all_planes if p != reference_plane]
+            rf.create_rotated_masks_for_standard_mode(full_manifest, session_with_all_planes)
 
         # Now run 2P-to-HCR registration for each plane (needs transformed masks from above)
         for plane in all_planes:
             session['functional_plane'] = [plane]
             rprint(f"\n[bold yellow]Running 2P→HCR registration for plane {plane}[/bold yellow]\n")
-            try:
-                rf.twop_to_hcr_registration(
-                    full_manifest, session, has_hires,
-                    automation_enabled=(automation['twop_to_hcr'] == 'auto')
-                )
-                sg.extract_electrophysiology_intensities(full_manifest, session)
-            except FileNotFoundError as e:
-                rprint(f"[red]Plane {plane} failed - required file not created: {e}[/red]")
-                continue
+            rf.twop_to_hcr_registration(
+                full_manifest, session, has_hires,
+                automation_enabled=(automation['twop_to_hcr'] == 'auto')
+            )
+            sg.extract_electrophysiology_intensities(full_manifest, session)
 
         # Now align 2P masks to HCR and merge (needs twop_aligned_3d.tiff from above)
         for plane in all_planes:

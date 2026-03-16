@@ -1,13 +1,17 @@
+import time
 import numpy as np
 import pandas as pd
 import SimpleITK as sitk
 from tqdm.auto import tqdm
 from tifffile import TiffFile
-from scipy.fft import fft2, ifft2
+from scipy.fft import rfft2, irfft2
 from scipy.interpolate import RBFInterpolator, griddata, LinearNDInterpolator, NearestNDInterpolator
-from scipy.ndimage import binary_erosion, map_coordinates, rotate
+from scipy.ndimage import map_coordinates, rotate, binary_dilation, binary_erosion, distance_transform_edt
+from scipy.spatial import ConvexHull
 from skimage.transform import resize, AffineTransform, warp
 from skimage.registration import phase_cross_correlation
+from skimage.measure import regionprops
+from skimage.segmentation import find_boundaries
 from scipy.optimize import minimize
 import scipy.io as sio
 from pathlib import Path
@@ -20,16 +24,19 @@ from pathlib import Path
 
 def prompt_overwrite_per_plane(plane_idx: int, output_path: Path, overwrite_state: list) -> bool:
     """
-    Ask user whether to overwrite existing output file for a plane.
+    Ask user whether to overwrite existing output files.
+
+    On first call with an existing file, prompts once with [y/n].
+    The answer applies to all planes for the rest of the session.
 
     Parameters
     ----------
     plane_idx : int
-        The plane being processed
+        The plane being processed (for display only)
     output_path : Path
         Path to the output file to check
     overwrite_state : list
-        Single-element list holding state: [None, 'all', 'none']
+        Single-element list holding state: [None, True, False]
         Mutated by this function to remember user's choice across calls
 
     Returns
@@ -41,27 +48,21 @@ def prompt_overwrite_per_plane(plane_idx: int, output_path: Path, overwrite_stat
     if not output_path.exists():
         return True  # File doesn't exist, proceed
 
-    # Check if user already chose 'all' or 'none'
-    if overwrite_state[0] == 'all':
-        return True
-    if overwrite_state[0] == 'none':
-        return False
+    # Already have user's answer from previous prompt
+    if overwrite_state[0] is not None:
+        return overwrite_state[0]
 
-    # Prompt user
+    # Prompt user once - applies to all planes
     while True:
-        response = input(f"Plane {plane_idx}: {output_path.name} exists. Overwrite? [y/n/all/none]: ").strip().lower()
+        response = input(f"Output files exist. Overwrite all? [y/n]: ").strip().lower()
         if response == 'y':
+            overwrite_state[0] = True
             return True
         elif response == 'n':
-            return False
-        elif response == 'all':
-            overwrite_state[0] = 'all'
-            return True
-        elif response == 'none':
-            overwrite_state[0] = 'none'
+            overwrite_state[0] = False
             return False
         else:
-            print("  Please enter y, n, all, or none")
+            print("  Please enter y or n")
 
 
 def get_magnification_from_sbx(sbx_path):
@@ -143,58 +144,76 @@ def read_spacing_xyz_from_tiff(path):
             if y_ppu and y_ppu > 0:
                 sy = 1.0 / y_ppu
 
-        # --- 3) Some files put extra hints in ImageDescription (optional)
-        # You can inspect it if needed:
-        # desc = tags.get("ImageDescription")
-        # print(desc.value[:500])
-
     return sx, sy, sz, unit
 
 
-def tps_warp_2p_to_hcr(twop_2d, landmarks_df, hcr_shape):
-    """Apply TPS warp to transform 2P masks into HCR coordinate space."""
+def tps_warp_2p_to_hcr(twop_2d, landmarks_df, hcr_shape, order=0, downsample=10):
+    """Apply TPS warp to transform 2P image into HCR coordinate space.
+
+    Parameters
+    ----------
+    order : int
+        Interpolation order (0=nearest for labels, 1=bilinear for intensity).
+    downsample : int
+        Evaluate TPS on a grid coarsened by this factor, then upscale.
+        TPS from ~30 landmarks is very smooth so coarse evaluation is exact.
+        Set to 1 to disable downsampling.
+    """
+    from scipy.ndimage import zoom  # zoom not used elsewhere, keep local
+
     hcr_ny, hcr_nx = hcr_shape[1], hcr_shape[2]
-    
+
     src_points = landmarks_df[['hcr_x_px', 'hcr_y_px']].values
     tgt_x = landmarks_df['2p_x_px'].values
     tgt_y = landmarks_df['2p_y_px'].values
-    
+
     tps_to_2p_x = RBFInterpolator(src_points, tgt_x, kernel='thin_plate_spline')
     tps_to_2p_y = RBFInterpolator(src_points, tgt_y, kernel='thin_plate_spline')
-    
-    hcr_yy, hcr_xx = np.mgrid[0:hcr_ny, 0:hcr_nx]
-    hcr_coords = np.column_stack([hcr_xx.ravel(), hcr_yy.ravel()])
-    
-    twop_x_coords = tps_to_2p_x(hcr_coords).reshape(hcr_ny, hcr_nx)
-    twop_y_coords = tps_to_2p_y(hcr_coords).reshape(hcr_ny, hcr_nx)
-    
+
+    # Evaluate TPS on downsampled grid, then upscale (TPS is smooth)
+    ds = max(1, int(downsample))
+    small_ny = int(np.ceil(hcr_ny / ds))
+    small_nx = int(np.ceil(hcr_nx / ds))
+    small_yy, small_xx = np.mgrid[0:small_ny, 0:small_nx]
+    small_coords = np.column_stack([(small_xx.ravel() * ds).astype(np.float64),
+                                     (small_yy.ravel() * ds).astype(np.float64)])
+
+    small_x = tps_to_2p_x(small_coords).reshape(small_ny, small_nx)
+    small_y = tps_to_2p_y(small_coords).reshape(small_ny, small_nx)
+
+    if ds > 1:
+        zoom_y = hcr_ny / small_ny
+        zoom_x = hcr_nx / small_nx
+        twop_x_coords = zoom(small_x, (zoom_y, zoom_x), order=3)[:hcr_ny, :hcr_nx]
+        twop_y_coords = zoom(small_y, (zoom_y, zoom_x), order=3)[:hcr_ny, :hcr_nx]
+    else:
+        twop_x_coords = small_x
+        twop_y_coords = small_y
+
     twop_warped = map_coordinates(
         twop_2d.astype(np.float32),
         [twop_y_coords, twop_x_coords],
-        order=0, mode='constant', cval=0
+        order=order, mode='constant', cval=0
     ).astype(twop_2d.dtype)
-    
+
     return twop_warped
 
 def erode_labels(labels_2d, iterations):
-    """Erode label mask while preserving label IDs.
+    """Erode each labeled cell independently, including cell-cell boundaries.
 
-    Each label is eroded independently to avoid artifacts when cells touch.
+    First removes inner boundaries between touching cells (1px), then
+    applies distance-based erosion for the remaining iterations.
+    This ensures touching cells are properly separated before erosion.
     """
     if iterations <= 0:
         return labels_2d
 
-    result = np.zeros_like(labels_2d)
-    unique_labels = np.unique(labels_2d)
-
-    for label in unique_labels:
-        if label == 0:  # Skip background
-            continue
-        # Erode each cell independently
-        cell_mask = labels_2d == label
-        eroded_mask = binary_erosion(cell_mask, iterations=iterations)
-        result[eroded_mask] = label
-
+    result = labels_2d.copy()
+    bounds = find_boundaries(labels_2d, mode='inner')
+    result[bounds] = 0  # treat cell-cell boundaries as background
+    if iterations > 1:
+        dist = distance_transform_edt(result > 0)
+        result[dist <= (iterations - 1)] = 0
     return result
 
 def sample_hcr_at_zmap(hcr_3d_local, z_map_local, z_offset=0, z_expand=1):
@@ -216,11 +235,90 @@ def sample_hcr_binary_at_zmap(hcr_3d_local, z_map_local, z_offset=0, z_expand=1)
     """Sample HCR volume as binary mask."""
     return sample_hcr_at_zmap(hcr_3d_local, z_map_local, z_offset, z_expand) > 0
 
-def compute_iou(mask1, mask2):
-    """Compute IoU (Intersection over Union) between two binary masks."""
+def compute_iou(mask1, mask2, fov_mask=None):
+    """
+    Compute IoU (Intersection over Union) between two binary masks.
+
+    Parameters
+    ----------
+    mask1 : ndarray
+        First binary mask (typically 2P masks)
+    mask2 : ndarray
+        Second binary mask (typically HCR masks)
+    fov_mask : ndarray, optional
+        Field-of-view mask to restrict calculation. If provided, mask2 is
+        masked to only include pixels within the FOV. This is critical when
+        mask2 (HCR) covers a much larger area than mask1 (2P).
+
+    Returns
+    -------
+    float
+        IoU score in [0, 1]
+
+    Notes
+    -----
+    When 2P covers a small FOV within a larger HCR image, the standard IoU
+    will be artificially low because the union includes HCR cells outside
+    the 2P region. Use fov_mask to restrict to the relevant region.
+    """
+    mask1 = np.asarray(mask1, dtype=bool)
+    mask2 = np.asarray(mask2, dtype=bool)
+    if fov_mask is not None:
+        mask2 = mask2 & np.asarray(fov_mask, dtype=bool)
     intersection = (mask1 & mask2).sum()
     union = (mask1 | mask2).sum()
     return intersection / union if union > 0 else 0.0
+
+
+def create_fov_mask(twop_mask, dilation_iterations=30):
+    """
+    Create a field-of-view mask from 2P data extent.
+
+    Parameters
+    ----------
+    twop_mask : ndarray
+        Binary mask of 2P cells (after TPS warp to HCR space)
+    dilation_iterations : int
+        Number of dilation iterations to expand FOV boundary.
+        Default 30 pixels captures nearby HCR cells.
+
+    Returns
+    -------
+    ndarray
+        Binary FOV mask covering 2P data + margin
+    """
+    return binary_dilation(twop_mask > 0, iterations=dilation_iterations)
+
+def compute_bidirectional_overlap(mask1, mask2):
+    """
+    Compute bidirectional overlap between two binary masks.
+
+    overlap = sqrt(overlap_1² + overlap_2²) / sqrt(2)
+
+    Where:
+    - overlap_1 = fraction of mask1 pixels overlapping with mask2
+    - overlap_2 = fraction of mask2 pixels overlapping with mask1
+
+    This metric requires BOTH masks to substantially overlap each other,
+    unlike IoU which harshly penalizes size mismatches, or one-sided overlap
+    which ignores asymmetric coverage.
+
+    Reference: Bhattarai et al. used similar bidirectional measure for
+    cross-modality ROI matching (in vivo to ex vivo).
+
+    Returns normalized value in [0, 1] where 1 = perfect overlap.
+    """
+    intersection = (mask1 & mask2).sum()
+    sum1, sum2 = mask1.sum(), mask2.sum()
+
+    if sum1 == 0 or sum2 == 0:
+        return 0.0
+
+    overlap_1 = intersection / sum1  # Fraction of mask1 in mask2
+    overlap_2 = intersection / sum2  # Fraction of mask2 in mask1
+
+    # Geometric combination normalized to [0, 1]
+    return np.sqrt(overlap_1**2 + overlap_2**2) / np.sqrt(2)
 
 def fft_iou_all_shifts(mask1, mask2, max_shift):
     """Find best XY shift using FFT-accelerated IoU search."""
@@ -229,22 +327,42 @@ def fft_iou_all_shifts(mask1, mask2, max_shift):
     sum1, sum2 = m1.sum(), m2.sum()
     if sum1 == 0 or sum2 == 0:
         return 0, 0, 0
-    
+
     h, w = m1.shape
-    cross_corr = np.real(ifft2(np.conj(fft2(m1)) * fft2(m2)))
+    cross_corr = irfft2(np.conj(rfft2(m1)) * rfft2(m2), s=(h, w))
     iou_map = np.where((sum1 + sum2 - cross_corr) > 0,
                        cross_corr / (sum1 + sum2 - cross_corr), 0)
-    
-    best_iou = -1
-    best_dy, best_dx = 0, 0
-    for dy in range(-max_shift, max_shift + 1):
-        for dx in range(-max_shift, max_shift + 1):
-            iou = iou_map[dy % h, dx % w]
-            if iou > best_iou:
-                best_iou = iou
-                best_dy, best_dx = dy, dx
-    
-    return best_dy, best_dx, best_iou
+
+    return _best_shift_from_map(iou_map, max_shift)
+
+
+def _best_shift_from_map(score_map, max_shift):
+    """Extract best (dy, dx, score) from a zero-centered FFT score map."""
+    h, w = score_map.shape
+    shifted = np.fft.fftshift(score_map)
+    cy, cx = h // 2, w // 2
+    region = shifted[cy - max_shift:cy + max_shift + 1,
+                     cx - max_shift:cx + max_shift + 1]
+    flat_idx = np.argmax(region)
+    best_i, best_j = np.unravel_index(flat_idx, region.shape)
+    return best_i - max_shift, best_j - max_shift, region[best_i, best_j]
+
+def fft_bidirectional_all_shifts(mask1, mask2, max_shift):
+    """Find best XY shift using FFT-accelerated bidirectional overlap search.
+
+    Bidirectional overlap = sqrt((intersection/sum1)² + (intersection/sum2)²) / sqrt(2)
+    """
+    m1 = mask1.astype(np.float64)
+    m2 = mask2.astype(np.float64)
+    sum1, sum2 = m1.sum(), m2.sum()
+    if sum1 == 0 or sum2 == 0:
+        return 0, 0, 0
+
+    h, w = m1.shape
+    cross_corr = irfft2(np.conj(rfft2(m1)) * rfft2(m2), s=(h, w))
+    bidirectional_map = np.sqrt((cross_corr / sum1)**2 + (cross_corr / sum2)**2) / np.sqrt(2)
+
+    return _best_shift_from_map(bidirectional_map, max_shift)
 
 def shift_2d(mask, dy, dx):
     """Shift 2D mask with zero-padding."""
@@ -258,11 +376,17 @@ def shift_2d(mask, dy, dx):
     elif dx < 0: shifted[:, dx:] = 0
     return shifted
 
-def rotate_2d(mask, angle_deg):
-    """Rotate 2D mask around center."""
+def rotate_2d(mask, angle_deg, order=0):
+    """Rotate 2D image around center.
+
+    Parameters
+    ----------
+    order : int
+        Interpolation order (0=nearest for labels, 1=bilinear for intensity).
+    """
     if angle_deg == 0:
         return mask.copy()
-    return rotate(mask, angle_deg, reshape=False, order=0, mode='constant', cval=0)
+    return rotate(mask, angle_deg, reshape=False, order=order, mode='constant', cval=0)
 
 def apply_shift_fields(mask_2d, dy_field, dx_field, order=0, return_labels=False):
     """
@@ -301,22 +425,35 @@ def apply_shift_fields(mask_2d, dy_field, dx_field, order=0, return_labels=False
         # Return binary (for IoU calculation)
         return shifted > 0.5
 
-def add_px_columns(landmarks_df, path_reference_round_tiff, path_twop_reference_plane_tiff):
-    # Get HCR resolutions using tifffile (more reliable than SimpleITK)
-    HCR_RES_X, HCR_RES_Y, HCR_RES_Z, _ = read_spacing_xyz_from_tiff(path_reference_round_tiff)
-    # Get 2P resolutions
-    TWOP_RES_X, TWOP_RES_Y, _, _ = read_spacing_xyz_from_tiff(path_twop_reference_plane_tiff)
+def add_px_columns(landmarks_df, hcr_resolution):
+    """
+    Convert landmark coordinates to pixel units.
 
-    # Convert to pixels
+    2P coordinates are already in pixels (uncalibrated 1:1 in BigWarp).
+    HCR coordinates are in micrometers and need conversion.
+
+    Parameters
+    ----------
+    landmarks_df : pd.DataFrame
+        Landmarks with columns: 2p_x, 2p_y, 2p_z, hcr_x, hcr_y, hcr_z
+    hcr_resolution : list
+        HCR resolution as [X, Y, Z] in μm/pixel (from manifest)
+    """
+    HCR_RES_X, HCR_RES_Y, HCR_RES_Z = hcr_resolution[0], hcr_resolution[1], hcr_resolution[2]
+
+    # HCR coordinates: convert from μm to pixels
     landmarks_df['hcr_x_px'] = landmarks_df['hcr_x'] / HCR_RES_X
     landmarks_df['hcr_y_px'] = landmarks_df['hcr_y'] / HCR_RES_Y
     landmarks_df['hcr_z_px'] = landmarks_df['hcr_z'] / HCR_RES_Z
-    landmarks_df['2p_x_px'] = landmarks_df['2p_x'] / TWOP_RES_X
-    landmarks_df['2p_y_px'] = landmarks_df['2p_y'] / TWOP_RES_Y
-    landmarks_df['2p_z_px'] = landmarks_df['2p_z'] / 1  # 2P is single plane
+
+    # 2P coordinates: already in pixels (uncalibrated 1:1)
+    landmarks_df['2p_x_px'] = landmarks_df['2p_x']
+    landmarks_df['2p_y_px'] = landmarks_df['2p_y']
+    landmarks_df['2p_z_px'] = landmarks_df['2p_z']
+
     return landmarks_df
 
-def load_landmarks(landmarks_path, hcr_ref_path, twop_ref_path):
+def load_landmarks(landmarks_path, hcr_resolution):
     """
     Load and prepare landmark data for registration.
 
@@ -327,10 +464,8 @@ def load_landmarks(landmarks_path, hcr_ref_path, twop_ref_path):
     ----------
     landmarks_path : Path
         Path to landmarks CSV file
-    hcr_ref_path : Path
-        Path to HCR reference image (for resolution metadata)
-    twop_ref_path : Path
-        Path to 2P reference image (for resolution metadata)
+    hcr_resolution : list
+        HCR resolution as [X, Y, Z] in μm/pixel (from manifest)
 
     Returns
     -------
@@ -346,8 +481,8 @@ def load_landmarks(landmarks_path, hcr_ref_path, twop_ref_path):
     # Filter only enabled landmarks and those within bounds
     landmarks_df = landmarks_df.query("enabled==True and hcr_x<9e5").copy()
 
-    # Convert physical units to pixel coordinates
-    landmarks_df = add_px_columns(landmarks_df, hcr_ref_path, twop_ref_path)
+    # Convert to pixel coordinates
+    landmarks_df = add_px_columns(landmarks_df, hcr_resolution)
 
     return landmarks_df
 
@@ -394,39 +529,94 @@ def build_z_map(landmarks_df, output_shape):
 # ALIGNMENT FUNCTIONS
 # =============================================================================
 
+def _fft_iou_precomputed(twop_rfft, sum1, mask2, max_shift):
+    """IoU search with pre-computed rfft2 of mask1 (avoids redundant FFTs)."""
+    m2 = mask2.astype(np.float64)
+    sum2 = m2.sum()
+    if sum1 == 0 or sum2 == 0:
+        return 0, 0, 0
+
+    h, w = m2.shape
+    cross_corr = irfft2(np.conj(twop_rfft) * rfft2(m2), s=(h, w))
+    iou_map = np.where((sum1 + sum2 - cross_corr) > 0,
+                       cross_corr / (sum1 + sum2 - cross_corr), 0)
+    return _best_shift_from_map(iou_map, max_shift)
+
+
 def global_alignment(twop_binary, hcr_3d_local, z_map, rotation_range, rotation_step,
-                     z_range, xy_max, desc=""):
-    """Find best global (theta, dz, dy, dx)."""
+                     z_range, xy_max, fov_mask=None):
+    """Find best global (theta, dz, dy, dx).
+
+    Parameters
+    ----------
+    fov_mask : ndarray, optional
+        Binary mask of the 2P field of view (dilated). When provided, HCR is
+        masked to this region before IOU computation so that HCR cells outside
+        the 2P FOV don't bias the search.
+    """
     rotation_angles = np.arange(rotation_range[0], rotation_range[1] + rotation_step, rotation_step)
     dz_vals = list(range(z_range[0], z_range[1] + 1))
-    
+
+    # Pre-compute HCR z-slices (only depend on dz, not theta)
+    hcr_slices = {}
+    for dz in dz_vals:
+        hcr_slices[dz] = sample_hcr_binary_at_zmap(hcr_3d_local, z_map, z_offset=dz)
+
     best = {'iou': -1, 'theta': 0, 'dz': 0, 'dy': 0, 'dx': 0}
-    
-    for theta in tqdm(rotation_angles, desc=f"Global {desc}", leave=False):
+
+    for theta in rotation_angles:
         twop_rotated = rotate_2d(twop_binary, theta)
-        
+
+        # Pre-compute FFT of rotated 2P mask (reused across all dz)
+        twop_f64 = twop_rotated.astype(np.float64)
+        twop_rfft = rfft2(twop_f64)
+        sum1 = twop_f64.sum()
+
+        # Rotate FOV mask to match 2P rotation
+        fov_rotated = None
+        if fov_mask is not None:
+            fov_rotated = rotate_2d(fov_mask.astype(np.float64), theta) > 0.5
+
         for dz in dz_vals:
-            hcr_2d = sample_hcr_binary_at_zmap(hcr_3d_local, z_map, z_offset=dz)
-            dy, dx, iou = fft_iou_all_shifts(twop_rotated, hcr_2d, xy_max)
-            
+            hcr_2d = hcr_slices[dz]
+
+            if fov_rotated is not None:
+                hcr_2d = hcr_2d & fov_rotated
+
+            dy, dx, iou = _fft_iou_precomputed(twop_rfft, sum1, hcr_2d, xy_max)
+
             if iou > best['iou']:
                 best = {'iou': iou, 'theta': theta, 'dz': dz, 'dy': dy, 'dx': dx}
-    
+
     return best
 
+def _process_single_tile(args):
+    """Worker for a single tile shift computation (used by ThreadPoolExecutor)."""
+    twop_tile, hcr_tile, z_map_tile, base_dz, z_vals, xy_max, cy, cx = args
+
+    best_tile = {'iou': -1, 'dz': 0, 'dy': 0, 'dx': 0}
+    for dz in z_vals:
+        hcr_2d_tile = sample_hcr_binary_at_zmap(hcr_tile, z_map_tile, z_offset=base_dz + dz)
+        dy, dx, iou = fft_iou_all_shifts(twop_tile, hcr_2d_tile, xy_max)
+        if iou > best_tile['iou']:
+            best_tile = {'iou': iou, 'dz': dz, 'dy': dy, 'dx': dx}
+
+    return {'cy': cy, 'cx': cx, **best_tile}
+
+
 def compute_tile_shifts(twop_2d_in, hcr_3d_local, z_map_local, base_dz,
-                        tile_size, overlap, xy_max, z_range, min_pixels):
-    """Compute optimal shift for each tile."""
+                        tile_size, overlap, xy_max, z_range, min_pixels,
+                        max_workers=None):
+    """Compute optimal shift for each tile (parallelized across tiles)."""
+    from concurrent.futures import ThreadPoolExecutor
+    import os
+
     ny_local, nx_local = twop_2d_in.shape
     step = max(1, int(tile_size * (1 - overlap)))
-    
-    tile_results = []
     z_vals = list(range(z_range[0], z_range[1] + 1))
 
-    pbar = tqdm(total=((ny_local - tile_size // 2) // step + 1) *
-                    ((nx_local - tile_size // 2) // step + 1),
-                     desc="Tile shifts", leave=False)
-
+    # Build list of tile work items
+    tasks = []
     for ty in range(0, ny_local - tile_size // 2, step):
         for tx in range(0, nx_local - tile_size // 2, step):
             y0_t, y1_t = max(0, ty), min(ny_local, ty + tile_size)
@@ -436,26 +626,21 @@ def compute_tile_shifts(twop_2d_in, hcr_3d_local, z_map_local, base_dz,
                 continue
 
             twop_tile = twop_2d_in[y0_t:y1_t, x0_t:x1_t]
-            z_map_tile = z_map_local[y0_t:y1_t, x0_t:x1_t]
-            hcr_tile = hcr_3d_local[:, y0_t:y1_t, x0_t:x1_t]
-
             if twop_tile.sum() < min_pixels:
                 continue
 
-            best_tile = {'iou': -1, 'dz': 0, 'dy': 0, 'dx': 0}
-            
-            for dz in z_vals:
-                hcr_2d_tile = sample_hcr_binary_at_zmap(hcr_tile, z_map_tile, z_offset=base_dz + dz)
-                dy, dx, iou = fft_iou_all_shifts(twop_tile, hcr_2d_tile, xy_max)
-                if iou > best_tile['iou']:
-                    best_tile = {'iou': iou, 'dz': dz, 'dy': dy, 'dx': dx}
+            z_map_tile = z_map_local[y0_t:y1_t, x0_t:x1_t]
+            hcr_tile = hcr_3d_local[:, y0_t:y1_t, x0_t:x1_t]
+            cy, cx = (y0_t + y1_t) / 2, (x0_t + x1_t) / 2
+            tasks.append((twop_tile, hcr_tile, z_map_tile, base_dz, z_vals, xy_max, cy, cx))
 
-            tile_results.append({
-                'cy': (y0_t + y1_t) / 2, 'cx': (x0_t + x1_t) / 2,
-                'dz': best_tile['dz'], 'dy': best_tile['dy'], 'dx': best_tile['dx'],
-                'iou': best_tile['iou']
-            })
-            pbar.update(1)
+    if not tasks:
+        return []
+
+    # NumPy/SciPy FFT releases the GIL, so threads give real parallelism
+    n_workers = max_workers or min(os.cpu_count() or 4, len(tasks))
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        tile_results = list(pool.map(_process_single_tile, tasks))
 
     return tile_results
 
@@ -1132,3 +1317,646 @@ def apply_lowres_to_hires_transform(lowres_masks, transform_params, hires_shape)
         masks_shifted = np.roll(masks_shifted, shift_x, axis=1)
 
         return masks_shifted.astype(lowres_masks.dtype)
+
+
+# =============================================================================
+# V8 REGISTRATION: 5-TIER PROGRESSIVE REFINEMENT
+# =============================================================================
+# Ported from flexible_local_alignment_v8_CIM132-Copy1.ipynb
+# Strategy: global grid → double affine → double local tiles
+
+
+# ---- Z-Map Extrapolation ----
+
+def _fit_plane(coords, z, yy, xx):
+    """Least-squares plane: z = a*y + b*x + c."""
+    M = np.column_stack([coords, np.ones(len(z))])
+    c = np.linalg.lstsq(M, z, rcond=None)[0]
+    return c[0] * yy + c[1] * xx + c[2]
+
+
+def _fit_quad(coords, z, yy, xx):
+    """Quadratic surface: z = a*y^2 + b*x^2 + c*y*x + d*y + e*x + f."""
+    M = np.column_stack([coords[:, 0]**2, coords[:, 1]**2,
+                         coords[:, 0] * coords[:, 1],
+                         coords, np.ones(len(z))])
+    c = np.linalg.lstsq(M, z, rcond=None)[0]
+    return c[0] * yy**2 + c[1] * xx**2 + c[2] * yy * xx + c[3] * yy + c[4] * xx + c[5]
+
+
+def build_z_variant(coords, z_vals, shape, extrap='plane'):
+    """Linear inside convex hull, *extrap* outside.
+
+    Parameters
+    ----------
+    coords : ndarray (N, 2)
+        Landmark coordinates (y, x).
+    z_vals : ndarray (N,)
+        Z values at each landmark.
+    shape : tuple (ny, nx)
+        Output shape.
+    extrap : str
+        Extrapolation method: 'nearest', 'plane', or 'quadratic'.
+
+    Returns
+    -------
+    z_map : ndarray (ny, nx)
+    outside_mask : ndarray bool (ny, nx)
+        True where linear interpolation was undefined (extrapolated).
+    """
+    yy, xx = np.mgrid[0:shape[0], 0:shape[1]]
+    z_lin = LinearNDInterpolator(coords, z_vals)(yy, xx)
+    outside = np.isnan(z_lin)
+    if extrap == 'nearest':
+        z_fill = NearestNDInterpolator(coords, z_vals)(yy, xx)
+    elif extrap == 'plane':
+        z_fill = _fit_plane(coords, z_vals, yy, xx)
+    elif extrap == 'quadratic':
+        z_fill = _fit_quad(coords, z_vals, yy, xx)
+    else:
+        raise ValueError(f"Unknown extrap: {extrap}")
+    return np.where(outside, z_fill, z_lin), outside
+
+
+def build_z_quad_blend(coords, z_vals, shape, max_dist=300):
+    """Quadratic near hull, blending smoothly to plane beyond max_dist px.
+
+    Uses linear interpolation inside the convex hull of landmarks,
+    quadratic extrapolation near the hull boundary, and blends to
+    a plane fit at distances beyond max_dist. This prevents the
+    quadratic from diverging far from landmarks.
+    """
+    z_quad, outside = build_z_variant(coords, z_vals, shape, 'quadratic')
+    z_plane, _ = build_z_variant(coords, z_vals, shape, 'plane')
+    dist = distance_transform_edt(outside.astype(np.float64))
+    alpha = np.clip(dist / max_dist, 0, 1)
+    return z_quad * (1 - alpha) + z_plane * alpha
+
+
+# ---- Hull Mask Functions ----
+
+def create_fov_mask_convex_hull(twop_binary, margin=30):
+    """FOV mask from convex hull of 2P cells + dilation.
+
+    More accurate than binary dilation (create_fov_mask) because it
+    creates a convex boundary around all cells rather than dilating
+    each cell individually.
+    """
+    from matplotlib.path import Path as MplPath
+    ys, xs = np.where(twop_binary)
+    if len(ys) < 3:
+        return binary_dilation(twop_binary, iterations=max(margin, 1))
+    step = max(1, len(ys) // 5000)
+    pts = np.column_stack([xs[::step], ys[::step]])
+    hull = ConvexHull(pts)
+    path = MplPath(pts[hull.vertices])
+    yy, xx = np.mgrid[:twop_binary.shape[0], :twop_binary.shape[1]]
+    mask = path.contains_points(np.column_stack([xx.ravel(), yy.ravel()])).reshape(twop_binary.shape)
+    return binary_dilation(mask, iterations=margin) if margin > 0 else mask
+
+
+def create_landmark_hull_mask(landmarks_df, shape, margin=0):
+    """Convex hull of TPS landmarks with optional erosion/dilation.
+
+    Parameters
+    ----------
+    landmarks_df : DataFrame
+        Must have 'hcr_x_px' and 'hcr_y_px' columns.
+    shape : tuple (ny, nx)
+        Output mask shape.
+    margin : int
+        Positive = dilate hull, negative = erode inward.
+        Negative values create an "inward hull" that restricts the
+        global search to the region where landmarks provide reliable
+        TPS coverage.
+    """
+    from matplotlib.path import Path as MplPath
+    coords = landmarks_df[['hcr_x_px', 'hcr_y_px']].values
+    if len(coords) < 3:
+        raise ValueError(f"Need >= 3 landmarks, got {len(coords)}")
+    hull = ConvexHull(coords)
+    path = MplPath(coords[hull.vertices])
+    yy, xx = np.mgrid[:shape[0], :shape[1]]
+    mask = path.contains_points(np.column_stack([xx.ravel(), yy.ravel()])).reshape(shape)
+    if margin > 0:
+        mask = binary_dilation(mask, iterations=margin)
+    elif margin < 0:
+        mask = binary_erosion(mask, iterations=abs(margin))
+    return mask
+
+
+# ---- FFT-IoU with Moving Mask ----
+
+def _extract_shift_region(full_map, xy_max):
+    """Extract +/-xy_max shift region from FFT cross-correlation output.
+
+    Index (i, j) in result corresponds to shift (i - xy_max, j - xy_max).
+    """
+    top = full_map[:xy_max + 1, :]
+    bot = full_map[-xy_max:, :]
+    reg_y = np.vstack([bot, top])
+    left = reg_y[:, -xy_max:]
+    right = reg_y[:, :xy_max + 1]
+    return np.hstack([left, right])
+
+
+def fft_iou_fov_precomputed(twop_rfft, fov_rfft, sum_twop, hcr_patch, max_shift,
+                             fft_shape, peak_mask_radius=5):
+    """FFT-IoU with pre-computed 2P and FOV transforms.
+
+    The FOV mask moves with the 2P template, so the union correctly
+    adapts per-shift. Also computes peak_ratio for match confidence.
+
+    Returns
+    -------
+    dy, dx : int
+        Best shift.
+    iou_best : float
+        IoU at best shift.
+    peak_ratio : float
+        Ratio of best IoU to second-best (sharpness measure).
+    """
+    m2 = hcr_patch.astype(np.float64)
+    sum2 = m2.sum()
+    if sum_twop == 0 or sum2 == 0:
+        return 0, 0, 0.0, 0.0
+
+    fft_h, fft_w = fft_shape
+    hcr_rfft = rfft2(m2, s=fft_shape)
+
+    inter = np.clip(irfft2(np.conj(twop_rfft) * hcr_rfft, s=fft_shape), 0, None)
+    fov_hcr = np.clip(irfft2(np.conj(fov_rfft) * hcr_rfft, s=fft_shape), 0, None)
+    union = sum_twop + fov_hcr - inter
+    iou_map = np.where(union > 0, inter / union, 0.0)
+
+    # Extract best shift from search region
+    sr = np.fft.fftshift(iou_map)
+    cy, cx = fft_h // 2, fft_w // 2
+    region = sr[cy - max_shift:cy + max_shift + 1, cx - max_shift:cx + max_shift + 1]
+    bi, bj = np.unravel_index(np.argmax(region), region.shape)
+    peak_val = float(region[bi, bj])
+
+    # Peak ratio: mask around peak, find second-highest
+    region_m = region.copy()
+    r0m = max(0, bi - peak_mask_radius)
+    r1m = min(region_m.shape[0], bi + peak_mask_radius + 1)
+    c0m = max(0, bj - peak_mask_radius)
+    c1m = min(region_m.shape[1], bj + peak_mask_radius + 1)
+    region_m[r0m:r1m, c0m:c1m] = 0
+    second_peak = float(region_m.max())
+    peak_ratio = peak_val / (second_peak + 1e-8)
+
+    return bi - max_shift, bj - max_shift, peak_val, peak_ratio
+
+
+# ---- Global Search (Moving-Mask IoU) ----
+
+def global_search_moving_iou(twop_binary, hcr_3d_binary, z_map, mask,
+                              z_range=(-15, 15), xy_max=500):
+    """FFT-based global grid search using moving-mask IoU.
+
+    The mask travels with the 2P template:
+      I(dy,dx) = xcorr(2P * mask, HCR)   -- intersection
+      T = sum(2P * mask)                  -- constant (template sum)
+      H(dy,dx) = xcorr(mask, HCR)         -- HCR under mask (varies)
+      IoU = I / (T + H - I)
+
+    Parameters
+    ----------
+    twop_binary : ndarray (ny, nx)
+        2P binary mask.
+    hcr_3d_binary : ndarray (nz, ny, nx)
+        HCR 3D binary volume.
+    z_map : ndarray (ny, nx)
+        Baseline Z-coordinate map.
+    mask : ndarray (ny, nx)
+        Search mask (e.g., inward hull of landmarks).
+    z_range : tuple (min, max)
+        Z-offset search range.
+    xy_max : int
+        Maximum XY shift to search.
+
+    Returns
+    -------
+    dict with keys: 'iou', 'theta', 'dz', 'dy', 'dx'.
+    theta is always 0.0 (TPS handles orientation).
+    """
+    h, w = twop_binary.shape
+    fft_h = 1 << int(np.ceil(np.log2(h + xy_max)))
+    fft_w = 1 << int(np.ceil(np.log2(w + xy_max)))
+    fft_shape = (fft_h, fft_w)
+
+    mask_f = mask.astype(np.float64)
+    mask_rfft = rfft2(mask_f, s=fft_shape)
+
+    # Moving-mask template: 2P * mask
+    twop_masked = twop_binary.astype(np.float64) * mask_f
+    twop_masked_rfft = rfft2(twop_masked, s=fft_shape)
+    T = max(twop_masked.sum(), 1.0)
+
+    dz_vals = list(range(z_range[0], z_range[1] + 1))
+    best = {'iou': -1.0, 'theta': 0.0, 'dz': 0, 'dy': 0, 'dx': 0}
+
+    for i, dz in enumerate(dz_vals):
+        if i % max(1, len(dz_vals) // 5) == 0:
+            print(f"  global search dz {i + 1}/{len(dz_vals)} (dz={dz:+d})...", flush=True)
+
+        hcr_2d = sample_hcr_binary_at_zmap(hcr_3d_binary, z_map, z_offset=dz)
+        hcr_f = hcr_2d.astype(np.float64)
+        hcr_rfft = rfft2(hcr_f, s=fft_shape)
+
+        # I(dy,dx) = xcorr(2P*mask, HCR)
+        I_full = irfft2(np.conj(twop_masked_rfft) * hcr_rfft, s=fft_shape)
+        # H(dy,dx) = xcorr(mask, HCR)
+        H_full = irfft2(np.conj(mask_rfft) * hcr_rfft, s=fft_shape)
+
+        # Extract +/-xy_max region
+        I_reg = np.maximum(_extract_shift_region(I_full, xy_max), 0)
+        H_reg = np.maximum(_extract_shift_region(H_full, xy_max), 1)
+
+        # IoU = I / (T + H - I)
+        iou_map = I_reg / np.maximum(T + H_reg - I_reg, 1)
+
+        # Find peak
+        idx = np.unravel_index(iou_map.argmax(), iou_map.shape)
+        dy = int(idx[0]) - xy_max
+        dx = int(idx[1]) - xy_max
+        score = float(iou_map[idx])
+
+        if score > best['iou']:
+            best = {'iou': score, 'theta': 0.0, 'dz': int(dz), 'dy': dy, 'dx': dx}
+
+    print(f"  Best: IoU={best['iou']:.4f} dy={best['dy']:+d} dx={best['dx']:+d} dz={best['dz']:+d}")
+    return best
+
+
+# ---- Cell-Level Displacement Extraction ----
+
+def extract_centroids(labels_2d):
+    """Return (N, 2) array of (cy, cx) from label image."""
+    props = regionprops(labels_2d.astype(np.int32))
+    return np.array([[p.centroid[0], p.centroid[1]] for p in props])
+
+
+def compute_per_cell_ious(twop_labels, hcr_sampled, margin=5):
+    """Compute per-cell IoU between labeled 2P cells and HCR binary mask.
+
+    Returns dict {label_id: iou}.
+    """
+    hcr_bin = hcr_sampled > 0
+    ny, nx = twop_labels.shape
+    props = regionprops(twop_labels.astype(np.int32))
+    result = {}
+    for p in props:
+        r0, c0, r1, c1 = p.bbox
+        r0, c0 = max(0, r0 - margin), max(0, c0 - margin)
+        r1, c1 = min(ny, r1 + margin), min(nx, c1 + margin)
+        cell_crop = (twop_labels[r0:r1, c0:c1] == p.label)
+        hcr_crop = hcr_bin[r0:r1, c0:c1]
+        inter = (cell_crop & hcr_crop).sum()
+        union = (cell_crop | hcr_crop).sum()
+        result[p.label] = float(inter / union) if union > 0 else 0.0
+    return result
+
+
+def find_cell_displacements(twop_binary, twop_labels, hcr_3d_bin, z_map, centroids,
+                            patch_radius=60, search_xy=30, search_z=3,
+                            fov_dilation=10, min_peak_ratio=1.3):
+    """Find (dy, dx, dz) per 2P cell via FFT-IoU on binary patches.
+
+    For each cell:
+    1. Extract patch around centroid (clamped to image bounds)
+    2. Pre-compute 2P and FOV FFTs (reused across Z)
+    3. Search across Z-offsets, finding best (dy, dx, dz) via FFT-IoU
+    4. Compute single-cell IoU at found shift
+    5. Record peak_ratio for match confidence
+
+    Returns list of dicts with keys: cy, cx, label, dy, dx, dz,
+    iou_best, iou_zero, iou_gain, cell_iou, cell_iou_zero, cell_iou_gain,
+    peak_ratio.
+    """
+    ny, nx = twop_binary.shape
+    r = patch_radius
+    full_size = 2 * r
+
+    if full_size > ny or full_size > nx:
+        print(f"  WARNING: patch size {full_size} > image ({ny}x{nx}), reducing patch_radius")
+        r = min(ny, nx) // 4
+        full_size = 2 * r
+        print(f"  New patch_radius={r}, patch_size={full_size}")
+
+    # Pre-sample HCR binary at all Z offsets
+    t0 = time.time()
+    hcr_slices = {}
+    for dz in range(-search_z, search_z + 1):
+        hcr_slices[dz] = sample_hcr_binary_at_zmap(hcr_3d_bin, z_map, z_offset=dz)
+    print(f"  Pre-sampled {len(hcr_slices)} HCR Z-slices in {time.time() - t0:.1f}s")
+
+    fov_dilated = binary_dilation(twop_binary, iterations=fov_dilation)
+
+    # Search radius: must fit within patch
+    cell_search_xy = min(search_xy, (full_size - 10) // 2)
+    print(f"  Patch: {full_size}x{full_size}, search: +/-{cell_search_xy}px")
+    print(f"  Patch:search ratio: {full_size / max(1, 2 * cell_search_xy):.1f}:1")
+
+    # Pre-compute FFT shape (same for all cells with same patch size)
+    fft_h = 1 << int(np.ceil(np.log2(full_size)))
+    fft_shape = (fft_h, fft_h)
+
+    results = []
+    n_shifted = 0
+    n_ambiguous = 0
+    for cy, cx in tqdm(centroids, desc="Per-cell matching"):
+        iy, ix = int(round(cy)), int(round(cx))
+
+        # Find the label at this centroid
+        cell_label = int(twop_labels[min(iy, ny - 1), min(ix, nx - 1)])
+
+        # Extraction bounds: keep full patch size, shift to stay in image
+        py0 = max(0, min(iy - r, ny - full_size))
+        py1 = py0 + full_size
+        px0 = max(0, min(ix - r, nx - full_size))
+        px1 = px0 + full_size
+
+        is_shifted = (py0 != iy - r) or (px0 != ix - r)
+        if is_shifted:
+            n_shifted += 1
+
+        twop_patch = twop_binary[py0:py1, px0:px1]
+        if twop_patch.sum() < 20:
+            continue
+
+        fov_local = fov_dilated[py0:py1, px0:px1]
+        labels_patch = twop_labels[py0:py1, px0:px1]
+        target_mask = (labels_patch == cell_label) if cell_label > 0 else None
+
+        # Baseline: IoU at zero shift, dz=0
+        hcr_zero = hcr_slices[0][py0:py1, px0:px1]
+        iou_zero = compute_iou(twop_patch, hcr_zero, fov_mask=fov_local)
+
+        # Baseline single-cell IoU
+        cell_iou_zero = 0.0
+        if target_mask is not None and target_mask.sum() > 0:
+            ci = (target_mask & hcr_zero).sum()
+            cu = (target_mask | (hcr_zero & fov_local)).sum()
+            cell_iou_zero = float(ci / cu) if cu > 0 else 0.0
+
+        # PRE-COMPUTE: 2P and FOV FFTs (once per cell, reused across all Z)
+        m1 = twop_patch.astype(np.float64)
+        fov_f = fov_local.astype(np.float64)
+        twop_rfft = rfft2(m1, s=fft_shape)
+        fov_rfft = rfft2(fov_f, s=fft_shape)
+        sum_twop = m1.sum()
+
+        best_iou, best_dy, best_dx, best_dz = -1, 0, 0, 0
+        best_peak_ratio = 0.0
+        for dz in range(-search_z, search_z + 1):
+            hcr_patch = hcr_slices[dz][py0:py1, px0:px1]
+            if hcr_patch.sum() < 10:
+                continue
+
+            dy, dx, iou, peak_ratio = fft_iou_fov_precomputed(
+                twop_rfft, fov_rfft, sum_twop, hcr_patch, cell_search_xy,
+                fft_shape)
+
+            if iou > best_iou:
+                best_iou, best_dy, best_dx, best_dz = iou, dy, dx, dz
+                best_peak_ratio = peak_ratio
+
+        # Compute single-cell IoU at the found shift
+        cell_iou_best = 0.0
+        if target_mask is not None and target_mask.sum() > 0 and best_iou > 0:
+            hcr_at_best = hcr_slices[best_dz][py0:py1, px0:px1]
+            hcr_shifted = shift_2d(hcr_at_best, -best_dy, -best_dx)
+            ci = (target_mask & (hcr_shifted > 0)).sum()
+            cu = (target_mask | ((hcr_shifted > 0) & fov_local)).sum()
+            cell_iou_best = float(ci / cu) if cu > 0 else 0.0
+
+        results.append({
+            "cy": cy, "cx": cx, "label": cell_label,
+            "dy": best_dy, "dx": best_dx, "dz": best_dz,
+            "iou_best": best_iou, "iou_zero": iou_zero,
+            "iou_gain": best_iou - iou_zero,
+            "cell_iou": cell_iou_best, "cell_iou_zero": cell_iou_zero,
+            "cell_iou_gain": cell_iou_best - cell_iou_zero,
+            "peak_ratio": best_peak_ratio,
+        })
+        if best_peak_ratio < min_peak_ratio:
+            n_ambiguous += 1
+
+    print(f"  Edge cells (shifted extraction): {n_shifted}")
+    print(f"  Ambiguous matches (peak_ratio < {min_peak_ratio}): {n_ambiguous}")
+    return results
+
+
+# ---- RANSAC Affine Fitting ----
+
+def fit_affine_ransac(df, min_iou, min_gain, residual_thresh,
+                      min_samples=6, max_trials=2000, max_scale_dev=0.2):
+    """Fit 2D affine + linear Z via RANSAC with singular value constraints.
+
+    Displacement model: [dy, dx] = J @ [y, x] + [c_y, c_x]
+    Deformation matrix T = I - J must have SVs in [1-dev, 1+dev].
+
+    Parameters
+    ----------
+    df : DataFrame
+        Cell displacement results from find_cell_displacements().
+    min_iou : float
+        Minimum IoU for a match to be considered.
+    min_gain : float
+        Minimum IoU gain over zero-shift.
+    residual_thresh : float
+        RANSAC inlier threshold (pixels).
+    min_samples : int
+        Minimum cells per RANSAC sample.
+    max_trials : int
+        RANSAC iterations.
+    max_scale_dev : float
+        Maximum deviation from identity scaling.
+
+    Returns
+    -------
+    affine : dict or None
+        {'A_dy': array(3,), 'A_dx': array(3,)} -- coefficients [y, x, 1]
+    z_model : array(3,) or None
+        Z displacement model [y, x, 1]
+    df_annotated : DataFrame
+        Input df with 'inlier' column added.
+    """
+    good = df[(df.iou_best >= min_iou) & (df.iou_gain >= min_gain)].copy()
+    print(f"  High-confidence matches: {len(good)} / {len(df)}")
+    if len(good) < min_samples:
+        print("  WARNING: Too few matches for RANSAC")
+        return None, None, good
+
+    src_pts = good[['cy', 'cx']].values
+    dst_dy = good['dy'].values
+    dst_dx = good['dx'].values
+    dst_dz = good['dz'].values
+
+    best_n_inliers = 0
+    best_affine = None
+    best_z_model = None
+    best_inliers = None
+    n_rejected_sv = 0
+    N = len(good)
+    rng = np.random.default_rng(42)
+
+    def check_svs(A_dy_coeffs, A_dx_coeffs):
+        """Check if deformation matrix has valid singular values."""
+        J = np.array([[A_dy_coeffs[0], A_dy_coeffs[1]],
+                       [A_dx_coeffs[0], A_dx_coeffs[1]]])
+        T = np.eye(2) - J
+        svs = np.linalg.svd(T, compute_uv=False)
+        return svs, np.all(svs >= 1 - max_scale_dev) and np.all(svs <= 1 + max_scale_dev)
+
+    for trial in range(max_trials):
+        idx = rng.choice(N, size=min_samples, replace=False)
+        M = np.hstack([src_pts[idx], np.ones((min_samples, 1))])
+        try:
+            A_dy = np.linalg.lstsq(M, dst_dy[idx], rcond=None)[0]
+            A_dx = np.linalg.lstsq(M, dst_dx[idx], rcond=None)[0]
+        except np.linalg.LinAlgError:
+            continue
+
+        # Check proposal SVs
+        _, ok = check_svs(A_dy, A_dx)
+        if not ok:
+            n_rejected_sv += 1
+            continue
+
+        # Score on all points
+        M_all = np.hstack([src_pts, np.ones((N, 1))])
+        pred_dy = M_all @ A_dy
+        pred_dx = M_all @ A_dx
+        try:
+            A_dz = np.linalg.lstsq(M, dst_dz[idx], rcond=None)[0]
+        except np.linalg.LinAlgError:
+            continue
+        pred_dz = M_all @ A_dz
+        residuals = np.sqrt((dst_dy - pred_dy)**2 + (dst_dx - pred_dx)**2
+                            + (dst_dz - pred_dz)**2)
+        inliers = residuals < residual_thresh
+        n_in = inliers.sum()
+
+        if n_in > best_n_inliers:
+            # Refit on all inliers and validate
+            M_in = M_all[inliers]
+            cand_dy = np.linalg.lstsq(M_in, dst_dy[inliers], rcond=None)[0]
+            cand_dx = np.linalg.lstsq(M_in, dst_dx[inliers], rcond=None)[0]
+            _, ok_refit = check_svs(cand_dy, cand_dx)
+            if not ok_refit:
+                continue
+            best_n_inliers = n_in
+            best_inliers = inliers
+            best_affine = {'A_dy': cand_dy, 'A_dx': cand_dx}
+            best_z_model = np.linalg.lstsq(M_in, dst_dz[inliers], rcond=None)[0]
+
+    print(f"  RANSAC: {n_rejected_sv} / {max_trials} proposals rejected by SV constraint")
+
+    if best_affine is None:
+        print("  WARNING: No valid affine found")
+        return None, None, good
+
+    # Final diagnostics
+    svs_final, _ = check_svs(best_affine['A_dy'], best_affine['A_dx'])
+    good = good.copy()
+    good['inlier'] = best_inliers
+    print(f"  RANSAC inliers: {best_n_inliers} / {len(good)}")
+    print(f"  Affine dy [y, x, 1]: {best_affine['A_dy']}")
+    print(f"  Affine dx [y, x, 1]: {best_affine['A_dx']}")
+    print(f"  Z model  [y, x, 1]: {best_z_model}")
+    print(f"  Deformation SVs: {svs_final}  (valid: [{1 - max_scale_dev:.1f}, {1 + max_scale_dev:.1f}])")
+    return best_affine, best_z_model, good
+
+
+# ---- Local Tile RANSAC with RBF Smoothing ----
+
+def run_local_tile_ransac(twop_binary, hcr_3d_bin, z_map, centroids, cell_df,
+                          tile_size=200, overlap=0.5, min_cells=5,
+                          min_iou=0.10, min_gain=0.04,
+                          border_anchor_spacing=100,
+                          smoothing=50):
+    """Fit per-tile affines from cell matches, return smooth RBF displacement fields.
+
+    1. Divide image into overlapping tiles
+    2. For each tile with enough cells: fit least-squares affine
+    3. Evaluate affine at tile center → (dy, dx, dz)
+    4. Add border anchor points (nearest-neighbor from accepted tiles)
+    5. Fit RBF (thin_plate_spline) through tile+anchor points
+
+    Returns (dy_field, dx_field, dz_field, tile_results).
+    """
+    ny, nx = twop_binary.shape
+    step = int(tile_size * (1 - overlap))
+    good = cell_df[(cell_df.iou_best >= min_iou) & (cell_df.iou_gain >= min_gain)]
+    print(f"  Cells passing local threshold: {len(good)} / {len(cell_df)}")
+
+    tile_results = []
+    for ty in range(0, ny - tile_size // 2, step):
+        for tx in range(0, nx - tile_size // 2, step):
+            ty1, tx1 = min(ny, ty + tile_size), min(nx, tx + tile_size)
+            in_tile = good[(good.cy >= ty) & (good.cy < ty1) &
+                           (good.cx >= tx) & (good.cx < tx1)]
+            tc_y, tc_x = (ty + ty1) / 2, (tx + tx1) / 2
+            if len(in_tile) < min_cells:
+                tile_results.append({'cy': tc_y, 'cx': tc_x,
+                    'dy': 0, 'dx': 0, 'dz': 0, 'accepted': False})
+                continue
+            src = in_tile[['cy', 'cx']].values
+            M = np.hstack([src, np.ones((len(in_tile), 1))])
+            try:
+                A_dy = np.linalg.lstsq(M, in_tile.dy.values, rcond=None)[0]
+                A_dx = np.linalg.lstsq(M, in_tile.dx.values, rcond=None)[0]
+                A_dz = np.linalg.lstsq(M, in_tile.dz.values, rcond=None)[0]
+            except np.linalg.LinAlgError:
+                tile_results.append({'cy': tc_y, 'cx': tc_x,
+                    'dy': 0, 'dx': 0, 'dz': 0, 'accepted': False})
+                continue
+            mc = np.array([[tc_y, tc_x, 1]])
+            tile_results.append({
+                'cy': tc_y, 'cx': tc_x,
+                'dy': float(mc @ A_dy), 'dx': float(mc @ A_dx),
+                'dz': float(mc @ A_dz), 'accepted': True})
+
+    accepted = [t for t in tile_results if t['accepted']]
+    print(f"  Accepted tiles: {len(accepted)} / {len(tile_results)}")
+    if len(accepted) < 3:
+        return np.zeros((ny, nx)), np.zeros((ny, nx)), np.zeros((ny, nx)), tile_results
+
+    centers = np.array([[t['cy'], t['cx']] for t in accepted])
+    dy_vals = np.array([t['dy'] for t in accepted])
+    dx_vals = np.array([t['dx'] for t in accepted])
+    dz_vals = np.array([t['dz'] for t in accepted])
+
+    # Border anchor points: pin at edges using nearest accepted tile
+    s = border_anchor_spacing
+    border_pts = []
+    for bx in np.arange(0, nx, s):
+        border_pts.append([0.0, float(bx)])
+        border_pts.append([float(ny - 1), float(bx)])
+    for by in np.arange(s, ny - 1, s):
+        border_pts.append([float(by), 0.0])
+        border_pts.append([float(by), float(nx - 1)])
+    border_pts = np.array(border_pts)
+    n_border = len(border_pts)
+
+    nn_dy = NearestNDInterpolator(centers, dy_vals)
+    nn_dx = NearestNDInterpolator(centers, dx_vals)
+    nn_dz = NearestNDInterpolator(centers, dz_vals)
+    dy_vals = np.concatenate([dy_vals, nn_dy(border_pts)])
+    dx_vals = np.concatenate([dx_vals, nn_dx(border_pts)])
+    dz_vals = np.concatenate([dz_vals, nn_dz(border_pts)])
+    centers = np.vstack([centers, border_pts])
+    print(f"  Border anchors: {n_border} points (spacing={s}px)")
+
+    yy, xx = np.mgrid[:ny, :nx]
+    pts = np.column_stack([yy.ravel(), xx.ravel()])
+    dy_f = RBFInterpolator(centers, dy_vals,
+        kernel='thin_plate_spline', smoothing=smoothing)(pts).reshape(ny, nx)
+    dx_f = RBFInterpolator(centers, dx_vals,
+        kernel='thin_plate_spline', smoothing=smoothing)(pts).reshape(ny, nx)
+    dz_f = RBFInterpolator(centers, dz_vals,
+        kernel='thin_plate_spline', smoothing=smoothing)(pts).reshape(ny, nx)
+    return dy_f, dx_f, dz_f, tile_results

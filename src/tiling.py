@@ -16,9 +16,7 @@ from skimage.transform import rotate
 
 def update_map(map_x, map_y, poly_vals, src):
     for i in range(map_x.shape[0]):
-        #map_x[i,:] = [poly_vals[x] for x in range(map_x.shape[1])]
-        map_x[i,:] = (np.cumsum(poly_vals)/max(np.cumsum(poly_vals)))*src.shape[3]# for x in range(map_x.shape[1])]
-        #map_x[i,:] = np.cumsum(poly_vals)
+        map_x[i,:] = (np.cumsum(poly_vals)/max(np.cumsum(poly_vals)))*src.shape[3]
     for j in range(map_y.shape[1]):
         map_y[:,j] = [y for y in range(map_y.shape[0])]
 
@@ -61,57 +59,77 @@ def unwarp_tiles(full_manifest: dict, session: dict):
     manifest = full_manifest['data']
     if len(session['anatomical_hires_green_runs']) == 0:
         return
-    print(f'Unwarping tiles for session {session["date"]}')
-    for i in range(1,1+len(session['anatomical_hires_green_runs'])):
+
+    # Check how many tiles need unwarping
+    num_tiles = len(session['anatomical_hires_green_runs'])
+    tiles_to_unwarp = []
+    for i in range(1, 1 + num_tiles):
+        unwarp_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'unwarped' / f'stack_unwarped_C12_{i:03}.tiff'
+        if not os.path.exists(unwarp_path):
+            tiles_to_unwarp.append(i)
+
+    if not tiles_to_unwarp:
+        # All tiles already unwarped - no message needed (avoids per-plane spam)
+        return
+
+    print(f'Unwarping {len(tiles_to_unwarp)}/{num_tiles} tiles for session {session["date"]}')
+    for i in tiles_to_unwarp:
         warp_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'warped' / f'stack_warped_C12_{i:03}.tiff'
-        unwarp_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'unwarped' / f'stack_unwarped_C12_{i:03}.tiff'   
-        if os.path.exists(unwarp_path):
-            continue
+        unwarp_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'unwarped' / f'stack_unwarped_C12_{i:03}.tiff'
         unwarp_path.parent.mkdir(exist_ok=True, parents=True)
-        unwarp_tile(warp_path, 
-                       session['unwarp_config'], 
-                       session['unwarp_steps'], 
-                       unwarp_path)
+        unwarp_tile(warp_path,
+                    session['unwarp_config'],
+                    session['unwarp_steps'],
+                    unwarp_path)
         
 
 def process_session_sbx(full_manifest: dict , session:dict):
     '''
     extract the mean of anatomical hires green and red runs to tiff file in the correct pathways.
     manifest: json dict
-    session: the session to process, extracted from the manifest 
+    session: the session to process, extracted from the manifest
     '''
     manifest = full_manifest['data']
     if len(session['anatomical_hires_green_runs']) == 0:
         return
-    print(f'processing session {session["date"]}')
-    
-    base_2P = Path(manifest['base_path']) / manifest['mouse_name'] / '2P' 
-    save_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'warped' 
+
+    base_2P = Path(manifest['base_path']) / manifest['mouse_name'] / '2P'
+    save_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'warped'
     mouse_name = manifest['mouse_name']
     date = session['date']
 
     # Support variable number of tiles (not just 3)
     num_tiles = len(session['anatomical_hires_green_runs'])
 
+    # Check which tiles need processing
+    tiles_to_process = []
     for j in range(num_tiles):
-        # Sequential numbering: 001, 002, 003, 004, etc.
         stack_name_new = f'{j+1:03d}'
-        save_path.mkdir(exist_ok=True, parents=True)
         save_filename = save_path / f'stack_warped_C12_{stack_name_new}.tiff'
-        if save_filename.exists():
-            continue
+        if not save_filename.exists():
+            tiles_to_process.append(j)
+
+    if not tiles_to_process:
+        # All tiles already processed - no message needed (avoids per-plane spam)
+        return
+
+    print(f'Processing {len(tiles_to_process)}/{num_tiles} tiles for session {date}')
+    save_path.mkdir(exist_ok=True, parents=True)
+
+    for j in tiles_to_process:
+        stack_name_new = f'{j+1:03d}'
+        save_filename = save_path / f'stack_warped_C12_{stack_name_new}.tiff'
 
         green_run = session['anatomical_hires_green_runs'][j]
         green_sbx = base_2P / f'{mouse_name}_{date}_{green_run}' / f'{mouse_name}_{date}_{green_run}.sbx'
 
         red_run = session['anatomical_hires_red_runs'][j]
         red_sbx = base_2P / f'{mouse_name}_{date}_{red_run}' / f'{mouse_name}_{date}_{red_run}.sbx'
-        
-        print(f'processing {green_sbx} and {red_sbx}, mean across time')
+
+        print(f'  Tile {j+1}: {green_sbx.name} + {red_sbx.name}')
         green_stack = np.expand_dims(np.array(sbx_memmap(green_sbx)[:,:,0]).mean(0),1)
         red_stack = np.expand_dims(np.array(sbx_memmap(red_sbx)[:,:,-1]).mean(0),1)
         combined_stack = np.concatenate([green_stack,red_stack],1)
-
 
         tif_imwrite(save_filename, combined_stack.astype(np.float32),
                     imagej=True, metadata={'axes': 'ZCYX'})

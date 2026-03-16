@@ -1,192 +1,75 @@
 # File Naming Conventions
 
-## Overview
-
-Understanding file naming conventions is critical for:
-- Debugging missing file errors
-- Understanding pipeline state
-- Manual intervention when needed
-
-## Output Directory Structure
+## Directory Structure
 
 ```
 {base_path}/{mouse_name}/OUTPUT/
 ├── 2P/
-│   ├── cellpose/           # 2P segmentation outputs
-│   ├── tile/               # Tile processing outputs
-│   │   └── stitched/       # Stitched images
-│   └── registered/         # Registration outputs
-│       └── QA/             # QA overlays
+│   ├── cellpose/           # 2P segmentation
+│   ├── tile/stitched/      # Stitched images
+│   ├── lowres_to_hires/    # Low-res to hi-res QA
+│   └── registered/         # 2P-HCR registration + QA/
 ├── HCR/
-│   ├── full_registered_stacks/  # Registered HCR rounds
-│   └── cellpose/           # HCR segmentation outputs
+│   ├── full_registered_stacks/  # Registered rounds
+│   └── cellpose/           # HCR segmentation
 └── MERGED/
-    └── aligned_extracted_features/  # Final feature tables
+    └── aligned_extracted_features/  # Feature tables
 ```
 
-## 2P Files
+## File Patterns
 
-### Low-Res Mean Images
+### 2P Files
+| Pattern | Created By |
+|---------|-----------|
+| `lowres_meanImg_C{ch}_plane{N}.tiff` | `functional.py` |
+| `hires_{color}_run{X}_tile{Y}.tiff` | External acquisition |
+| `hires_stitched_plane{N}_rotated.tiff` | `auto_stitching.py` |
+| `lowres_meanImg_C{ch}_plane{N}_seg_rotated.tiff` | `segmentation.py` |
+| `lowres_plane{N}_masks_in_hires_space.tiff` | `registrations.py` |
 
-**Pattern:** `lowres_meanImg_C{channel}_plane{plane}.tiff`
+### Registration Files
+| Pattern | Created By |
+|---------|-----------|
+| `twop_plane{N}_aligned_3d.tiff` | `registrations.py` — 3D labeled volume (uint16) in HCR space |
+| `twop_plane{N}_registration_params.npz` | `registrations.py` — see fields below |
+| `plane{N}_TO_HCR{R}_landmarks.csv` | User (BigWarp) |
+| `plane{N}_TO_HCR{R}_landmarks_auto.csv` | `registrations.py` — auto-refined landmarks |
+| `plane{N}_{BEFORE|AFTER}_registration_overlay.tiff` | `registrations.py` (QA) |
 
-**Example:** `lowres_meanImg_C0_plane0.tiff`
+#### Registration Params NPZ Fields (`twop_plane{N}_registration_params.npz`)
 
-**Created by:** `extract_suite2p_registered_planes()` in `functional.py`
+| Field | Type | Description |
+|-------|------|-------------|
+| `global_theta` | float | Global rotation (always 0.0 in v8) |
+| `global_dy`, `global_dx` | float | Global Y/X shift (HCR pixels) |
+| `global_dz` | float | Global Z shift (HCR slices) |
+| `cumulative_dy`, `cumulative_dx` | 2D array | Composed per-pixel Y/X shift fields (affine + tiles) |
+| `cumulative_dz` | 2D array | Composed per-pixel Z shift field |
+| `z_map_local` | 2D array | Final Z-coordinate map |
+| `iou_baseline` | float | IoU before any refinement |
+| `iou_global` | float | IoU after global search |
+| `iou_local` | float | Final IoU after all refinement |
+| `erosion` | int | Erosion parameter used |
+| `hcr_shape` | 1D array | Shape of HCR reference volume |
+| `algorithm_version` | int | Algorithm version (8) |
+| `iou_affine_pass1` | float | IoU after first affine pass |
+| `iou_affine_composed` | float | IoU after composed affine |
+| `iou_local_300` | float | IoU after 300px local tiles |
+| `iou_fine_100` | float | IoU after 100px fine tiles |
+| `crop_offsets` | 1D array | [y0, x0, y1, x1] bounding box used during alignment |
 
-### Tile Files (Hi-Res Mode)
+### HCR Files
+| Pattern | Created By |
+|---------|-----------|
+| `HCR{N}_to_HCR{R}.tiff` | `registrations.py` |
+| `HCR{N}_to_HCR{R}_masks.tiff` | `segmentation.py` |
 
-**Pattern:** `hires_{color}_run{run}_tile{tile}.tiff`
-
-**Example:** `hires_green_run001_tile0.tiff`
-
-**Created by:** External acquisition or tile processing
-
-### Stitched Files
-
-**Pattern:** `hires_stitched_plane{plane}.tiff`
-**Rotated:** `hires_stitched_plane{plane}_rotated.tiff`
-
-**Example:** `hires_stitched_plane0_rotated.tiff`
-
-**Created by:** `auto_stitch_tiles()` in `auto_stitching.py`
-
-### 2P Segmentation
-
-**Pattern:** `lowres_meanImg_C{channel}_plane{plane}_seg_rotated.tiff`
-
-**Example:** `lowres_meanImg_C0_plane0_seg_rotated.tiff`
-
-**Created by:** `run_cellpose_2p()` in `segmentation.py`
-
-### Registered 2P Images
-
-**Pattern:** `twop_plane{plane}_aligned_3d.tiff`
-
-**Example:** `twop_plane0_aligned_3d.tiff`
-
-**Created by:** `twop_to_hcr_registration()` in `registrations.py`
-
-### Landmark Files
-
-**Manual:** `plane{plane}_TO_HCR{round}_landmarks.csv`
-**Auto-refined:** `plane{plane}_TO_HCR{round}_landmarks_auto.csv`
-
-**Example:** `plane0_TO_HCR1_landmarks.csv`
-
-**Created by:** User (manual) or `twop_to_hcr_registration()` (auto)
-
-### QA Overlays
-
-**Pattern:** `plane{plane}_{BEFORE|AFTER}_registration_overlay.tiff`
-
-**Example:** `plane0_AFTER_registration_overlay.tiff`
-
-**Created by:** `twop_to_hcr_registration()` in `registrations.py`
-
-## HCR Files
-
-### Registered Stacks
-
-**Pattern:** `HCR{source}_to_HCR{reference}.tiff`
-
-**Example:** `HCR2_to_HCR1.tiff`
-
-**Created by:** `register_rounds()` in `registrations.py`
-
-### HCR Segmentation
-
-**Pattern:** `HCR{round}_to_HCR{reference}_masks.tiff`
-
-**Example:** `HCR1_to_HCR1_masks.tiff`
-
-**Created by:** `run_cellpose()` in `segmentation.py`
-
-## Merged Files
-
-### Feature Tables
-
-**Pattern:** `full_table_{feature}_twop_plane{plane}.pkl`
-
-**Example:** `full_table_mean_twop_plane0.pkl`
-
-**Created by:** `merge_masks()` in `segmentation.py`
-
-## Files by Pipeline Mode
-
-### Full Pipeline + Hi-Res Stitched
-
-| File | Present |
-|------|---------|
-| Tile files | ✓ |
-| Stitched files | ✓ |
-| Low-res mean | ✓ |
-| 2P segmentation | ✓ |
-| Registered 2P | ✓ |
-| Landmarks | ✓ |
-| QA overlays | ✓ |
-| HCR registered | ✓ |
-| HCR segmentation | ✓ |
-| Feature tables | ✓ |
-
-### Full Pipeline + Standard
-
-| File | Present |
-|------|---------|
-| Tile files | ✗ |
-| Stitched files | ✗ |
-| Low-res mean | ✓ |
-| 2P segmentation | ✓ |
-| Registered 2P | ✓ |
-| Landmarks | ✓ |
-| QA overlays | ✓ |
-| HCR registered | ✓ |
-| HCR segmentation | ✓ |
-| Feature tables | ✓ |
-
-### HCR-Only Mode
-
-| File | Present |
-|------|---------|
-| Tile files | ✗ |
-| Stitched files | ✗ |
-| Low-res mean | ✗ |
-| 2P segmentation | ✗ |
-| Registered 2P | ✗ |
-| Landmarks | ✗ |
-| QA overlays | ✗ |
-| HCR registered | ✓ |
-| HCR segmentation | ✓ |
-| Feature tables | Partial |
-
-## Common File Errors
-
-### "File not found"
-
-1. Check mode matches expected files
-2. Verify naming convention matches pattern
-3. Check previous pipeline stage completed
-
-### "File already exists" (skip)
-
-Pipeline skips steps with existing outputs. To re-run:
-1. Delete specific output file
-2. Or delete OUTPUT folder for fresh run
-
-### Partial/Corrupted Files
-
-May occur from interrupted runs. Delete file and re-run.
-
-## Version Suffixes
-
-Some files may have version suffixes:
-- `_v2` - Updated algorithm version
-- `_auto` - Automatically generated (vs manual)
-- `_rotated` - Rotation applied for alignment
+### Merged Files
+| Pattern | Created By |
+|---------|-----------|
+| `full_table_{feature}_twop_plane{N}.pkl` | `segmentation.py` |
 
 ## Checking Pipeline State
-
-To determine which steps are complete, check for existence of key files:
 
 | File Exists | Step Complete |
 |-------------|---------------|
@@ -197,3 +80,7 @@ To determine which steps are complete, check for existence of key files:
 | `*_masks.tiff` | HCR segmentation |
 | `twop_*_aligned_3d.tiff` | 2P-HCR registration |
 | `full_table_*.pkl` | Feature extraction |
+
+## Version Suffixes
+- `_auto` — automatically generated (vs manual)
+- `_rotated` — rotation applied for alignment
