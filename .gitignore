@@ -1,6 +1,14 @@
 src/processing_notebooks/HCR_rounds/.*
 __pycache__/
 **/*.pyc
-**/*.hjson
 **/.ipynb_checkpoints/
 *.ipynb
+
+# Personal/IDE settings
+.vscode/settings.json
+
+# Claude Code files (local only)
+CLAUDE.MD
+FIGURE_NOTEBOOKS.md
+agent_docs/
+.claude/
