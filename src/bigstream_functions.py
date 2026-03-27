@@ -12,8 +12,6 @@ from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imwrite
 from bigstream.align import feature_point_ransac_affine_align
 from bigstream.application_pipelines import easifish_registration_pipeline
-from bigstream.transform import apply_transform
-from bigstream.piecewise_transform import distributed_apply_transform
 
 def custom_easifish_registration_pipeline(
     fix_lowres,
@@ -323,10 +321,7 @@ def register_lowres(
     alignment_spacing = np.min(fix_lowres_spacing)*4
     blob_min = int(round(np.min(fix_lowres_spacing)*4))
     blob_max = int(round(np.min(fix_lowres_spacing)*16))
-    #print(f'1, {blob_min=} , {blob_max=}')
     a = {'alignment_spacing':alignment_spacing,'blob_sizes':[blob_min, blob_max]}
-    
-    #numberOfIterations = 10 instead of 100
     global_ransac_kwargs_full = {**a, **global_ransac_kwargs}
 
     affine = feature_point_ransac_affine_align(fix_lowres, mov_lowres, 
@@ -350,8 +345,8 @@ def register_lowres(
     reg_score = get_registration_score(aligned, fix_lowres)
     reg_score_text = str(np.round(reg_score,3)).replace('-','m')
     print(f'{write_directory}/{reg_score_text}_{fname}_both.tiff',flush=True)
-    tif_imwrite(f'{write_directory}/{reg_score_text}_{fname}_both.tiff', np.swapaxes(np.array([ aligned.transpose(2,1,0), 
+    tif_imwrite(f'{write_directory}/{reg_score_text}_{fname}_both.tiff', np.swapaxes(np.array([ aligned.transpose(2,1,0),
                                                                         fix_lowres.transpose(2,1,0)]),0,1),
                                                                         imagej=True)
-    
-    return aligned
+
+    return aligned, reg_score
