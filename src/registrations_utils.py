@@ -1966,12 +1966,15 @@ def run_local_tile_ransac(twop_binary, hcr_3d_bin, z_map, centroids, cell_df,
                           min_cells_affine=3,
                           min_iou=0.10, min_gain=0.04,
                           border_anchor_spacing=100,
-                          smoothing=50):
+                          smoothing=50,
+                          max_tile_scale_dev=0.15):
     """Fit per-tile affines from cell matches, return smooth RBF displacement fields.
 
     1. Divide image into overlapping tiles
     2. For each tile with enough cells: fit least-squares affine
        (or median fallback if min_cells_affine <= n < min_cells)
+       Affines are validated via SV constraint — tiles with excessive
+       shear/scale fall back to median displacement.
     3. Evaluate affine at tile center → (dy, dx, dz)
     4. Add border anchor points (nearest-neighbor from accepted tiles)
     5. Fit RBF (thin_plate_spline) through tile+anchor points
@@ -1984,6 +1987,7 @@ def run_local_tile_ransac(twop_binary, hcr_3d_bin, z_map, centroids, cell_df,
     print(f"  Cells passing local threshold: {len(good)} / {len(cell_df)}")
 
     tile_results = []
+    n_sv_rejected = 0
     for ty in range(0, ny - tile_size // 2, step):
         for tx in range(0, nx - tile_size // 2, step):
             ty1, tx1 = min(ny, ty + tile_size), min(nx, tx + tile_size)
@@ -2013,6 +2017,21 @@ def run_local_tile_ransac(twop_binary, hcr_3d_bin, z_map, centroids, cell_df,
                 tile_results.append({'cy': tc_y, 'cx': tc_x,
                     'dy': 0, 'dx': 0, 'dz': 0, 'accepted': False})
                 continue
+            # SV constraint: reject per-tile affines with excessive shear/scale
+            _J = np.array([[A_dy[0], A_dy[1]], [A_dx[0], A_dx[1]]])
+            _T = np.eye(2) - _J
+            _svs = np.linalg.svd(_T, compute_uv=False)
+            if not (np.all(_svs >= 1 - max_tile_scale_dev) and
+                    np.all(_svs <= 1 + max_tile_scale_dev)):
+                # Affine has too much shear/scale — fall back to median
+                tile_results.append({
+                    'cy': tc_y, 'cx': tc_x,
+                    'dy': float(np.median(in_tile.dy.values)),
+                    'dx': float(np.median(in_tile.dx.values)),
+                    'dz': float(np.median(in_tile.dz.values)),
+                    'accepted': True, 'sv_rejected': True})
+                n_sv_rejected += 1
+                continue
             mc = np.array([[tc_y, tc_x, 1]])
             tile_results.append({
                 'cy': tc_y, 'cx': tc_x,
@@ -2020,6 +2039,9 @@ def run_local_tile_ransac(twop_binary, hcr_3d_bin, z_map, centroids, cell_df,
                 'dz': float(mc @ A_dz), 'accepted': True})
 
     accepted = [t for t in tile_results if t['accepted']]
+    if n_sv_rejected > 0:
+        print(f"  SV-rejected tiles (→median fallback): {n_sv_rejected} "
+              f"(max_scale_dev={max_tile_scale_dev:.2f})")
     print(f"  Accepted tiles: {len(accepted)} / {len(tile_results)}")
     if len(accepted) < 3:
         return np.zeros((ny, nx)), np.zeros((ny, nx)), np.zeros((ny, nx)), tile_results

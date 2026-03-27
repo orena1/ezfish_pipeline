@@ -22,17 +22,32 @@ if _src_path not in sys.path:
 from registrations import (HCR_confocal_imaging,
                                  verify_rounds)
 from bigstream_functions import custom_easifish_registration_pipeline, register_lowres, get_registration_score
-# Path for bigstream unless you did pip install
-sys.path = [fr"\\nasquatch\data\2p\jonna\Code_Python\Notebooks_Jonna\BigStream\bigstream_v2_andermann"] + sys.path 
-sys.path = [fr"C:\Users\jonna\Notebooks_Jonna\BigStream\bigstream_v2_andermann"] + sys.path 
-sys.path = [fr'{os.getcwd()}/bigstream_v2_andermann'] + sys.path
-sys.path = ["/mnt/nasquatch/data/2p/jonna/Code_Python/Notebooks_Jonna/BigStream/bigstream_v2_andermann"] + sys.path 
 
+# BigStream import: tries pip-installed version first, then falls back to common locations.
+# To use a custom BigStream path, set the BIGSTREAM_PATH environment variable, e.g.:
+#   export BIGSTREAM_PATH=/home/user/BigStream/bigstream_v2_andermann
+try:
+    from bigstream.align import feature_point_ransac_affine_align
+except ImportError:
+    _bigstream_candidates = [
+        os.environ.get('BIGSTREAM_PATH', ''),                       # user-configured
+        str(Path.cwd() / 'bigstream_v2_andermann'),                 # local to notebook
+        str(Path(_src_path).parent / 'BigStream' / 'bigstream_v2_andermann'),  # sibling to ezfish repo
+    ]
+    _found = False
+    for _bp in _bigstream_candidates:
+        if _bp and Path(_bp).is_dir():
+            sys.path.insert(0, _bp)
+            _found = True
+            break
+    if not _found:
+        raise ImportError(
+            "BigStream not found. Install it via pip, or set the BIGSTREAM_PATH environment variable "
+            "to point to your bigstream_v2_andermann directory.\n"
+            "  e.g.:  export BIGSTREAM_PATH=/path/to/BigStream/bigstream_v2_andermann"
+        )
+    from bigstream.align import feature_point_ransac_affine_align
 
-# Path for bigstream unless you did pip install
-sys.path = ["/mnt/nasquatch/data/2p/jonna/Code_Python/Notebooks_Jonna/BigStream/bigstream_v2_andermann"] + sys.path 
-
-from bigstream.align import feature_point_ransac_affine_align
 from bigstream.piecewise_transform import distributed_apply_transform
 from bigstream.transform import apply_transform
 

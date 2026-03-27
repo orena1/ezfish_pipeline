@@ -4,6 +4,7 @@ import sys
 import hjson
 import zarr
 import shutil
+import logging
 import numpy as np
 from pathlib import Path
 
@@ -198,13 +199,20 @@ def registration_apply(full_manifest):
                 interpolator = '0'  # Nearest neighbor for HCR probes
 
             # register the images - returns zarr array reference (already written to disk)
-            output_zarr = distributed_apply_transform(
-                fix_highres, mov_highres,
-                fix_image_spacing, mov_image_spacing,
-                transform_list=[affine, deform],
-                blocksize=blocksize,
-                write_path=output_channel_path,
-                interpolator=interpolator)
+            # Suppress noisy Dask worker timeout tracebacks (retries are normal on the cluster)
+            _dist_logger = logging.getLogger('distributed')
+            _prev_level = _dist_logger.level
+            _dist_logger.setLevel(logging.CRITICAL)
+            try:
+                output_zarr = distributed_apply_transform(
+                    fix_highres, mov_highres,
+                    fix_image_spacing, mov_image_spacing,
+                    transform_list=[affine, deform],
+                    blocksize=blocksize,
+                    write_path=output_channel_path,
+                    interpolator=interpolator)
+            finally:
+                _dist_logger.setLevel(_prev_level)
 
             # Use returned zarr array directly instead of re-reading from disk
             # output_zarr[:] reads the data that was just written, avoiding redundant I/O
@@ -295,7 +303,7 @@ def register_rounds(full_manifest):
     if not reference_round_full_stack_path.exists():
         reference_round_full_stack_path.parent.mkdir(parents=True, exist_ok=True)
         rprint(f"[yellow]Copying reference round {reference_round['round']} to full_registered_stacks[/yellow]")
-        shutil.copy(reference_round['image_path'], reference_round_full_stack_path)
+        shutil.copyfile(reference_round['image_path'], reference_round_full_stack_path)
         rprint(f"[green]✓ Reference round HCR{reference_round['round']} ready in full_registered_stacks[/green]")
 
 
@@ -726,9 +734,6 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
         expected_path = landmarks_dir / expected_name
 
         # Landmarks are required in both manual and auto mode
-        # (auto mode refines them, but still needs them as a starting point)
-        mode_note = "\n  (auto mode will refine these)" if automation_enabled else ""
-
         # Build clear instructions telling user which files to open in BigWarp
         if has_hires:
             twop_file = f"hires_stitched_plane{REFERENCE_PLANE}_rotated.tiff"
@@ -737,7 +742,7 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
                 f"In BigWarp, open these two images:\n"
                 f"  Moving: {twop_file_path}\n"
                 f"  Target: {hcr_ref_round_path}\n\n"
-                f"  Place landmarks mapping the HIGH-RES STITCHED 2P image to the HCR reference round.{mode_note}"
+                f"  Place landmarks mapping the HIGH-RES STITCHED 2P image to the HCR reference round."
             )
         else:
             twop_file = f"lowres_meanImg_C0_plane{REFERENCE_PLANE}_seg_rotated.tiff"
@@ -746,7 +751,7 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
                 f"In BigWarp, open these two images:\n"
                 f"  Moving: {twop_file_path}\n"
                 f"  Target: {hcr_ref_round_path}\n\n"
-                f"  Place landmarks mapping the LOW-RES 2P image to the HCR reference round.{mode_note}"
+                f"  Place landmarks mapping the LOW-RES 2P image to the HCR reference round."
             )
 
         auto.prompt_for_missing_file(
@@ -1217,81 +1222,8 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
         with open(str(params_path), 'wb') as f:
             f.write(buf.getvalue())
 
-    # --- SAVE PER-PLANE AUTO LANDMARKS ---
-    orig_landmarks = pd.read_csv(landmarks_path, header=None)
-    orig_landmarks = orig_landmarks.replace([np.inf, -np.inf], np.nan).dropna()
-
-    if orig_landmarks.shape[1] == 6:
-        names = orig_landmarks[0].values
-        enabled = orig_landmarks[1].values
-        src_x = orig_landmarks[2].values
-        src_y = orig_landmarks[3].values
-        src_z = np.zeros(len(orig_landmarks))
-        dst_x = orig_landmarks[4].values
-        dst_y = orig_landmarks[5].values
-        dst_z = np.zeros(len(orig_landmarks))
-    else:
-        names = orig_landmarks[0].values
-        enabled = orig_landmarks[1].values
-        src_x = orig_landmarks[2].values
-        src_y = orig_landmarks[3].values
-        src_z = orig_landmarks[4].values if orig_landmarks.shape[1] > 4 else np.zeros(len(orig_landmarks))
-        dst_x = orig_landmarks[5].values if orig_landmarks.shape[1] > 5 else orig_landmarks[4].values
-        dst_y = orig_landmarks[6].values if orig_landmarks.shape[1] > 6 else orig_landmarks[5].values
-        dst_z = orig_landmarks[7].values if orig_landmarks.shape[1] > 7 else np.zeros(len(orig_landmarks))
-
-    prefix = "hires_stitched_" if has_hires else ""
-    hcr_res_x, hcr_res_y, hcr_res_z = hcr_resolution[0], hcr_resolution[1], hcr_resolution[2]
-
-    for plane in TARGET_PLANES:
-        g_params = plane_results[plane]['global_params']
-
-        # v8: No rotation (theta=0), just translation
-        dx_um = g_params['dx'] * hcr_res_x
-        dy_um = g_params['dy'] * hcr_res_y
-        dz_um = g_params['dz'] * hcr_res_z
-
-        dst_x_corrected = dst_x + dx_um
-        dst_y_corrected = dst_y + dy_um
-        dst_z_corrected = dst_z + dz_um
-
-        corrected_df = pd.DataFrame({
-            'name': names,
-            'enabled': enabled,
-            'src_x': src_x,
-            'src_y': src_y,
-            'src_z': src_z,
-            'dst_x': dst_x_corrected,
-            'dst_y': dst_y_corrected,
-            'dst_z': dst_z_corrected,
-        })
-
-        auto_landmarks_path = landmarks_dir / f'{prefix}plane{plane}_to_HCR{hcr_ref}_auto.csv'
-        corrected_df.to_csv(auto_landmarks_path, index=False, header=False)
-
-    # --- AUTOMATION CHECKPOINT ---
-    # Only show checkpoint when processing the reference plane (where landmarks were created)
-    # Other planes use the same landmarks with per-plane refinement
-    if automation_enabled and CURRENT_PLANE == REFERENCE_PLANE:
-        ref_auto_path = landmarks_dir / f'{prefix}plane{REFERENCE_PLANE}_to_HCR{hcr_ref}_auto.csv'
-        qa_paths = [
-            qa_folder / f'plane{REFERENCE_PLANE}_BEFORE_registration_overlay.tiff',
-            qa_folder / f'plane{REFERENCE_PLANE}_AFTER_registration_overlay.tiff'
-        ]
-        choice = auto.prompt_registration_checkpoint(
-            qa_paths, ref_auto_path, "2P-to-HCR", REFERENCE_PLANE
-        )
-
-        if choice == "skip":
-            rprint(f"[yellow]Registration skipped by user. Outputs remain but may need re-running.[/yellow]")
-            return
-        elif choice == "refine":
-            rprint(f"[yellow]Refinement requested. Re-run pipeline with updated landmarks.[/yellow]")
-            rprint(f"[yellow]Per-plane _auto.csv files saved. Edit and re-run to apply changes.[/yellow]")
-            return
-        # accept: continue normally
-    elif not automation_enabled and CURRENT_PLANE == REFERENCE_PLANE:
-        # Only prompt for review on reference plane in manual mode
+    # --- REVIEW CHECKPOINT (reference plane only) ---
+    if CURRENT_PLANE == REFERENCE_PLANE:
         rprint(f"\n[green]Alignment complete.[/green]")
         rprint(f"[bold]Review QA overlays:[/bold]")
         rprint(f"  Directory: [yellow]{qa_folder}[/yellow]")
