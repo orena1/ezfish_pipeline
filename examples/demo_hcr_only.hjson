@@ -1,0 +1,67 @@
+{
+    // =========================================================================
+    // EASIFISH — HCR-ONLY MODE
+    //
+    // Use when you only have HCR confocal data (no 2-photon imaging).
+    // Run with:
+    //   python master_pipeline.py --manifest your_file.hjson --only_hcr
+    //
+    // This mode:
+    //   1. Registers HCR rounds to a reference round
+    //   2. Runs cellpose 3D segmentation on each round
+    //   3. Extracts probe intensities per cell
+    //   4. Aligns and merges masks across rounds
+    //
+    // No 2P section or 2p_cellpose params needed.
+    // =========================================================================
+
+    data: {
+        base_path: "/mnt/nasquatch/data/2p/YOUR_LAB/EASI_FISH/pipeline"
+        mouse_name: "MOUSE001"
+
+        // ----- HCR confocal imaging -----
+        HCR_confocal_imaging: {
+            rounds: [
+                {
+                    round: "01"
+                    channels: ["DAPI", "PROBE_A", "PROBE_B"]
+                    resolution: [1.515, 1.515, 5.0]
+                }
+                {
+                    round: "02"
+                    channels: ["DAPI", "PROBE_C", "PROBE_D"]
+                    resolution: [1.515, 1.515, 5.0]
+                }
+                {
+                    round: "03"
+                    channels: ["DAPI", "PROBE_E", "PROBE_F"]
+                    resolution: [1.515, 1.515, 5.0]
+                }
+            ]
+
+            reference_round: "01"
+        }
+    }
+
+    params: {
+        HCR_to_HCR_registration: {
+            downsampling: [3, 3, 2]
+        }
+
+        HCR_cellpose: {
+            model_path: "/path/to/your/cellpose_model"
+            cellpose_channel: 0
+            diameter: 15
+            gpu: true
+            flow_threshold: 0.5
+            cellprob_threshold: -0.5
+        }
+
+        intensity_extraction: {
+            neuropil_radius: 50
+            neuropil_boundary: 1
+            neuropil_pooling: ["mean", "median", "percentile-20"]
+            stack_median_filter: [3, 3, 3]
+        }
+    }
+}

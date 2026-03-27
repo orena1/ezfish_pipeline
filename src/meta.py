@@ -4,14 +4,6 @@ import hjson
 import numpy as np
 from pathlib import Path
 from rich.prompt import Prompt
-# supported HCR probs
-HCR_probs = [
-    'ADRA1A', 'ADRA1B', 'ADRA2A', 'ADRA2B', 'ASB4', 'BRS3', 'CALCA', 'CCK', 'CD24A', 'CHAT',
-    'CHRIMSON', 'CRH', 'DAPI', 'DRD1', 'DSREDV1', 'DSREDV2', 'EBF2', 'EGR1', 'EPHA3', 'FOS', 'FOXP2', 'GCAMP',
-    'GLP1R', 'GPR101', 'GRP', 'MC4R', 'NPR3', 'NPY1R', 'OPRM1', 'PDE11A', 'PDYN', 'RORB',
-    'RUNX1', 'RUNX4', 'SAMD3', 'SATB2', 'SERPINB1B', 'SST', 'SSTR2', 'SYT10', 'TAC1', 'TACR1', 'TH',
-    'TRHR', 'VGAT'
-]
 
 
 def parse_json(json_file):
@@ -71,11 +63,6 @@ def verify_manifest(manifest, args):
     else:
         raise Exception(f"reference round was not found {reference_round} is not in rounds")
     
-    # verify that all probs are supported
-    for i in manifest['HCR_confocal_imaging']['rounds']:
-        for channel in i['channels']:
-            assert channel in HCR_probs, f"Probe {channel} not supported"
-
     # verify that all 2p runs exists.
     if not args.only_hcr:
         check_results = []

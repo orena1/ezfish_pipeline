@@ -1,0 +1,103 @@
+{
+    // =========================================================================
+    // EASIFISH — FULL PIPELINE, HI-RES STITCHED MODE
+    //
+    // Use when you have both 2P and HCR data, and your 2P session includes
+    // high-resolution anatomical tile runs that need stitching + unwarping.
+    //
+    // Run with:
+    //   python master_pipeline.py --manifest your_file.hjson
+    //
+    // Pipeline: HCR registration → HCR cellpose → 2P tile processing →
+    //   stitch + unwarp → low-res→hi-res registration → 2P→HCR registration →
+    //   mask alignment → merged output tables
+    // =========================================================================
+
+    data: {
+        base_path: "/mnt/nasquatch/data/2p/YOUR_LAB/EASI_FISH/pipeline"
+        mouse_name: "MOUSE001"
+
+        two_photon_imaging: {
+            sessions: [
+                {
+                    date: "240101"
+                    functional_run: ["001"]
+                    functional_planes: ["1", "0", "2", "3"]
+
+                    // Hi-res tile runs — green and red lists must be same length (paired 1:1).
+                    // These get unwarped, stitched, then used for 2P→HCR registration.
+                    anatomical_hires_green_runs: ["004", "005", "006"]
+                    anatomical_hires_red_runs: ["004", "005", "006"]
+
+                    // Leave low-res empty when using hi-res
+                    anatomical_lowres_green_runs: []
+                    anatomical_lowres_red_runs: []
+
+                    // Distortion correction for resonant scanner
+                    unwarp_config: "your_unwarp_values.npy"
+                    unwarp_steps: 28
+                }
+            ]
+        }
+
+        HCR_confocal_imaging: {
+            rounds: [
+                {
+                    round: "01"
+                    channels: ["DAPI", "PROBE_A", "PROBE_B", "PROBE_C"]
+                    resolution: [1.515, 1.515, 5.0]
+                }
+                {
+                    round: "02"
+                    channels: ["DAPI", "PROBE_D", "PROBE_E"]
+                    resolution: [1.515, 1.515, 5.0]
+                }
+            ]
+
+            reference_round: "01"
+        }
+    }
+
+    params: {
+        HCR_to_HCR_registration: {
+            downsampling: [3, 3, 2]
+        }
+
+        rotation_2p_to_HCR: {
+            rotation: 90
+            fliplr: false
+            flipud: false
+        }
+
+        HCR_cellpose: {
+            model_path: "/path/to/your/cellpose_model"
+            cellpose_channel: 0
+            diameter: 15
+            gpu: true
+            flow_threshold: 0.5
+            cellprob_threshold: -0.5
+        }
+
+        2p_cellpose: {
+            model_path: "/path/to/your/2p_cellpose_model"
+            cellpose_channel: 0
+            diameter: 7
+            gpu: true
+            flow_threshold: 0
+            cellprob_threshold: -1
+        }
+
+        intensity_extraction: {
+            neuropil_radius: 50
+            neuropil_boundary: 1
+            neuropil_pooling: ["mean", "median", "percentile-20"]
+            stack_median_filter: [3, 3, 3]
+        }
+
+        // Uncomment to use automated stitching instead of BigStitcher
+        // automation: {
+        //     stitching: "auto"
+        //     lowres_to_hires: "auto"
+        // }
+    }
+}
