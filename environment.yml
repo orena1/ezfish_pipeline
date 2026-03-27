@@ -1,0 +1,38 @@
+# ezfish_pipeline — conda environment
+#
+# This installs ONLY the packages that require conda channels (GPU support, etc.).
+# After creating this env, install the pipeline and all Python deps with:
+#
+#   pip install -e ".[all]"
+#
+# Or install only what you need:
+#   pip install -e "."              # core pipeline only
+#   pip install -e ".[twop]"        # + 2-photon (suite2p)
+#   pip install -e ".[bigstream]"   # + bigstream deps
+#   pip install -e ".[notebooks]"   # + Jupyter/interactive plotting
+#   pip install -e ".[analysis]"    # + ML/stats for analysis notebooks
+#   pip install -e ".[all]"         # everything
+#
+# BIGSTREAM: Install the bigstream fork separately:
+#   pip install -e /path/to/bigstream_v2_andermann
+#
+# FULL SETUP (one-liner):
+#   conda env create -f environment.yml && conda activate ezfish && pip install -e ".[all]"
+
+name: ezfish
+
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+
+dependencies:
+  - python=3.12
+
+  # PyTorch with CUDA (not reliably pip-installable with GPU support)
+  - pytorch::pytorch=2.5
+  - pytorch::torchvision
+  - pytorch::pytorch-cuda=12.1
+
+  # pip (for installing the package itself)
+  - pip
