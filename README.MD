@@ -16,13 +16,29 @@ python master_pipeline.py --manifest examples/your_manifest.hjson
 python master_pipeline.py --manifest examples/your_manifest.hjson --only_hcr
 ```
 
+## Choosing a Manifest Template
+
+| Template | `input_format` | When to use |
+|----------|---------------|-------------|
+| `demo_standard.hjson` | `sbx` | ScanBox 2P + HCR, low-res (Suite2p mean image directly) |
+| `demo_hires.hjson` | `sbx` | ScanBox 2P + HCR, hi-res anatomical tiles (stitch + unwarp) |
+| `demo_tiff.hjson` | `tiff` | Non-ScanBox microscope — bring your own pre-processed 2P mean images |
+| `demo_hcr_only.hjson` | n/a | HCR confocal only, no 2P data (`--only_hcr` flag) |
+| `demo.hjson` | `sbx` | General ScanBox template with all options documented |
+
+**Quick guide:**
+- **ScanBox user with .sbx files?** Use `demo_standard.hjson` or `demo_hires.hjson`
+- **Different microscope, have TIFF mean images?** Use `demo_tiff.hjson`
+- **Only HCR confocal, no 2P?** Use `demo_hcr_only.hjson`
+
 ## Execution Modes
 
 | Mode | Flag | Template | When to use |
 |------|------|----------|-------------|
 | **HCR-only** | `--only_hcr` | `demo_hcr_only.hjson` | You only have HCR confocal data, no 2P |
-| **Full + hi-res** | (none) | `demo_hires.hjson` | 2P + HCR, with high-res anatomical tile runs |
-| **Full + standard** | (none) | `demo_standard.hjson` | 2P + HCR, no high-res tiles (uses Suite2p mean image directly) |
+| **Full + hi-res** | (none) | `demo_hires.hjson` | 2P + HCR, with high-res anatomical tile runs (ScanBox) |
+| **Full + standard** | (none) | `demo_standard.hjson` | 2P + HCR, no high-res tiles (ScanBox, Suite2p mean image) |
+| **Full + TIFF** | (none) | `demo_tiff.hjson` | 2P + HCR, pre-processed TIFF mean images (any microscope) |
 | **General template** | (none) | `demo.hjson` | All options documented with comments |
 
 ## Pipeline Steps
@@ -75,19 +91,23 @@ The manifest is an [HJSON](https://hjson.github.io/) file (JSON with comments an
 
 #### 2P session fields
 
-| Field | Description |
-|-------|-------------|
-| `date` | Date string used in folder names: `{mouse}_{date}_{run}` |
-| `functional_run` | Run number containing the `suite2p/` folder |
-| `functional_planes` | Planes to process. **First = reference plane** for HCR landmark alignment |
-| `anatomical_hires_green_runs` | Hi-res tile run numbers (green channel). Paired 1:1 with red |
-| `anatomical_hires_red_runs` | Hi-res tile run numbers (red channel) |
-| `anatomical_lowres_green_runs` | Low-res anatomical run numbers (alternative to hi-res) |
-| `anatomical_lowres_red_runs` | Low-res anatomical run numbers |
-| `unwarp_config` | Distortion correction file (in `{base_path}/Calibration_files_for_unwarping/`) |
-| `unwarp_steps` | Number of unwarp interpolation steps |
+| Field | Required | Description |
+|-------|----------|-------------|
+| `input_format` | **Yes** | `"sbx"` (ScanBox) or `"tiff"` (pre-processed TIFFs) |
+| `date` | Yes | Date string used in folder names: `{mouse}_{date}_{run}` |
+| `functional_planes` | Yes | Planes to process. **First = reference plane** for HCR landmark alignment |
+| `functional_run` | SBX only | Run number containing the `suite2p/` folder |
+| `anatomical_hires_green_runs` | SBX only | Hi-res tile run numbers (green channel). Paired 1:1 with red |
+| `anatomical_hires_red_runs` | SBX only | Hi-res tile run numbers (red channel) |
+| `anatomical_lowres_green_runs` | SBX only | Low-res anatomical run numbers (alternative to hi-res) |
+| `anatomical_lowres_red_runs` | SBX only | Low-res anatomical run numbers |
+| `unwarp_config` | SBX only | Distortion correction file (in `{base_path}/Calibration_files_for_unwarping/`) |
+| `unwarp_steps` | SBX only | Number of unwarp interpolation steps |
+| `has_hires` | TIFF only | Set `true` if providing pre-stitched hi-res images (default: `false`) |
 
-> **Note:** Set either hi-res or low-res anatomical runs, not both. Leave both empty to use only the Suite2p mean image.
+> **SBX mode:** Set either hi-res or low-res anatomical runs, not both. Leave both empty to use only the Suite2p mean image.
+>
+> **TIFF mode:** Place your pre-processed mean images in the OUTPUT directory before running. See `demo_tiff.hjson` for file placement instructions.
 
 #### HCR round fields
 
@@ -121,7 +141,7 @@ All default to `"manual"`. Set to `"auto"` to use automated alternatives:
 
 ## Folder Structure
 
-The pipeline expects this input layout and creates `OUTPUT/` alongside it:
+### SBX mode (`input_format: "sbx"`)
 
 ```
 {base_path}/
@@ -150,6 +170,30 @@ The pipeline expects this input layout and creates `OUTPUT/` alongside it:
             ├── aligned_masks/
             └── aligned_extracted_features/
                 └── merged_table_plane{N}.csv   ← final output
+```
+
+### TIFF mode (`input_format: "tiff"`)
+
+Place your pre-processed mean images **before** running the pipeline:
+
+```
+{base_path}/
+└── {mouse_name}/
+    ├── HCR/
+    │   ├── {mouse}_HCR01.tif
+    │   └── ...
+    └── OUTPUT/
+        └── 2P/
+            └── cellpose/                        ← YOU CREATE THIS
+                ├── lowres_meanImg_C0_plane0.tiff     (green only, 2D float32)
+                └── lowres_meanImg_C0_plane1.tiff     (one per plane)
+```
+
+For green+red, use `lowres_meanImg_C01_plane{N}.tiff` (CYX, 2 channels) instead.
+
+For hi-res (`has_hires: true`), pre-stitch your tiles and place them at:
+```
+OUTPUT/2P/tile/stitched/hires_stitched_plane{N}.tiff   (CYX, float32)
 ```
 
 ## Re-Entry / Resume

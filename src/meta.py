@@ -25,6 +25,37 @@ def user_input_missing(check_results, message, color):
             if out=='y':
                 return
 
+def _validate_tiff_inputs(base_path, mouse_name, session, has_hires):
+    """Validate that expected TIFF files exist for TIFF input mode."""
+    # Get planes to process
+    if 'functional_planes' in session:
+        all_planes = list(session['functional_planes'])
+    elif 'functional_plane' in session:
+        all_planes = list(session['functional_plane'])
+    else:
+        raise ValueError("TIFF mode requires 'functional_planes' (or 'functional_plane') in session config.")
+
+    missing = []
+    output_base = base_path / mouse_name / 'OUTPUT' / '2P'
+
+    for plane in all_planes:
+        if has_hires:
+            expected = output_base / 'tile' / 'stitched' / f'hires_stitched_plane{plane}.tiff'
+            if not expected.exists():
+                missing.append(str(expected))
+        else:
+            c01 = output_base / 'cellpose' / f'lowres_meanImg_C01_plane{plane}.tiff'
+            c0 = output_base / 'cellpose' / f'lowres_meanImg_C0_plane{plane}.tiff'
+            if not c01.exists() and not c0.exists():
+                missing.append(f"{c0}  (green only)\n    or {c01}  (green+red)")
+
+    if missing:
+        msg = "TIFF input mode: missing required files. Place your images at:\n"
+        for m in missing:
+            msg += f"    {m}\n"
+        raise FileNotFoundError(msg)
+
+
 def verify_manifest(manifest, args):
     '''
     Verify that the json file is valid
@@ -32,11 +63,11 @@ def verify_manifest(manifest, args):
 
     if 'cellpose_channel' not in manifest['params']['HCR_cellpose']:
         raise ValueError("'cellpose_channel' must be specified in HCR_cellpose params. (e.g., 0 for first channel, 1 for second channel).")
-    
+
     if not args.only_hcr and '2p_cellpose' not in manifest['params']:
         raise ValueError("'2p_cellpose' configuration must be specified in params when processing 2P data.")
-            
-    
+
+
     manifest = manifest['data']
 
     # backward compat: accept old key name
@@ -52,8 +83,12 @@ def verify_manifest(manifest, args):
     if not args.only_hcr:
         assert 'two_photon_imaging' in manifest, "'two_photon_imaging' section required for full pipeline mode"
         assert len(manifest['two_photon_imaging']['sessions'])==1, 'only support one 2P sessions'
-        date_two_photons = manifest['two_photon_imaging']['sessions'][0]['date']
         session = manifest['two_photon_imaging']['sessions'][0]
+
+        # input_format: defaults to 'sbx' for backward compatibility with existing manifests
+        input_format = session.get('input_format', 'sbx')
+        if input_format not in ('sbx', 'tiff'):
+            raise ValueError(f"input_format must be 'sbx' or 'tiff', got '{input_format}'")
 
     #test that reference round exists
     reference_round = manifest['HCR_confocal_imaging']['reference_round']
@@ -62,43 +97,51 @@ def verify_manifest(manifest, args):
             break
     else:
         raise Exception(f"reference round was not found {reference_round} is not in rounds")
-    
-    # verify that all 2p runs exists.
+
     if not args.only_hcr:
-        check_results = []
-        for k in session:
-            if '_run' in k:
-                for run in session[k]:
-                    run_path_sbx = base_path / mouse_name / '2P' /  f'{mouse_name}_{date_two_photons}_{run}' / f'{mouse_name}_{date_two_photons}_{run}.sbx'
-                    check_results.append([run_path_sbx,os.path.exists(run_path_sbx)])
-        check_results = np.array(check_results)
-        user_input_missing(check_results, 'Some 2p runs are missing, do you whish to continue?', color='red')
+        if input_format == 'sbx':
+            # --- SBX validation (existing logic) ---
+            date_two_photons = session['date']
 
-        # verify that functional run exists.
-        suite2p_run = session['functional_run'][0]
-        suite2p_path = base_path / mouse_name / '2P' /  f'{mouse_name}_{date_two_photons}_{suite2p_run}' / 'suite2p' /'plane0/ops.npy'
-        user_input_missing(np.array([[suite2p_path, os.path.exists(suite2p_path)]]), 'Suite2p path is missing, do you wish to continue?', color='pink')
+            # verify that all 2p runs exists.
+            check_results = []
+            for k in session:
+                if '_run' in k:
+                    for run in session[k]:
+                        run_path_sbx = base_path / mouse_name / '2P' /  f'{mouse_name}_{date_two_photons}_{run}' / f'{mouse_name}_{date_two_photons}_{run}.sbx'
+                        check_results.append([run_path_sbx,os.path.exists(run_path_sbx)])
+            check_results = np.array(check_results)
+            user_input_missing(check_results, 'Some 2p runs are missing, do you whish to continue?', color='red')
 
-    # verify anatomical runs configuration
-    if not args.only_hcr:
-        has_lowres_green = len(session.get('anatomical_lowres_green_runs', [])) > 0
-        has_hires_green = len(session.get('anatomical_hires_green_runs', [])) > 0
+            # verify that functional run exists.
+            suite2p_run = session['functional_run'][0]
+            suite2p_path = base_path / mouse_name / '2P' /  f'{mouse_name}_{date_two_photons}_{suite2p_run}' / 'suite2p' /'plane0/ops.npy'
+            user_input_missing(np.array([[suite2p_path, os.path.exists(suite2p_path)]]), 'Suite2p path is missing, do you wish to continue?', color='pink')
 
-        if has_hires_green:
-            assert not has_lowres_green, "Cannot have both lowres and hires runs"
-            assert len(session['anatomical_hires_green_runs'])==len(session['anatomical_hires_red_runs']), "Number of hires green and red runs do not match"
-            has_hires = True
-        elif has_lowres_green:
-            assert len(session['anatomical_lowres_green_runs'])==len(session['anatomical_lowres_red_runs']), "Number of lowres green and red runs do not match"
-        # else: no anatomical runs — lowres mode using Suite2p mean image only
+            # verify anatomical runs configuration
+            has_lowres_green = len(session.get('anatomical_lowres_green_runs', [])) > 0
+            has_hires_green = len(session.get('anatomical_hires_green_runs', [])) > 0
 
-    # verify that unwarp_config exists (only needed for high-res workflow)
-    if has_hires and 'unwarp_config' in session:
-        if not os.path.exists(session['unwarp_config']):
-            new_path = base_path / 'Calibration_files_for_unwarping' / session['unwarp_config']
-            if not os.path.exists(new_path):
-                raise Exception(f"unwarp config file does not exist {session['unwarp_config']} and not in {new_path}")
-            session['unwarp_config'] = new_path
+            if has_hires_green:
+                assert not has_lowres_green, "Cannot have both lowres and hires runs"
+                assert len(session['anatomical_hires_green_runs'])==len(session['anatomical_hires_red_runs']), "Number of hires green and red runs do not match"
+                has_hires = True
+            elif has_lowres_green:
+                assert len(session['anatomical_lowres_green_runs'])==len(session['anatomical_lowres_red_runs']), "Number of lowres green and red runs do not match"
+            # else: no anatomical runs — lowres mode using Suite2p mean image only
+
+            # verify that unwarp_config exists (only needed for high-res workflow)
+            if has_hires and 'unwarp_config' in session:
+                if not os.path.exists(session['unwarp_config']):
+                    new_path = base_path / 'Calibration_files_for_unwarping' / session['unwarp_config']
+                    if not os.path.exists(new_path):
+                        raise Exception(f"unwarp config file does not exist {session['unwarp_config']} and not in {new_path}")
+                    session['unwarp_config'] = new_path
+
+        elif input_format == 'tiff':
+            # --- TIFF validation ---
+            has_hires = session.get('has_hires', False)
+            _validate_tiff_inputs(base_path, mouse_name, session, has_hires)
 
     return {'reference_round':reference_round, 'session':session}, has_hires
 

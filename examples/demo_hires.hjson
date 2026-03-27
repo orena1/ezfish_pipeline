@@ -21,6 +21,7 @@
             sessions: [
                 {
                     date: "240101"
+                    input_format: "sbx"
                     functional_run: ["001"]
                     functional_planes: ["1", "0", "2", "3"]
 

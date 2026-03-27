@@ -100,7 +100,8 @@ def main(args = None):
                 full_manifest, session, has_hires,
                 automation_enabled=(automation['twop_to_hcr'] == 'auto')
             )
-            sg.extract_electrophysiology_intensities(full_manifest, session)
+            if session.get('input_format', 'sbx') != 'tiff':
+                sg.extract_electrophysiology_intensities(full_manifest, session)
 
         # Now align 2P masks to HCR and merge (needs twop_aligned_3d.tiff from above)
         for plane in all_planes:
@@ -119,16 +120,25 @@ def main(args = None):
 def process_plane(full_manifest, session, has_hires):
     """Process 2P data for a single plane (no HCR processing - that's done once in main)."""
     plane = session['functional_plane'][0]
+    input_format = session.get('input_format', 'sbx')
     rprint(f"\n[bold green]Processing 2P plane {plane}[/bold green]")
 
-    if has_hires:
-        tl.process_session_sbx(full_manifest, session)
-        tl.unwarp_tiles(full_manifest, session)
-        tl.stitch_tiles_and_rotate(full_manifest, session)
-        fc.extract_suite2p_registered_planes(full_manifest, session)
+    if input_format == 'tiff':
+        # TIFF mode: user provides pre-processed images, just rotate them
+        if has_hires:
+            tl.stitch_tiles_and_rotate(full_manifest, session)
+        else:
+            fc.rotate_2p_plane(full_manifest, session)
     else:
-        has_red = bool(session.get('anatomical_lowres_red_runs'))
-        fc.extract_suite2p_registered_planes(full_manifest, session, combine_with_red=has_red)
+        # SBX mode: full extraction pipeline
+        if has_hires:
+            tl.process_session_sbx(full_manifest, session)
+            tl.unwarp_tiles(full_manifest, session)
+            tl.stitch_tiles_and_rotate(full_manifest, session)
+            fc.extract_suite2p_registered_planes(full_manifest, session)
+        else:
+            has_red = bool(session.get('anatomical_lowres_red_runs'))
+            fc.extract_suite2p_registered_planes(full_manifest, session, combine_with_red=has_red)
 
     # Extract cellpose masks from 2p images
     sg.extract_2p_cellpose_masks(full_manifest, session)

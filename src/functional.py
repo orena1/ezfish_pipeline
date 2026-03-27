@@ -8,7 +8,11 @@ from .registrations import verify_rounds
 from .meta import check_rotation, get_rotation_config, parse_json
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imwrite
-from sbxreader import sbx_get_metadata, sbx_memmap
+try:
+    from sbxreader import sbx_get_metadata, sbx_memmap
+except ImportError:
+    sbx_get_metadata = None
+    sbx_memmap = None
 
 def get_number_of_suite2p_planes(suite2p_path: Path):
     """
@@ -76,6 +80,8 @@ def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combi
     if combine_with_red:
         save_filename_C01 = save_path / f'lowres_meanImg_C01_plane{functional_plane}.tiff'
         if not save_filename_C01.exists():
+            if sbx_memmap is None:
+                raise ImportError("sbxreader is required for combine_with_red in SBX mode. Install with: pip install sbxreader")
             save_filename_green = save_path / f'lowres_meanImg_C0_plane{functional_plane}.tiff'
             img = tif_imread(save_filename_green)
             red_run = session['anatomical_lowres_red_runs'][0]
@@ -90,7 +96,33 @@ def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combi
         channels_needed = 'C01'
 
     # Rotate the current functional plane
-    # (The pipeline calls this function once per plane being processed)
+    rotate_2p_plane(full_manifest, session, channels_needed=channels_needed)
+
+
+def rotate_2p_plane(full_manifest, session, channels_needed=None):
+    """Rotate a 2P mean image to match HCR orientation.
+
+    Works for both SBX-extracted and user-provided TIFFs.
+    For TIFF mode, auto-detects whether C0 or C01 file exists.
+    """
+    manifest = full_manifest['data']
+    mouse_name = manifest['mouse_name']
+    base_path = Path(manifest['base_path'])
+    functional_plane = int(session['functional_plane'][0])
+
+    save_path = base_path / mouse_name / 'OUTPUT' / '2P' / 'cellpose'
+    save_path_registered = base_path / mouse_name / 'OUTPUT' / '2P' / 'registered'
+    save_path.mkdir(exist_ok=True, parents=True)
+    save_path_registered.mkdir(exist_ok=True, parents=True)
+
+    # Auto-detect channels if not specified (TIFF mode)
+    if channels_needed is None:
+        c01_file = save_path / f'lowres_meanImg_C01_plane{functional_plane}.tiff'
+        if c01_file.exists():
+            channels_needed = 'C01'
+        else:
+            channels_needed = 'C0'
+
     save_filename_C = save_path / f'lowres_meanImg_{channels_needed}_plane{functional_plane}.tiff'
     save_filename_rotated = save_path_registered / f'{save_filename_C.stem}_rotated.tiff'
 
@@ -99,8 +131,6 @@ def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combi
         return
 
     # First-run detection: prompt only if NO rotated files exist yet for any plane.
-    # This way, once the user has gone through rotation setup once, all subsequent
-    # planes are processed silently (even if rotation is identity).
     rotation_config = get_rotation_config(full_manifest['params'])
     any_rotated_exists = any(save_path_registered.glob('*_rotated.tiff'))
 
@@ -121,7 +151,7 @@ def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combi
         print(f'')
         print(f'    {reference_HCR_round}')
         print(f'')
-        print(f'  Then update rotation_2p_to_HCRspec in your manifest:')
+        print(f'  Then update rotation_2p_to_HCR in your manifest:')
         print(f'    {manifest_path}')
         print(f'')
         print(f'  Set "rotation" (degrees), "fliplr" (true/false), "flipud" (true/false)')
