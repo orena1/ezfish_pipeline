@@ -169,10 +169,16 @@ def register_lowres_to_hires_landmarks(full_manifest, session):
         if missing_files:
             # Reference plane landmarks are REQUIRED - prompt user and wait
             if is_reference and not landmarks_path.exists():
+                instructions = (
+                    f"In BigWarp, open these two images:\n"
+                    f"  Moving: {lowres_img_path}\n"
+                    f"  Target: {hires_img_path}\n\n"
+                    f"  Place landmarks mapping the LOW-RES mean image to the HIGH-RES stitched image."
+                )
                 auto.prompt_for_missing_file(
                     landmarks_path,
                     f"Low-res to high-res landmarks for Plane {REFERENCE_PLANE}",
-                    instructions="Map low-res mean image to high-res stitched image"
+                    instructions=instructions
                 )
                 # Remove landmarks from missing list after user creates it
                 missing_files = [f for f in missing_files if "Landmarks" not in f]
@@ -200,7 +206,7 @@ def register_lowres_to_hires_landmarks(full_manifest, session):
         # Apply same rotation as was applied to images
         from scipy.ndimage import rotate as ndimage_rotate
         if rotation_angle != 0:
-            lowres_masks = ndimage_rotate(lowres_masks, rotation_angle, reshape=False, order=0, mode='constant', cval=0).astype(lowres_masks.dtype)
+            lowres_masks = ndimage_rotate(lowres_masks, rotation_angle, reshape=True, order=0, mode='constant', cval=0).astype(lowres_masks.dtype)
         if flip_lr:
             lowres_masks = np.fliplr(lowres_masks)
         if flip_ud:

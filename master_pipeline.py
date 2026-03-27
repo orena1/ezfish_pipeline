@@ -43,7 +43,7 @@ def main(args = None):
         # functional_plane each iteration, while functions also read from the original
         # manifest to get reference_plane. This works but is confusing. Consider passing
         # current_plane and reference_plane as explicit parameters instead.
-        session = full_manifest['data']['two_photons_imaging']['sessions'][0].copy()
+        session = full_manifest['data']['two_photon_imaging']['sessions'][0].copy()
 
         # Get all planes to process
         # Support both old and new manifest formats
@@ -69,7 +69,7 @@ def main(args = None):
         if has_hires:
             # Temporarily set session to have all planes for registration
             session_with_all_planes = session.copy()
-            if 'functional_planes' in full_manifest['data']['two_photons_imaging']['sessions'][0]:
+            if 'functional_planes' in full_manifest['data']['two_photon_imaging']['sessions'][0]:
                 # Already has functional_planes
                 pass
             else:
@@ -87,7 +87,7 @@ def main(args = None):
         else:
             # Standard mode: create rotated masks (in hi-res mode, register_lowres_to_hires does this)
             session_with_all_planes = session.copy()
-            if 'functional_planes' not in full_manifest['data']['two_photons_imaging']['sessions'][0]:
+            if 'functional_planes' not in full_manifest['data']['two_photon_imaging']['sessions'][0]:
                 session_with_all_planes['functional_plane'] = [reference_plane]
                 session_with_all_planes['additional_functional_planes'] = [p for p in all_planes if p != reference_plane]
             rf.create_rotated_masks_for_standard_mode(full_manifest, session_with_all_planes)
@@ -127,7 +127,8 @@ def process_plane(full_manifest, session, has_hires):
         tl.stitch_tiles_and_rotate(full_manifest, session)
         fc.extract_suite2p_registered_planes(full_manifest, session)
     else:
-        fc.extract_suite2p_registered_planes(full_manifest, session, combine_with_red=True)
+        has_red = bool(session.get('anatomical_lowres_red_runs'))
+        fc.extract_suite2p_registered_planes(full_manifest, session, combine_with_red=has_red)
 
     # Extract cellpose masks from 2p images
     sg.extract_2p_cellpose_masks(full_manifest, session)

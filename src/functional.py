@@ -5,7 +5,7 @@ from rich import print as rprint
 from rich.progress import track
 from skimage.transform import rotate
 from .registrations import verify_rounds
-from .meta import check_rotation, get_rotation_config
+from .meta import check_rotation, get_rotation_config, parse_json
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imwrite
 from sbxreader import sbx_get_metadata, sbx_memmap
@@ -91,26 +91,48 @@ def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combi
 
     # Rotate the current functional plane
     # (The pipeline calls this function once per plane being processed)
-    reference_HCR_round = verify_rounds(full_manifest)[1]['image_path']
-    while not check_rotation(full_manifest):
-        output_string = f'''
-        Missing rotation specs in {full_manifest['manifest_path']}
-        for rotating low-res images to {reference_HCR_round}
-        Once you create these files press enter
-        '''
-        rprint(output_string)
-        input()
-
-    rotation_config = get_rotation_config(full_manifest['params'])
-
-    # Rotate only the current functional plane
     save_filename_C = save_path / f'lowres_meanImg_{channels_needed}_plane{functional_plane}.tiff'
     save_filename_rotated = save_path_registered / f'{save_filename_C.stem}_rotated.tiff'
 
     if save_filename_rotated.exists():
-        rprint(f"[dim]Plane {functional_plane}: rotated file already exists[/dim]")
+        print(f"Plane {functional_plane}: rotated file already exists")
         return
 
+    # First-run detection: prompt only if NO rotated files exist yet for any plane.
+    # This way, once the user has gone through rotation setup once, all subsequent
+    # planes are processed silently (even if rotation is identity).
+    rotation_config = get_rotation_config(full_manifest['params'])
+    any_rotated_exists = any(save_path_registered.glob('*_rotated.tiff'))
+
+    if not any_rotated_exists:
+        reference_HCR_round = verify_rounds(full_manifest)[1]['image_path']
+        manifest_path = full_manifest['manifest_path']
+
+        print('')
+        print('=' * 70)
+        print(f'  ROTATION SETUP — {mouse_name}')
+        print('=' * 70)
+        print(f'  No rotated image found for plane {functional_plane}.')
+        print(f'  Before applying rotation, check your unrotated 2P image:')
+        print(f'')
+        print(f'    {save_filename_C}')
+        print(f'')
+        print(f'  Compare it to the HCR reference round:')
+        print(f'')
+        print(f'    {reference_HCR_round}')
+        print(f'')
+        print(f'  Then update rotation_2p_to_HCRspec in your manifest:')
+        print(f'    {manifest_path}')
+        print(f'')
+        print(f'  Set "rotation" (degrees), "fliplr" (true/false), "flipud" (true/false)')
+        print('=' * 70)
+        input('  Press Enter after updating the manifest...\n')
+
+        # Re-read the manifest from disk to pick up user's rotation changes
+        updated_manifest = parse_json(manifest_path)
+        rotation_config = get_rotation_config(updated_manifest['params'])
+
+    # Apply rotation
     data = tif_imread(save_filename_C)
     if data.ndim == 2:
         for k in rotation_config:
@@ -136,4 +158,4 @@ def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combi
                 data.astype(np.float32),
                 imagej=True,
                 metadata=file_specs)
-    rprint(f"[green]Rotated plane {functional_plane}[/green]")
+    print(f"Rotated plane {functional_plane}")

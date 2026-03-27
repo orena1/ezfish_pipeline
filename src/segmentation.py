@@ -813,12 +813,15 @@ def align_masks(full_manifest: dict,
 
             save_path = output_folder / f"{round_folder_name}.csv"
             if save_path.exists():
-                rprint(f"  [dim]{round_folder_name}: mask alignment exists[/dim]")
-                # Load existing results for summary
                 existing_df = pd.read_csv(save_path)
-                if 'is_best_match' in existing_df.columns:
+                # Check if file has all required columns; regenerate if stale
+                if 'iou' in existing_df.columns and 'is_best_match' in existing_df.columns:
+                    rprint(f"  [dim]{round_folder_name}: mask alignment exists[/dim]")
                     matching_results.append((f"HCR{HCR_round_to_register}", f"HCR{reference_round['round']}", existing_df))
-                continue
+                    continue
+                else:
+                    print(f"  {round_folder_name}: stale format, regenerating...")
+                    save_path.unlink()
             # calculate the matching masks and the overlap
             mask1_to_mask2_df = match_masks(mov_stack_masks, reference_round_masks)
             mask1_to_mask2_df.to_csv(save_path)
@@ -856,11 +859,18 @@ def align_masks(full_manifest: dict,
 
     save_path = output_folder / f"twop_plane{plane}_to_HCR{reference_round['round']}.csv"
     if save_path.exists():
-        rprint(f"[dim]2P masks alignment for plane {plane}: exists, skipping[/dim]")
-        # Load existing results for summary
         existing_df = pd.read_csv(save_path)
-        if 'is_best_match' in existing_df.columns:
+        if 'iou' in existing_df.columns and 'is_best_match' in existing_df.columns:
+            rprint(f"[dim]2P masks alignment for plane {plane}: exists, skipping[/dim]")
             matching_results.append((f"2P plane {plane}", f"HCR{reference_round['round']}", existing_df))
+        else:
+            print(f"  2P plane {plane} mapping: stale format, regenerating...")
+            save_path.unlink()
+            rprint(f"[cyan]Matching 2P plane {plane} masks to HCR using automated registration...[/cyan]")
+            mask1_to_mask2_df = match_masks(masks_2p_aligned_3d_path, reference_round_masks)
+            mask1_to_mask2_df.to_csv(save_path)
+            rprint(f"[green]✓ Saved mask matching to {save_path}[/green]")
+            matching_results.append((f"2P plane {plane}", f"HCR{reference_round['round']}", mask1_to_mask2_df))
     else:
         # Match masks using automated registration output
         rprint(f"[cyan]Matching 2P plane {plane} masks to HCR using automated registration...[/cyan]")

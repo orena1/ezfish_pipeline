@@ -22,10 +22,11 @@ try:
         shift_2d, rotate_2d,
         register_lowres_to_hires_single_plane, apply_lowres_to_hires_transform,
         refine_lowres_to_hires_with_tiles, prompt_overwrite_per_plane,
-        # v8 registration functions
+        # v8/v10 registration functions
         global_search_moving_iou, create_landmark_hull_mask, create_fov_mask_convex_hull,
         build_z_quad_blend, extract_centroids, find_cell_displacements,
         fit_affine_ransac, run_local_tile_ransac,
+        compute_tile_defaults, compute_adaptive_matching_params,
     )
 except ImportError:
     from registrations_utils import (
@@ -37,6 +38,7 @@ except ImportError:
         global_search_moving_iou, create_landmark_hull_mask, create_fov_mask_convex_hull,
         build_z_quad_blend, extract_centroids, find_cell_displacements,
         fit_affine_ransac, run_local_tile_ransac,
+        compute_tile_defaults, compute_adaptive_matching_params,
     )
 import pandas as pd
 
@@ -119,8 +121,8 @@ def registration_apply(full_manifest):
 
 
         # resolution of the images
-        fix_image_spacing = np.array(reference_round['resolution']) # Y,X,Z
-        mov_image_spacing = np.array(mov_round['resolution']) # Y,X,Z
+        fix_image_spacing = np.array(reference_round['resolution']) # X,Y,Z
+        mov_image_spacing = np.array(mov_round['resolution']) # X,Y,Z
 
 
         # spatial down-sampling, probably no need to test. (Changed x and y from 3 to 2 for CIM round 5)
@@ -128,8 +130,8 @@ def registration_apply(full_manifest):
         downsampling = hcr_reg_config['downsampling']  # [x, y, z]
         red_mut_x, red_mut_y, red_mut_z = downsampling[0], downsampling[1], downsampling[2]
 
-        fix_lowres_spacing = fix_image_spacing * np.array([red_mut_y, red_mut_x, red_mut_z])
-        mov_lowres_spacing = mov_image_spacing * np.array([red_mut_y, red_mut_x, red_mut_z])
+        fix_lowres_spacing = fix_image_spacing * np.array([red_mut_x, red_mut_y, red_mut_z])
+        mov_lowres_spacing = mov_image_spacing * np.array([red_mut_x, red_mut_y, red_mut_z])
 
 
         # get block size from the registration file
@@ -194,7 +196,7 @@ def registration_apply(full_manifest):
     # Now let's also copy the reference_round to the full_registered_stacks folder
     reference_round_full_stack_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
     if not reference_round_full_stack_path.exists():
-        shutil.copy(HCR_fix_image_path, reference_round_full_stack_path)
+        shutil.copyfile(HCR_fix_image_path, reference_round_full_stack_path)
             
 
 def verify_rounds(full_manifest, parse_registered = False, print_rounds = False, print_registered = False, func='registering-apply'):
@@ -224,6 +226,8 @@ def verify_rounds(full_manifest, parse_registered = False, print_rounds = False,
     ready_to_apply = []
     if parse_registered:
         selected_registrations = parse_json(full_manifest['manifest_path'])['params']
+        if 'HCR_selected_registrations' not in selected_registrations:
+            return round_to_rounds, reference_round, ready_to_apply
         txt_to_rich = f"[green]Rounds available for {func} [/green]:"
         for i in selected_registrations['HCR_selected_registrations']['rounds']:
             assert i['round'] in round_to_rounds, f"Round {i['round']} not defined in manifest!"
@@ -244,7 +248,17 @@ def register_rounds(full_manifest):
     """
     manifest = full_manifest['data']
     round_to_rounds, reference_round, ready_to_apply = verify_rounds(full_manifest)
-    
+
+    # If only one round (reference), nothing to register — just copy reference and return
+    if len(round_to_rounds) == 0:
+        rprint("\n[bold cyan]Only one HCR round — skipping round-to-round registration[/bold cyan]")
+        reference_round_full_stack_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
+        reference_round_full_stack_path.parent.mkdir(parents=True, exist_ok=True)
+        if not reference_round_full_stack_path.exists():
+            shutil.copyfile(reference_round['image_path'], reference_round_full_stack_path)
+            rprint(f"[green]✓ Reference round HCR{reference_round['round']} copied to full_registered_stacks[/green]")
+        return
+
     # Clean header
     rprint("\n" + "="*80)
     rprint("[bold green] HCR Rounds Registrations[bold green]")
@@ -338,7 +352,7 @@ def create_rotated_masks_for_standard_mode(full_manifest, session):
         masks = np.load(str(masks_path), allow_pickle=True).item()['masks']
 
         if rotation_angle != 0:
-            masks = ndimage_rotate(masks, rotation_angle, reshape=False, order=0, mode='constant', cval=0).astype(masks.dtype)
+            masks = ndimage_rotate(masks, rotation_angle, reshape=True, order=0, mode='constant', cval=0).astype(masks.dtype)
         if flip_lr:
             masks = np.fliplr(masks)
         if flip_ud:
@@ -448,7 +462,7 @@ def register_lowres_to_hires(full_manifest, session):
         flip_ud = rotation_params.get('flipud', False)
 
         if rotation_angle != 0:
-            lowres_masks = ndimage_rotate(lowres_masks, rotation_angle, reshape=False, order=0, mode='constant', cval=0).astype(lowres_masks.dtype)
+            lowres_masks = ndimage_rotate(lowres_masks, rotation_angle, reshape=True, order=0, mode='constant', cval=0).astype(lowres_masks.dtype)
         if flip_lr:
             lowres_masks = np.fliplr(lowres_masks)
         if flip_ud:
@@ -572,7 +586,7 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
     base_path = Path(manifest['base_path'])
     mouse = manifest['mouse_name']
 
-    # --- REGISTRATION PARAMETERS (v8: 5-tier progressive refinement) ---
+    # --- REGISTRATION PARAMETERS (v10: adaptive cascade from v13 notebook) ---
     # All parameters configurable via manifest under params.twop_to_hcr_registration
     reg_params = params.get('twop_to_hcr_registration', {})
 
@@ -587,29 +601,14 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
     QUAD_BLEND_DIST = reg_params.get('quad_blend_dist', 300)
     FOV_CROP_MARGIN = reg_params.get('fov_crop_margin', 150)
 
-    # Tier 1: Coarse matching (pre-affine, residuals ~50-80px)
+    # Single affine: coarse matching + RANSAC (v13: single pass is sufficient)
     PATCH_RADIUS_COARSE = reg_params.get('patch_radius_coarse', 120)
     SEARCH_XY_COARSE = reg_params.get('search_xy_coarse', 150)
     SEARCH_Z_COARSE = reg_params.get('search_z_coarse', 9)
 
-    # Tier 2: Tight matching (post-affine-pass-1, residuals <40px)
-    PATCH_RADIUS_TIGHT = reg_params.get('patch_radius_tight', 60)
-    SEARCH_XY_TIGHT = reg_params.get('search_xy_tight', 60)
-    SEARCH_Z_TIGHT = reg_params.get('search_z_tight', 4)
-
-    # Tier 3: Fine matching (post-composed-affine, residuals <5px)
-    PATCH_RADIUS_FINE = reg_params.get('patch_radius_fine', 30)
-    SEARCH_XY_FINE = reg_params.get('search_xy_fine', 30)
-    SEARCH_Z_FINE = reg_params.get('search_z_fine', 2)
-
-    # Tier 4: Ultra-fine matching (post-300px-tiles, residuals <3px)
-    PATCH_RADIUS_ULTRAFINE = reg_params.get('patch_radius_ultrafine', 25)
-    SEARCH_XY_ULTRAFINE = reg_params.get('search_xy_ultrafine', 8)
-    SEARCH_Z_ULTRAFINE = reg_params.get('search_z_ultrafine', 1)
-
     # Per-cell FFT-IoU settings
-    FOV_DILATION = reg_params.get('fov_dilation', 10)
     MIN_PEAK_RATIO = reg_params.get('min_peak_ratio', 1.02)
+    FOV_DILATION = reg_params.get('fov_dilation', 10)
 
     # Match quality thresholds
     MIN_IOU_GLOBAL = reg_params.get('min_iou_global', 0.06)
@@ -622,26 +621,29 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
     RANSAC_MIN_SAMPLES = reg_params.get('ransac_min_samples', 6)
     RANSAC_MAX_TRIALS = reg_params.get('ransac_max_trials', 2000)
 
-    # Local tiles (300px)
-    TILE_SIZE = reg_params.get('tile_size_coarse', 300)
-    TILE_OVERLAP = reg_params.get('tile_overlap', 0.5)
-    MIN_CELLS_PER_TILE = reg_params.get('min_cells_per_tile', 8)
-    RBF_SMOOTHING = reg_params.get('rbf_smoothing_coarse', 50)
+    # Adaptive cascade parameters (v13)
+    SEARCH_XY_PERCENTILE = reg_params.get('search_xy_percentile', 95)
+    SEARCH_XY_MULTIPLIER = reg_params.get('search_xy_multiplier', 1.5)
+    SEARCH_XY_TILE_RATIO = reg_params.get('search_xy_tile_ratio', 0.3)
+    PATCH_SEARCH_RATIO = reg_params.get('patch_search_ratio', 2.0)
+    PATCH_TILE_RATIO = reg_params.get('patch_tile_ratio', 0.6)
+    SEARCH_XY_MIN = reg_params.get('search_xy_min', 3)
+    SEARCH_XY_MAX = reg_params.get('search_xy_max', 50)
+    SEARCH_Z_DEFAULT = reg_params.get('search_z_default', 2)
+    SEARCH_Z_CASCADE_FINE = reg_params.get('search_z_cascade_fine', 1)
 
-    # Fine tiles (100px)
-    FINE_TILE_SIZE = reg_params.get('tile_size_fine', 100)
-    FINE_TILE_OVERLAP = reg_params.get('fine_tile_overlap', 0.5)
-    FINE_MIN_CELLS_PER_TILE = reg_params.get('min_cells_per_tile_fine', 4)
-    FINE_RBF_SMOOTHING = reg_params.get('rbf_smoothing_fine', 100)
+    # Local tile cascade: auto-computed defaults, configurable stages
+    CASCADE_STAGES = reg_params.get('cascade_stages', [300, 100, 50])
+    TILE_DEFAULTS = {ts: compute_tile_defaults(ts) for ts in CASCADE_STAGES}
 
     # Print configuration (compact)
     rprint(f"[dim]Parameters: erosion={EROSION}, Z={Z_RANGE_GLOBAL}, "
           f"XY={XY_MAX_GLOBAL}px, hull_margin={HULL_MARGIN}, "
-          f"tiles={TILE_SIZE}/{FINE_TILE_SIZE}px[/dim]")
+          f"cascade={'->'.join(str(s) for s in CASCADE_STAGES)}px[/dim]")
 
     # Get ORIGINAL reference plane from manifest (not modified session)
     # master_pipeline modifies session['functional_plane'] per-plane, but landmarks are only for reference
-    original_session = full_manifest['data']['two_photons_imaging']['sessions'][0]
+    original_session = full_manifest['data']['two_photon_imaging']['sessions'][0]
     if 'functional_planes' in original_session:
         REFERENCE_PLANE = int(original_session['functional_planes'][0])
     else:
@@ -699,29 +701,40 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
         expected_name = f"{'hires_stitched_' if has_hires else ''}plane{REFERENCE_PLANE}_to_HCR{hcr_ref}_landmarks.csv"
         expected_path = landmarks_dir / expected_name
 
-        if automation_enabled:
-            # In automation mode, skip if no landmarks exist
-            # User must provide initial landmarks (manual or from previous run) for TPS warp
-            rprint(f"\n[yellow]Skipping 2P-to-HCR registration: No landmarks found[/yellow]")
-            rprint(f"  Expected: {expected_path}")
-            rprint(f"  [dim]Initial landmarks are required for TPS warp.[/dim]")
-            rprint(f"  [dim]Run once with automation.twop_to_hcr: false to create them,[/dim]")
-            rprint(f"  [dim]or create landmarks manually in BigWarp.[/dim]")
-            return
+        # Landmarks are required in both manual and auto mode
+        # (auto mode refines them, but still needs them as a starting point)
+        mode_note = "\n  (auto mode will refine these)" if automation_enabled else ""
+
+        # Build clear instructions telling user which files to open in BigWarp
+        if has_hires:
+            twop_file = f"hires_stitched_plane{REFERENCE_PLANE}_rotated.tiff"
+            twop_file_path = base_path / mouse / 'OUTPUT' / '2P' / 'registered' / twop_file
+            instructions = (
+                f"In BigWarp, open these two images:\n"
+                f"  Moving: {twop_file_path}\n"
+                f"  Target: {hcr_ref_round_path}\n\n"
+                f"  Place landmarks mapping the HIGH-RES STITCHED 2P image to the HCR reference round.{mode_note}"
+            )
         else:
-            # Manual mode: wait for user to create landmarks
-            instructions = f"Map 2P Plane {REFERENCE_PLANE} to HCR reference round"
-
-            auto.prompt_for_missing_file(
-                expected_path,
-                f"2P-to-HCR landmarks for Plane {REFERENCE_PLANE}",
-                instructions=instructions
+            twop_file = f"lowres_meanImg_C0_plane{REFERENCE_PLANE}_seg_rotated.tiff"
+            twop_file_path = base_path / mouse / 'OUTPUT' / '2P' / 'cellpose' / twop_file
+            instructions = (
+                f"In BigWarp, open these two images:\n"
+                f"  Moving: {twop_file_path}\n"
+                f"  Target: {hcr_ref_round_path}\n\n"
+                f"  Place landmarks mapping the LOW-RES 2P image to the HCR reference round.{mode_note}"
             )
 
-            # Re-check after user creates file
-            landmarks_path, landmarks_source = auto.find_landmark_file(
-                landmarks_dir, REFERENCE_PLANE, prefix="hires_stitched_" if has_hires else "", hcr_ref=hcr_ref
-            )
+        auto.prompt_for_missing_file(
+            expected_path,
+            f"2P-to-HCR landmarks for Plane {REFERENCE_PLANE}",
+            instructions=instructions
+        )
+
+        # Re-check after user creates file
+        landmarks_path, landmarks_source = auto.find_landmark_file(
+            landmarks_dir, REFERENCE_PLANE, prefix="hires_stitched_" if has_hires else "", hcr_ref=hcr_ref
+        )
 
     rprint(f"[dim]Using {landmarks_source} landmarks: {landmarks_path.name}[/dim]")
 
@@ -735,9 +748,24 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
     landmarks_df = load_landmarks(landmarks_path, hcr_resolution)
     rprint(f"[dim]Loaded {len(landmarks_df)} landmarks[/dim]")
 
+    # Diagnostic: show coordinate ranges to catch resolution/scale mismatches
+    rprint(f"[dim]  Landmark 2P coords (px): x=[{landmarks_df['2p_x_px'].min():.0f}, {landmarks_df['2p_x_px'].max():.0f}], "
+           f"y=[{landmarks_df['2p_y_px'].min():.0f}, {landmarks_df['2p_y_px'].max():.0f}][/dim]")
+    rprint(f"[dim]  Landmark HCR coords (raw): x=[{landmarks_df['hcr_x'].min():.0f}, {landmarks_df['hcr_x'].max():.0f}], "
+           f"y=[{landmarks_df['hcr_y'].min():.0f}, {landmarks_df['hcr_y'].max():.0f}][/dim]")
+    rprint(f"[dim]  Landmark HCR coords (px): x=[{landmarks_df['hcr_x_px'].min():.0f}, {landmarks_df['hcr_x_px'].max():.0f}], "
+           f"y=[{landmarks_df['hcr_y_px'].min():.0f}, {landmarks_df['hcr_y_px'].max():.0f}][/dim]")
+    rprint(f"[dim]  HCR resolution: {hcr_resolution}[/dim]")
+
     # Load HCR reference masks
     hcr_ref_masks = tif_imread(str(hcr_ref_masks_path))
+    # Check if z-flip is needed (some acquisitions have inverted z)
+    flip_z = reg_params.get('flip_z', False)
+    if flip_z:
+        hcr_ref_masks = hcr_ref_masks[::-1].copy()
+        rprint(f"[yellow]  Z-axis flipped (flip_z=true in manifest)[/yellow]")
     y1, x1 = hcr_ref_masks.shape[1], hcr_ref_masks.shape[2]
+    rprint(f"[dim]  HCR masks shape: {hcr_ref_masks.shape} (Z={hcr_ref_masks.shape[0]}, Y={y1}, X={x1})[/dim]")
 
     # Load 2P masks for each plane
     twop_2d_planes = {}
@@ -752,6 +780,24 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
         else:
             twop_path = base_path / mouse / 'OUTPUT' / '2P' / 'cellpose' / f'lowres_meanImg_C0_plane{plane}_seg_rotated.tiff'
         twop_2d_planes[plane] = tif_imread(str(twop_path))
+        rprint(f"[dim]  2P masks plane {plane}: shape={twop_2d_planes[plane].shape} (from {twop_path.name})[/dim]")
+
+    # Sanity check: landmark coords should be within image bounds
+    if landmarks_df['2p_x_px'].max() > 0:
+        twop_sample = twop_2d_planes[TARGET_PLANES[0]]
+        twop_h, twop_w = twop_sample.shape[:2]
+        lm_2p_max_x, lm_2p_max_y = landmarks_df['2p_x_px'].max(), landmarks_df['2p_y_px'].max()
+        lm_hcr_max_x, lm_hcr_max_y = landmarks_df['hcr_x_px'].max(), landmarks_df['hcr_y_px'].max()
+        if lm_2p_max_x > twop_w * 1.1 or lm_2p_max_y > twop_h * 1.1:
+            rprint(f"[bold red]WARNING: 2P landmark coords ({lm_2p_max_x:.0f}, {lm_2p_max_y:.0f}) "
+                   f"exceed 2P mask dimensions ({twop_w}, {twop_h})![/bold red]")
+            rprint(f"[red]  2P landmark/mask ratio: {lm_2p_max_x/twop_w:.2f}x, {lm_2p_max_y/twop_h:.2f}x[/red]")
+            rprint(f"[red]  This usually means landmarks were placed on a different-sized image (hires vs lowres).[/red]")
+        if lm_hcr_max_x > x1 * 1.1 or lm_hcr_max_y > y1 * 1.1:
+            rprint(f"[bold red]WARNING: HCR landmark coords ({lm_hcr_max_x:.0f}, {lm_hcr_max_y:.0f}) "
+                   f"exceed HCR mask dimensions ({x1}, {y1})![/bold red]")
+            rprint(f"[red]  HCR masks may be at a different resolution than the image used in BigWarp.[/red]")
+            rprint(f"[red]  Check if cellpose downsampled the HCR image.[/red]")
 
     # Store results for each plane
     plane_results = {}
@@ -855,8 +901,7 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
         cell_results_coarse = find_cell_displacements(
             twop_crop_binary, twop_crop_labels, hcr_crop_3d, z_map_crop, centroids_crop,
             patch_radius=_prc, search_xy=SEARCH_XY_COARSE,
-            search_z=SEARCH_Z_COARSE, fov_dilation=FOV_DILATION,
-            min_peak_ratio=MIN_PEAK_RATIO)
+            search_z=SEARCH_Z_COARSE,             min_peak_ratio=MIN_PEAK_RATIO)
 
         df_coarse = pd.DataFrame(cell_results_coarse)
         ny_c, nx_c = twop_crop_binary.shape
@@ -895,195 +940,146 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
             twop_A_binary = twop_crop_binary
             z_map_A = z_map_crop
 
-        # ---- AFFINE PASS 2: Tight re-matching on pass-1-corrected ----
-        rprint(f"  [dim]Affine Pass 2: {2 * PATCH_RADIUS_TIGHT}px patches, +/-{SEARCH_XY_TIGHT}px search[/dim]")
-        centroids_A = extract_centroids(twop_A_labels)
-        iou_affine = iou_pass1  # default
+        # Single affine (v10/v13: two composed affines are mathematically equivalent to one)
+        dy_field = dy_field_A
+        dx_field = dx_field_A
+        dz_field = dz_field_A
+        twop_affine_labels = twop_A_labels
+        twop_affine_binary = twop_A_binary
+        z_map_affine = z_map_A
+        iou_affine = iou_pass1
 
-        if len(centroids_A) > 0:
-            cell_results_tight = find_cell_displacements(
-                twop_A_binary, twop_A_labels, hcr_crop_3d, z_map_A, centroids_A,
-                patch_radius=PATCH_RADIUS_TIGHT, search_xy=SEARCH_XY_TIGHT,
-                search_z=SEARCH_Z_TIGHT, fov_dilation=FOV_DILATION,
+        # ---- LOCAL TILE CASCADE (300 -> 100 -> 50) ----
+        cascade_state = {
+            'twop_labels': twop_affine_labels,
+            'twop_binary': twop_affine_binary,
+            'z_map':       z_map_affine,
+            'iou':         iou_affine,
+            'dy_cum':      np.zeros((ny_c, nx_c)),
+            'dx_cum':      np.zeros((ny_c, nx_c)),
+            'dz_cum':      np.zeros((ny_c, nx_c)),
+        }
+
+        df_post_rematch = None  # will be set after first cascade stage
+        for _si, tile_size in enumerate(CASCADE_STAGES):
+            td = TILE_DEFAULTS[tile_size]
+            prev_iou = cascade_state['iou']
+
+            # Skip later stages if previous stage did not improve over affine
+            if prev_iou <= iou_affine and tile_size != CASCADE_STAGES[0]:
+                rprint(f"  [dim]Skipping {tile_size}px tiles (no improvement from previous stage)[/dim]")
+                continue
+
+            # Compute adaptive matching params (v13)
+            if _si == 0 or df_post_rematch is None:
+                # First stage: tile-proportional defaults
+                patch_r = int(tile_size * PATCH_TILE_RATIO)
+                search_xy = int(tile_size * SEARCH_XY_TILE_RATIO)
+                search_z = SEARCH_Z_DEFAULT
+            else:
+                # Subsequent stages: adaptive from post-correction residuals
+                patch_r, search_xy, search_z = compute_adaptive_matching_params(
+                    df_post_rematch, tile_size, stage_idx=_si,
+                    percentile=SEARCH_XY_PERCENTILE, multiplier=SEARCH_XY_MULTIPLIER,
+                    tile_ratio=SEARCH_XY_TILE_RATIO, patch_ratio=PATCH_SEARCH_RATIO,
+                    patch_tile_ratio=PATCH_TILE_RATIO,
+                    search_xy_min=SEARCH_XY_MIN, search_xy_max=SEARCH_XY_MAX,
+                    search_z_default=SEARCH_Z_DEFAULT, search_z_fine=SEARCH_Z_CASCADE_FINE)
+
+            rprint(f"  [dim]Tiles {tile_size}px: {2 * patch_r}px patches, +/-{search_xy}px search, z+/-{search_z}[/dim]")
+            centroids_cur = extract_centroids(cascade_state['twop_labels'])
+            if len(centroids_cur) == 0:
+                continue
+
+            cell_results = find_cell_displacements(
+                cascade_state['twop_binary'], cascade_state['twop_labels'],
+                hcr_crop_3d, cascade_state['z_map'], centroids_cur,
+                patch_radius=patch_r, search_xy=search_xy,
+                search_z=search_z, fov_dilation=FOV_DILATION,
                 min_peak_ratio=MIN_PEAK_RATIO)
 
-            df_tight = pd.DataFrame(cell_results_tight)
-            df_filt = df_tight[df_tight.peak_ratio >= MIN_PEAK_RATIO].copy()
-            df_filt = df_filt[df_filt.cell_iou > 0.0]
-            if len(df_filt) < RANSAC_MIN_SAMPLES:
-                df_filt = df_tight
+            df_cascade = pd.DataFrame(cell_results)
+            df_filt = df_cascade[df_cascade.peak_ratio >= MIN_PEAK_RATIO].copy()
+            if len(df_filt) < td['min_cells']:
+                df_filt = df_cascade
+            if len(df_filt) == 0:
+                continue
 
-            affine_B, z_model_B, df_ann_B = fit_affine_ransac(
-                df_filt, MIN_IOU_GLOBAL, MIN_GAIN_GLOBAL, RANSAC_RESIDUAL,
-                min_samples=RANSAC_MIN_SAMPLES, max_trials=RANSAC_MAX_TRIALS)
+            dy_inc, dx_inc, dz_inc, tile_res = run_local_tile_ransac(
+                cascade_state['twop_binary'], hcr_crop_3d, cascade_state['z_map'],
+                centroids_cur, df_filt,
+                tile_size=tile_size, overlap=td['overlap'],
+                min_cells=td['min_cells'],
+                min_cells_affine=td.get('min_cells_affine', 3),
+                min_iou=MIN_IOU_LOCAL, min_gain=MIN_GAIN_LOCAL,
+                border_anchor_spacing=td['border_spacing'],
+                smoothing=td['rbf_smoothing'])
 
-            if affine_B is not None:
-                dy2 = (M @ affine_B['A_dy']).reshape(ny_c, nx_c)
-                dx2 = (M @ affine_B['A_dx']).reshape(ny_c, nx_c)
-                dz2 = (M @ z_model_B).reshape(ny_c, nx_c)
+            # Displacement clamping
+            _accepted = [t for t in tile_res if t['accepted']]
+            if len(_accepted) > 0:
+                _tile_mags = np.sqrt(np.array([t['dy'] for t in _accepted])**2 +
+                                     np.array([t['dx'] for t in _accepted])**2)
+                _max_xy = np.percentile(_tile_mags, 95) * td['clamp_mult']
+                _tile_dz = np.abs([t['dz'] for t in _accepted])
+                _max_dz = np.percentile(_tile_dz, 95) * td['clamp_mult']
+                _mag = np.sqrt(dy_inc**2 + dx_inc**2)
+                _scale = np.minimum(1.0, _max_xy / (_mag + 1e-8))
+                dy_inc = dy_inc * _scale
+                dx_inc = dx_inc * _scale
+                dz_inc = np.clip(dz_inc, -_max_dz, _max_dz)
 
-                # Compose: Pass 1 + residual
-                dy_field = dy_field_A + dy2
-                dx_field = dx_field_A + dx2
-                dz_field = dz_field_A + dz2
+            # Apply and evaluate
+            twop_new_labels = apply_shift_fields(cascade_state['twop_labels'], dy_inc, dx_inc, return_labels=True)
+            twop_new_binary = twop_new_labels > 0
+            z_map_new = cascade_state['z_map'] + dz_inc
+            fov_new = create_fov_mask_convex_hull(twop_new_binary, margin=20)
+            hcr_new = sample_hcr_binary_at_zmap(hcr_crop_3d, z_map_new)
+            iou_new = compute_iou(twop_new_binary, hcr_new, fov_mask=fov_new)
 
-                twop_affine_labels = apply_shift_fields(twop_crop_labels, dy_field, dx_field, return_labels=True)
-                twop_affine_binary = twop_affine_labels > 0
-                z_map_affine = z_map_crop + dz_field
-                fov_affine = create_fov_mask_convex_hull(twop_affine_binary, margin=20)
-                hcr_affine = sample_hcr_binary_at_zmap(hcr_crop_3d, z_map_affine)
-                iou_affine = compute_iou(twop_affine_binary, hcr_affine, fov_mask=fov_affine)
-                rprint(f"  [dim]Composed Affine: IoU {iou_pass1:.3f}→{iou_affine:.3f}[/dim]")
+            # Safety revert if tiles made things worse
+            if iou_new < cascade_state['iou']:
+                rprint(f"  [yellow]{tile_size}px tiles decreased IoU ({cascade_state['iou']:.4f}→{iou_new:.4f}), reverting[/yellow]")
+                dy_inc = np.zeros((ny_c, nx_c))
+                dx_inc = np.zeros((ny_c, nx_c))
+                dz_inc = np.zeros((ny_c, nx_c))
             else:
-                rprint(f"  [yellow]Affine Pass 2: RANSAC failed, using Pass 1[/yellow]")
-                dy_field = dy_field_A
-                dx_field = dx_field_A
-                dz_field = dz_field_A
-                twop_affine_labels = twop_A_labels
-                twop_affine_binary = twop_A_binary
-                z_map_affine = z_map_A
-        else:
-            dy_field = dy_field_A
-            dx_field = dx_field_A
-            dz_field = dz_field_A
-            twop_affine_labels = twop_A_labels
-            twop_affine_binary = twop_A_binary
-            z_map_affine = z_map_A
+                rprint(f"  [dim]Tiles {tile_size}px: IoU {cascade_state['iou']:.3f}→{iou_new:.3f}[/dim]")
+                cascade_state['twop_labels'] = twop_new_labels
+                cascade_state['twop_binary'] = twop_new_binary
+                cascade_state['z_map'] = z_map_new
+                cascade_state['iou'] = iou_new
 
-        # ---- LOCAL TILES 300px ----
-        iou_local_300 = iou_affine  # default
-        dy_local = np.zeros((ny_c, nx_c))
-        dx_local = np.zeros((ny_c, nx_c))
-        dz_local = np.zeros((ny_c, nx_c))
-        twop_local_labels = twop_affine_labels
-        twop_local_binary = twop_affine_binary
-        z_map_local_crop = z_map_affine
+            cascade_state['dy_cum'] += dy_inc
+            cascade_state['dx_cum'] += dx_inc
+            cascade_state['dz_cum'] += dz_inc
 
-        if iou_affine > iou_global:
-            rprint(f"  [dim]Local tiles 300px: {2 * PATCH_RADIUS_FINE}px patches, +/-{SEARCH_XY_FINE}px search[/dim]")
-            centroids_affine = extract_centroids(twop_affine_labels)
-
-            if len(centroids_affine) > 0:
-                cell_results_local = find_cell_displacements(
-                    twop_affine_binary, twop_affine_labels, hcr_crop_3d, z_map_affine,
-                    centroids_affine,
-                    patch_radius=PATCH_RADIUS_FINE, search_xy=SEARCH_XY_FINE,
-                    search_z=SEARCH_Z_FINE, fov_dilation=FOV_DILATION,
+            # Post-correction re-match: measure actual remaining residuals
+            # This feeds accurate adaptive params to the next cascade stage.
+            if _si < len(CASCADE_STAGES) - 1:  # no need after last stage
+                _rematch_search = max(SEARCH_XY_MIN, min(15, int(tile_size * 0.3)))
+                _rematch_patch = max(_rematch_search + 5, _rematch_search * 2)
+                _rematch_results = find_cell_displacements(
+                    cascade_state['twop_binary'], cascade_state['twop_labels'],
+                    hcr_crop_3d, cascade_state['z_map'], centroids_cur,
+                    patch_radius=_rematch_patch, search_xy=_rematch_search,
+                    search_z=SEARCH_Z_CASCADE_FINE, fov_dilation=FOV_DILATION,
                     min_peak_ratio=MIN_PEAK_RATIO)
+                df_post_rematch = pd.DataFrame(_rematch_results)
+                df_post_rematch = df_post_rematch[df_post_rematch.peak_ratio >= MIN_PEAK_RATIO].copy()
+                if len(df_post_rematch) > 0:
+                    _post_resid = np.sqrt(df_post_rematch.dy.values**2 + df_post_rematch.dx.values**2)
+                    rprint(f"  [dim]Post-correction residuals: median={np.median(_post_resid):.1f}px, "
+                           f"P95={np.percentile(_post_resid, 95):.1f}px[/dim]")
 
-                df_local = pd.DataFrame(cell_results_local)
-                df_local_filt = df_local[df_local.peak_ratio >= MIN_PEAK_RATIO].copy()
-                if len(df_local_filt) < MIN_CELLS_PER_TILE:
-                    df_local_filt = df_local
-
-                if len(df_local_filt) > 0:
-                    dy_local, dx_local, dz_local, tile_res = run_local_tile_ransac(
-                        twop_affine_binary, hcr_crop_3d, z_map_affine, centroids_affine,
-                        df_local_filt,
-                        tile_size=TILE_SIZE, overlap=TILE_OVERLAP,
-                        min_cells=MIN_CELLS_PER_TILE,
-                        min_iou=MIN_IOU_LOCAL, min_gain=MIN_GAIN_LOCAL,
-                        smoothing=RBF_SMOOTHING)
-
-                    # Displacement clamping (95th percentile * 2.0)
-                    _accepted = [t for t in tile_res if t['accepted']]
-                    if len(_accepted) > 0:
-                        _tile_mags = np.sqrt(np.array([t['dy'] for t in _accepted])**2 +
-                                             np.array([t['dx'] for t in _accepted])**2)
-                        _max_xy = np.percentile(_tile_mags, 95) * 2.0
-                        _tile_dz = np.abs([t['dz'] for t in _accepted])
-                        _max_dz = np.percentile(_tile_dz, 95) * 2.0
-                        _mag = np.sqrt(dy_local**2 + dx_local**2)
-                        _scale = np.minimum(1.0, _max_xy / (_mag + 1e-8))
-                        dy_local = dy_local * _scale
-                        dx_local = dx_local * _scale
-                        dz_local = np.clip(dz_local, -_max_dz, _max_dz)
-
-                    twop_local_labels = apply_shift_fields(twop_affine_labels, dy_local, dx_local, return_labels=True)
-                    twop_local_binary = twop_local_labels > 0
-                    z_map_local_crop = z_map_affine + dz_local
-                    fov_local = create_fov_mask_convex_hull(twop_local_binary, margin=20)
-                    hcr_local_300 = sample_hcr_binary_at_zmap(hcr_crop_3d, z_map_local_crop)
-                    iou_local_300 = compute_iou(twop_local_binary, hcr_local_300, fov_mask=fov_local)
-                    rprint(f"  [dim]Local 300px: IoU {iou_affine:.3f}→{iou_local_300:.3f}[/dim]")
-
-        # ---- FINE TILES 100px ----
-        iou_fine_100 = iou_local_300  # default
-        dy_fine = np.zeros((ny_c, nx_c))
-        dx_fine = np.zeros((ny_c, nx_c))
-        dz_fine = np.zeros((ny_c, nx_c))
-        twop_fine_labels = twop_local_labels
-        twop_fine_binary = twop_local_binary
-        z_map_fine_crop = z_map_local_crop
-
-        if iou_local_300 > iou_affine:
-            rprint(f"  [dim]Fine tiles 100px: {2 * PATCH_RADIUS_ULTRAFINE}px patches, +/-{SEARCH_XY_ULTRAFINE}px search[/dim]")
-            centroids_local = extract_centroids(twop_local_labels)
-
-            if len(centroids_local) > 0:
-                cell_results_fine = find_cell_displacements(
-                    twop_local_binary, twop_local_labels, hcr_crop_3d, z_map_local_crop,
-                    centroids_local,
-                    patch_radius=PATCH_RADIUS_ULTRAFINE, search_xy=SEARCH_XY_ULTRAFINE,
-                    search_z=SEARCH_Z_ULTRAFINE, fov_dilation=FOV_DILATION,
-                    min_peak_ratio=MIN_PEAK_RATIO)
-
-                df_fine = pd.DataFrame(cell_results_fine)
-                df_fine_filt = df_fine[df_fine.peak_ratio >= MIN_PEAK_RATIO].copy()
-                if len(df_fine_filt) < FINE_MIN_CELLS_PER_TILE:
-                    df_fine_filt = df_fine
-
-                if len(df_fine_filt) > 0:
-                    dy_fine, dx_fine, dz_fine, tile_res_fine = run_local_tile_ransac(
-                        twop_local_binary, hcr_crop_3d, z_map_local_crop, centroids_local,
-                        df_fine_filt,
-                        tile_size=FINE_TILE_SIZE, overlap=FINE_TILE_OVERLAP,
-                        min_cells=FINE_MIN_CELLS_PER_TILE,
-                        min_iou=MIN_IOU_LOCAL, min_gain=MIN_GAIN_LOCAL,
-                        smoothing=FINE_RBF_SMOOTHING)
-
-                    # Displacement clamping (tighter 1.5x multiplier)
-                    _accepted_f = [t for t in tile_res_fine if t['accepted']]
-                    if len(_accepted_f) > 0:
-                        _tile_mags_f = np.sqrt(np.array([t['dy'] for t in _accepted_f])**2 +
-                                               np.array([t['dx'] for t in _accepted_f])**2)
-                        _max_xy_f = np.percentile(_tile_mags_f, 95) * 1.5
-                        _tile_dz_f = np.abs([t['dz'] for t in _accepted_f])
-                        _max_dz_f = np.percentile(_tile_dz_f, 95) * 1.5
-                        _mag_f = np.sqrt(dy_fine**2 + dx_fine**2)
-                        _scale_f = np.minimum(1.0, _max_xy_f / (_mag_f + 1e-8))
-                        dy_fine = dy_fine * _scale_f
-                        dx_fine = dx_fine * _scale_f
-                        dz_fine = np.clip(dz_fine, -_max_dz_f, _max_dz_f)
-
-                    twop_fine_labels = apply_shift_fields(twop_local_labels, dy_fine, dx_fine, return_labels=True)
-                    twop_fine_binary = twop_fine_labels > 0
-                    z_map_fine_crop = z_map_local_crop + dz_fine
-                    fov_fine = create_fov_mask_convex_hull(twop_fine_binary, margin=20)
-                    hcr_fine = sample_hcr_binary_at_zmap(hcr_crop_3d, z_map_fine_crop)
-                    iou_fine_100 = compute_iou(twop_fine_binary, hcr_fine, fov_mask=fov_fine)
-
-                    # Safety revert if fine tiles made things worse
-                    if iou_fine_100 < iou_local_300:
-                        rprint(f"  [yellow]Fine tiles decreased IoU ({iou_local_300:.4f}→{iou_fine_100:.4f}), reverting[/yellow]")
-                        twop_fine_labels = twop_local_labels
-                        twop_fine_binary = twop_local_binary
-                        z_map_fine_crop = z_map_local_crop
-                        dy_fine = np.zeros((ny_c, nx_c))
-                        dx_fine = np.zeros((ny_c, nx_c))
-                        dz_fine = np.zeros((ny_c, nx_c))
-                        iou_fine_100 = iou_local_300
-                    else:
-                        rprint(f"  [dim]Fine 100px: IoU {iou_local_300:.3f}→{iou_fine_100:.3f}[/dim]")
-
-        iou_final = iou_fine_100
+        iou_final = cascade_state['iou']
         rprint(f"  [bold]Final: IoU {iou_baseline:.3f}→{iou_final:.3f} ({iou_final - iou_baseline:+.3f})[/bold]")
 
         # ---- UNCROP: Compose displacement fields back to full HCR space ----
         # Total displacement in inner-crop space
-        total_dy_inner = dy_field + dy_local + dy_fine
-        total_dx_inner = dx_field + dx_local + dx_fine
-        total_dz_inner = dz_field + dz_local + dz_fine
+        total_dy_inner = dy_field + cascade_state['dy_cum']
+        total_dx_inner = dx_field + cascade_state['dx_cum']
+        total_dz_inner = dz_field + cascade_state['dz_cum']
 
         # Pad inner → outer crop
         outer_h, outer_w = bb_y1 - bb_y0, bb_x1 - bb_x0
@@ -1126,8 +1122,6 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
             'iou_baseline': iou_baseline,
             'iou_global': iou_global,
             'iou_affine': iou_affine,
-            'iou_local_300': iou_local_300,
-            'iou_fine_100': iou_fine_100,
             'iou_final': iou_final,
             'global_params': global_params,
             'z_map_local': z_map_local,
@@ -1190,11 +1184,10 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
             erosion_hcr=EROSION_HCR,
             hcr_shape=np.array(hcr_ref_masks.shape),
             # v9: erode_labels with cell-cell boundaries, wider coarse search
-            algorithm_version=np.array(9),
+            algorithm_version=np.array(10),
             iou_affine_pass1=iou_pass1,
-            iou_affine_composed=iou_affine,
-            iou_local_300=iou_local_300,
-            iou_fine_100=iou_fine_100,
+            iou_affine_composed=iou_pass1,  # v10: single affine (same as pass1)
+            iou_local_final=iou_final,
             crop_offsets=np.array([bb_y0, bb_x0, bb_y1, bb_x1]),
         )
         with open(str(params_path), 'wb') as f:

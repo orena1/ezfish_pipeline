@@ -10,7 +10,7 @@ from sbxreader import sbx_get_metadata, sbx_memmap
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imwrite
 from .registrations import verify_rounds
-from .meta import check_rotation, get_automation_config, get_rotation_config, get_stitching_config
+from .meta import check_rotation, get_automation_config, get_rotation_config, get_stitching_config, parse_json
 from .auto_stitching import auto_stitch_tiles, StitchingError
 from skimage.transform import rotate
 
@@ -246,7 +246,39 @@ def stitch_tiles_and_rotate(full_manifest: dict, session: dict):
             input()
         rprint(f"[green]✓ Found stitched file: {stitched_file}[/green]")
 
+    # First-run detection: prompt only if NO rotated files exist yet for any plane.
+    mouse_name = manifest['mouse_name']
     rotation_config = get_rotation_config(full_manifest['params'])
+    any_rotated_exists = any(save_path_registered.glob('*_rotated.tiff'))
+
+    if not any_rotated_exists:
+        reference_HCR_round = verify_rounds(full_manifest)[1]['image_path']
+        manifest_path = full_manifest['manifest_path']
+
+        print('')
+        print('=' * 70)
+        print(f'  ROTATION SETUP — {mouse_name} (hi-res stitched)')
+        print('=' * 70)
+        print(f'  No rotated image found for plane {plane}.')
+        print(f'  Before applying rotation, check your unrotated hi-res stitched image:')
+        print(f'')
+        print(f'    {stitched_file}')
+        print(f'')
+        print(f'  Compare it to the HCR reference round:')
+        print(f'')
+        print(f'    {reference_HCR_round}')
+        print(f'')
+        print(f'  Then update rotation_2p_to_HCRspec in your manifest:')
+        print(f'    {manifest_path}')
+        print(f'')
+        print(f'  Set "rotation" (degrees), "fliplr" (true/false), "flipud" (true/false)')
+        print('=' * 70)
+        input('  Press Enter after updating the manifest...\n')
+
+        # Re-read the manifest from disk to pick up user's rotation changes
+        updated_manifest = parse_json(manifest_path)
+        rotation_config = get_rotation_config(updated_manifest['params'])
+
     data = tif_imread(stitched_file)
 
     # Handle both ZCYX (auto-stitched) and CYX (manual) formats

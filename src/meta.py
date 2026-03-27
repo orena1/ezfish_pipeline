@@ -7,9 +7,9 @@ from rich.prompt import Prompt
 # supported HCR probs
 HCR_probs = [
     'ADRA1A', 'ADRA1B', 'ADRA2A', 'ADRA2B', 'ASB4', 'BRS3', 'CALCA', 'CCK', 'CD24A', 'CHAT',
-    'CHRIMSON', 'CRH', 'DAPI', 'DRD1', 'EBF2', 'EGR1', 'EPHA3', 'FOS', 'FOXP2', 'GCAMP',
+    'CHRIMSON', 'CRH', 'DAPI', 'DRD1', 'DSREDV1', 'DSREDV2', 'EBF2', 'EGR1', 'EPHA3', 'FOS', 'FOXP2', 'GCAMP',
     'GLP1R', 'GPR101', 'GRP', 'MC4R', 'NPR3', 'NPY1R', 'OPRM1', 'PDE11A', 'PDYN', 'RORB',
-    'RUNX1', 'RUNX4', 'SAMD3', 'SATB2', 'SST', 'SSTR2', 'SYT10', 'TAC1', 'TACR1', 'TH',
+    'RUNX1', 'RUNX4', 'SAMD3', 'SATB2', 'SERPINB1B', 'SST', 'SSTR2', 'SYT10', 'TAC1', 'TACR1', 'TH',
     'TRHR', 'VGAT'
 ]
 
@@ -46,12 +46,22 @@ def verify_manifest(manifest, args):
             
     
     manifest = manifest['data']
-    assert len(manifest['two_photons_imaging']['sessions'])==1, 'only support one 2P sessions'
+
+    # backward compat: accept old key name
+    if 'two_photons_imaging' in manifest and 'two_photon_imaging' not in manifest:
+        manifest['two_photon_imaging'] = manifest.pop('two_photons_imaging')
+
     base_path = Path(manifest['base_path'])
     mouse_name = manifest['mouse_name']
-    date_two_photons = manifest['two_photons_imaging']['sessions'][0]['date']
-    session = manifest['two_photons_imaging']['sessions'][0]
 
+    # 2P validation only when not in HCR-only mode
+    session = None
+    has_hires = False
+    if not args.only_hcr:
+        assert 'two_photon_imaging' in manifest, "'two_photon_imaging' section required for full pipeline mode"
+        assert len(manifest['two_photon_imaging']['sessions'])==1, 'only support one 2P sessions'
+        date_two_photons = manifest['two_photon_imaging']['sessions'][0]['date']
+        session = manifest['two_photon_imaging']['sessions'][0]
 
     #test that reference round exists
     reference_round = manifest['HCR_confocal_imaging']['reference_round']
@@ -82,18 +92,18 @@ def verify_manifest(manifest, args):
         suite2p_path = base_path / mouse_name / '2P' /  f'{mouse_name}_{date_two_photons}_{suite2p_run}' / 'suite2p' /'plane0/ops.npy'
         user_input_missing(np.array([[suite2p_path, os.path.exists(suite2p_path)]]), 'Suite2p path is missing, do you wish to continue?', color='pink')
 
-    # verify that either the lowres run or the hires run exists
-    has_hires = False
+    # verify anatomical runs configuration
     if not args.only_hcr:
-        if len(session['anatomical_lowres_green_runs'])==0 and len(session['anatomical_hires_green_runs'])==0:
-            raise Exception("No anatomical green runs found")
-        if len(session['anatomical_lowres_red_runs'])==0 and len(session['anatomical_hires_red_runs'])==0:
-            raise Exception("No anatomical red runs found")
-        assert len(session['anatomical_lowres_green_runs'])==len(session['anatomical_lowres_red_runs']), "Number of lowres green and red runs do not match"
-        assert len(session['anatomical_hires_green_runs'])==len(session['anatomical_hires_red_runs']), "Number of hires green and red runs do not match"
-        if len(session['anatomical_hires_green_runs'])>0:
-            assert len(session['anatomical_lowres_green_runs'])==0, "Cannot have both lowres and hires runs"
+        has_lowres_green = len(session.get('anatomical_lowres_green_runs', [])) > 0
+        has_hires_green = len(session.get('anatomical_hires_green_runs', [])) > 0
+
+        if has_hires_green:
+            assert not has_lowres_green, "Cannot have both lowres and hires runs"
+            assert len(session['anatomical_hires_green_runs'])==len(session['anatomical_hires_red_runs']), "Number of hires green and red runs do not match"
             has_hires = True
+        elif has_lowres_green:
+            assert len(session['anatomical_lowres_green_runs'])==len(session['anatomical_lowres_red_runs']), "Number of lowres green and red runs do not match"
+        # else: no anatomical runs — lowres mode using Suite2p mean image only
 
     # verify that unwarp_config exists (only needed for high-res workflow)
     if has_hires and 'unwarp_config' in session:

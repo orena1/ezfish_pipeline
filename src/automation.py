@@ -13,6 +13,10 @@ def find_landmark_file(base_dir, plane, prefix="", suffix="_landmarks.csv", hcr_
     """
     Find landmark file, preferring manual over auto.
 
+    Search order: manual with expected prefix, auto with expected prefix,
+    then fallback to the alternate prefix (handles mode switches without
+    requiring users to rename files).
+
     Parameters
     ----------
     base_dir : Path
@@ -32,20 +36,30 @@ def find_landmark_file(base_dir, plane, prefix="", suffix="_landmarks.csv", hcr_
     """
     base_dir = Path(base_dir)
 
-    # Manual file (user-created)
+    # Try expected prefix first (manual then auto)
     manual_name = f"{prefix}plane{plane}_to_HCR{hcr_ref}{suffix}"
     manual_path = base_dir / manual_name
-
-    # Auto file (pipeline-generated)
     auto_name = f"{prefix}plane{plane}_to_HCR{hcr_ref}_auto{suffix}"
     auto_path = base_dir / auto_name
 
     if manual_path.exists():
         return manual_path, "manual"
-    elif auto_path.exists():
+    if auto_path.exists():
         return auto_path, "auto"
-    else:
-        return None, None
+
+    # Fallback: try alternate prefix (user may have switched hires↔lowres mode)
+    alt_prefix = "" if prefix else "hires_stitched_"
+    alt_manual = base_dir / f"{alt_prefix}plane{plane}_to_HCR{hcr_ref}{suffix}"
+    alt_auto = base_dir / f"{alt_prefix}plane{plane}_to_HCR{hcr_ref}_auto{suffix}"
+
+    if alt_manual.exists():
+        rprint(f"[yellow]Note: using landmarks with '{alt_prefix}' prefix (expected '{prefix}' prefix for current mode)[/yellow]")
+        return alt_manual, "manual"
+    if alt_auto.exists():
+        rprint(f"[yellow]Note: using auto landmarks with '{alt_prefix}' prefix (expected '{prefix}' prefix for current mode)[/yellow]")
+        return alt_auto, "auto"
+
+    return None, None
 
 
 def prompt_for_missing_file(file_path, file_description, instructions=None, tool_hint="BigWarp"):

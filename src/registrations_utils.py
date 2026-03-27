@@ -460,6 +460,9 @@ def load_landmarks(landmarks_path, hcr_resolution):
     Loads landmarks from CSV, filters enabled ones within bounds,
     and converts physical units to pixel coordinates.
 
+    Handles both 2D BigWarp exports (6 columns: name, enabled, 2p_x, 2p_y, hcr_x, hcr_y)
+    and 3D exports (8 columns: name, enabled, 2p_x, 2p_y, 2p_z, hcr_x, hcr_y, hcr_z).
+
     Parameters
     ----------
     landmarks_path : Path
@@ -472,11 +475,26 @@ def load_landmarks(landmarks_path, hcr_resolution):
     pd.DataFrame
         Filtered landmarks with pixel coordinate columns added
     """
-    landmarks_df = pd.read_csv(
-        landmarks_path,
-        header=None,
-        names=['name', 'enabled', '2p_x', '2p_y', '2p_z', 'hcr_x', 'hcr_y', 'hcr_z']
-    )
+    # Read without column names first to detect format
+    raw_df = pd.read_csv(landmarks_path, header=None)
+    ncols = raw_df.shape[1]
+
+    if ncols == 6:
+        # 2D BigWarp export: name, enabled, 2p_x, 2p_y, hcr_x, hcr_y
+        landmarks_df = raw_df.copy()
+        landmarks_df.columns = ['name', 'enabled', '2p_x', '2p_y', 'hcr_x', 'hcr_y']
+        landmarks_df['2p_z'] = 0.0
+        landmarks_df['hcr_z'] = 0.0
+        print(f"  Landmark CSV: 6 columns (2D format, z=0)")
+    elif ncols >= 8:
+        # 3D BigWarp export: name, enabled, 2p_x, 2p_y, 2p_z, hcr_x, hcr_y, hcr_z
+        landmarks_df = raw_df.iloc[:, :8].copy()
+        landmarks_df.columns = ['name', 'enabled', '2p_x', '2p_y', '2p_z', 'hcr_x', 'hcr_y', 'hcr_z']
+        print(f"  Landmark CSV: {ncols} columns (3D format)")
+    else:
+        raise ValueError(
+            f"Landmark CSV has {ncols} columns (expected 6 for 2D or 8 for 3D): {landmarks_path}"
+        )
 
     # Filter only enabled landmarks and those within bounds
     landmarks_df = landmarks_df.query("enabled==True and hcr_x<9e5").copy()
@@ -1619,6 +1637,71 @@ def compute_per_cell_ious(twop_labels, hcr_sampled, margin=5):
     return result
 
 
+def compute_tile_defaults(tile_size):
+    """Auto-compute per-tile-size defaults for cascade stages.
+
+    For known tile sizes (300, 100, 50), returns v13-validated values.
+    For arbitrary sizes, interpolates from observed ratios.
+    """
+    KNOWN = {
+        300: dict(overlap=0.5, min_cells=8, min_cells_affine=3, rbf_smoothing=50,
+                  clamp_mult=2.0, border_spacing=120),
+        100: dict(overlap=0.5, min_cells=4, min_cells_affine=3, rbf_smoothing=100,
+                  clamp_mult=1.5, border_spacing=100),
+        50:  dict(overlap=0.5, min_cells=2, min_cells_affine=3, rbf_smoothing=250,
+                  clamp_mult=1.2, border_spacing=50),
+    }
+    if tile_size in KNOWN:
+        return KNOWN[tile_size].copy()
+
+    # Auto-compute from ratios observed across known sizes
+    min_cells = max(2, min(12, int(tile_size / 37)))
+    rbf_smoothing = max(30, min(500, int(15000 / tile_size)))
+    clamp_mult = max(1.1, min(2.5, 1.0 + tile_size / 300))
+    border_spacing = max(30, min(200, int(tile_size * 0.35)))
+
+    return dict(overlap=0.5, min_cells=min_cells, min_cells_affine=3,
+                rbf_smoothing=rbf_smoothing, clamp_mult=clamp_mult,
+                border_spacing=border_spacing)
+
+
+def compute_adaptive_matching_params(cell_df, tile_size, stage_idx=0,
+                                     percentile=95, multiplier=1.5,
+                                     tile_ratio=0.3, patch_ratio=2.0,
+                                     patch_tile_ratio=0.6,
+                                     search_xy_min=3, search_xy_max=50,
+                                     search_z_default=2, search_z_fine=1):
+    """Compute adaptive search/patch sizes from current residual magnitudes.
+
+    For stage 0 (first cascade stage): uses tile-proportional defaults.
+    For subsequent stages: measures residuals from post-correction re-match.
+
+    Returns (patch_radius, search_xy, search_z).
+    """
+    if stage_idx == 0 or len(cell_df) == 0:
+        # First stage or no data: tile-proportional defaults
+        patch_r = int(tile_size * patch_tile_ratio)
+        search_xy = int(tile_size * tile_ratio)
+        search_z = search_z_default
+        return patch_r, search_xy, search_z
+
+    resid_mag = np.sqrt(cell_df.dy.values**2 + cell_df.dx.values**2)
+    p = np.percentile(resid_mag, percentile)
+
+    # Search range: enough to capture residuals with margin
+    search_xy = max(search_xy_min, int(np.ceil(p * multiplier)))
+    # Cap at fraction of tile size
+    search_xy = min(search_xy, int(tile_size * tile_ratio), search_xy_max)
+    # Patch must be at least patch_ratio * search
+    patch_radius = max(search_xy, int(search_xy * patch_ratio))
+    # Cap at tile size
+    patch_radius = min(patch_radius, tile_size)
+
+    search_z = search_z_fine
+
+    return patch_radius, search_xy, search_z
+
+
 def find_cell_displacements(twop_binary, twop_labels, hcr_3d_bin, z_map, centroids,
                             patch_radius=60, search_xy=30, search_z=3,
                             fov_dilation=10, min_peak_ratio=1.3):
@@ -1630,6 +1713,11 @@ def find_cell_displacements(twop_binary, twop_labels, hcr_3d_bin, z_map, centroi
     3. Search across Z-offsets, finding best (dy, dx, dz) via FFT-IoU
     4. Compute single-cell IoU at found shift
     5. Record peak_ratio for match confidence
+
+    Parameters
+    ----------
+    fov_dilation : int
+        Number of binary dilation iterations for FOV mask (default=10).
 
     Returns list of dicts with keys: cy, cx, label, dy, dx, dz,
     iou_best, iou_zero, iou_gain, cell_iou, cell_iou_zero, cell_iou_gain,
@@ -1875,6 +1963,7 @@ def fit_affine_ransac(df, min_iou, min_gain, residual_thresh,
 
 def run_local_tile_ransac(twop_binary, hcr_3d_bin, z_map, centroids, cell_df,
                           tile_size=200, overlap=0.5, min_cells=5,
+                          min_cells_affine=3,
                           min_iou=0.10, min_gain=0.04,
                           border_anchor_spacing=100,
                           smoothing=50):
@@ -1882,6 +1971,7 @@ def run_local_tile_ransac(twop_binary, hcr_3d_bin, z_map, centroids, cell_df,
 
     1. Divide image into overlapping tiles
     2. For each tile with enough cells: fit least-squares affine
+       (or median fallback if min_cells_affine <= n < min_cells)
     3. Evaluate affine at tile center → (dy, dx, dz)
     4. Add border anchor points (nearest-neighbor from accepted tiles)
     5. Fit RBF (thin_plate_spline) through tile+anchor points
@@ -1903,6 +1993,15 @@ def run_local_tile_ransac(twop_binary, hcr_3d_bin, z_map, centroids, cell_df,
             if len(in_tile) < min_cells:
                 tile_results.append({'cy': tc_y, 'cx': tc_x,
                     'dy': 0, 'dx': 0, 'dz': 0, 'accepted': False})
+                continue
+            if len(in_tile) < min_cells_affine:
+                # Median fallback: too few cells for stable affine fit
+                tile_results.append({
+                    'cy': tc_y, 'cx': tc_x,
+                    'dy': float(np.median(in_tile.dy.values)),
+                    'dx': float(np.median(in_tile.dx.values)),
+                    'dz': float(np.median(in_tile.dz.values)),
+                    'accepted': True})
                 continue
             src = in_tile[['cy', 'cx']].values
             M = np.hstack([src, np.ones((len(in_tile), 1))])

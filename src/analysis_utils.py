@@ -196,7 +196,10 @@ def load_analysis_manifest(manifest_path: Union[str, Path]) -> dict:
     mouse_name = data['mouse_name']
 
     # Extract session info
-    session = data['two_photons_imaging']['sessions'][0]
+    # backward compat: accept old key name
+    if 'two_photons_imaging' in data and 'two_photon_imaging' not in data:
+        data['two_photon_imaging'] = data['two_photons_imaging']
+    session = data['two_photon_imaging']['sessions'][0]
 
     # Get planes
     reference_plane = int(session['functional_plane'][0])
