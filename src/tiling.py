@@ -6,7 +6,11 @@ import cv2
 import hjson
 import numpy as np
 from rich import print as rprint
-from sbxreader import sbx_get_metadata, sbx_memmap
+try:
+    from sbxreader import sbx_get_metadata, sbx_memmap
+except ImportError:
+    sbx_get_metadata = None
+    sbx_memmap = None
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imwrite
 from .registrations import verify_rounds
@@ -146,7 +150,7 @@ def stitch_tiles_and_rotate(full_manifest: dict, session: dict):
     stitch the tiles of the session
     '''
     manifest = full_manifest['data']
-    if len(session['anatomical_hires_green_runs']) == 0:
+    if len(session.get('anatomical_hires_green_runs', [])) == 0 and session.get('input_format') != 'tiff':
         return
     tile_to_num = {'left':'001', 'center':'002', 'right':'003'}
     plane = session['functional_plane'][0]
@@ -176,7 +180,7 @@ def stitch_tiles_and_rotate(full_manifest: dict, session: dict):
         # Automated stitching workflow
         rprint("[bold cyan]Starting automated stitching...[/bold cyan]")
 
-        num_tiles = len(session['anatomical_hires_green_runs'])
+        num_tiles = len(session.get('anatomical_hires_green_runs', []))
 
         # Determine whether to use unwarped or warped tiles
         # Use unwarped if unwarp_config is specified (not empty string) and files exist

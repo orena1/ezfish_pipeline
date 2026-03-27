@@ -8,7 +8,6 @@ import pandas as pd
 import scipy.io as sio
 from scipy.ndimage import median_filter as scipy_median_filter
 import pickle as pkl
-from suite2p.io import binary
 from scipy.sparse import csr_matrix
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imsave
@@ -17,7 +16,6 @@ from rich import print as rprint
 from scipy.spatial import ConvexHull
 from scipy.interpolate import LinearNDInterpolator
 from .registrations import verify_rounds
-from .functional import get_number_of_suite2p_planes
 from .meta import get_intensity_extraction_config, get_round_folder_name
 
 
@@ -425,9 +423,12 @@ def extract_probs_intensities(full_manifest):
 
 
 def extract_electrophysiology_intensities(full_manifest: dict , session: dict):
+    from suite2p.io import binary
+    from .functional import get_number_of_suite2p_planes
+
     rprint("[bold]Extract 2P Intensities[/bold]")
 
-    manifest = full_manifest['data'] 
+    manifest = full_manifest['data']
     mouse_name = manifest['mouse_name']
     date = session['date']
     suite2p_run = session['functional_run'][0]

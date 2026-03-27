@@ -1,42 +1,39 @@
 {
     // =========================================================================
-    // EASIFISH — FULL PIPELINE, STANDARD (LOW-RES) MODE
+    // EASIFISH — TIFF INPUT MODE (NON-SCANBOX MICROSCOPES)
     //
-    // Use when you have both 2P and HCR data, but NO high-resolution
-    // anatomical tile runs. The pipeline uses the Suite2p mean image directly
-    // for 2P→HCR registration (no stitching/unwarping step).
+    // Use when your 2P data is already pre-processed as TIFF mean images
+    // (e.g., from a different microscope, or manually extracted).
+    // No SBX files or Suite2p output needed.
+    //
+    // BEFORE RUNNING, place your mean images in the OUTPUT directory:
+    //
+    //   Green only (2D, float32):
+    //     {base_path}/{mouse}/OUTPUT/2P/cellpose/lowres_meanImg_C0_plane{N}.tiff
+    //
+    //   Green + red (CYX, 2 channels, float32):
+    //     {base_path}/{mouse}/OUTPUT/2P/cellpose/lowres_meanImg_C01_plane{N}.tiff
+    //
+    //   Hi-res pre-stitched (CYX, float32) — set has_hires: true below:
+    //     {base_path}/{mouse}/OUTPUT/2P/tile/stitched/hires_stitched_plane{N}.tiff
     //
     // Run with:
     //   python master_pipeline.py --manifest your_file.hjson
-    //
-    // Pipeline: HCR registration → HCR cellpose → Suite2p extraction →
-    //   2P cellpose → 2P→HCR registration → mask alignment → merged tables
     // =========================================================================
 
     data: {
         base_path: "/mnt/nasquatch/data/2p/YOUR_LAB/EASI_FISH/pipeline"
-        mouse_name: "MOUSE001"
+        mouse_name: "SAMPLE001"
 
         two_photon_imaging: {
             sessions: [
                 {
-                    date: "240101"
-                    input_format: "sbx"
-                    functional_run: ["001"]
+                    date: "250101"
+                    input_format: "tiff"
                     functional_planes: ["0"]
 
-                    // No hi-res runs — standard mode
-                    anatomical_hires_green_runs: []
-                    anatomical_hires_red_runs: []
-
-                    // Optional: low-res anatomical runs for red channel overlay.
-                    // If you have a separate red channel run, list it here.
-                    anatomical_lowres_green_runs: ["001"]
-                    anatomical_lowres_red_runs: ["002"]
-
-                    // Not needed in standard mode, but keep a placeholder
-                    unwarp_config: ""
-                    unwarp_steps: 28
+                    // Uncomment if providing pre-stitched hi-res images:
+                    // has_hires: true
                 }
             ]
         }
@@ -46,11 +43,6 @@
                 {
                     round: "01"
                     channels: ["DAPI", "PROBE_A", "PROBE_B"]
-                    resolution: [1.515, 1.515, 5.0]
-                }
-                {
-                    round: "02"
-                    channels: ["DAPI", "PROBE_C", "PROBE_D"]
                     resolution: [1.515, 1.515, 5.0]
                 }
             ]

@@ -27,6 +27,9 @@
                     // Date string used in folder names: {mouse}_{date}_{run}
                     date: "240101"
 
+                    // Input format: "sbx" (ScanBox) or "tiff" (pre-processed TIFFs)
+                    input_format: "sbx"
+
                     // Run number containing the suite2p/ folder
                     functional_run: ["001"]
 
