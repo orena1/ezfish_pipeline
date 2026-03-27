@@ -58,6 +58,30 @@ sys.path = ["/mnt/nasquatch/data/2p/jonna/Code_Python/Notebooks_Jonna/BigStream/
 from bigstream.piecewise_transform import distributed_apply_transform
 
 
+def _resolve_hcr_path(expected_path: Path) -> Path:
+    """Resolve an HCR TIFF path with case-insensitive and extension-flexible matching.
+
+    Users may name files with varying case (e.g. _To_, _to_, _TO_) and extensions
+    (.tiff vs .tif). This function finds the actual file on disk that matches the
+    expected filename pattern, returning the real path if found, or the original
+    expected path if no match exists (so downstream code can report the standard name).
+    """
+    if expected_path.exists():
+        return expected_path
+    # Search the parent directory for a case-insensitive match with either extension
+    parent = expected_path.parent
+    if not parent.exists():
+        return expected_path
+    stem_lower = expected_path.stem.lower()
+    for candidate in parent.iterdir():
+        if not candidate.is_file():
+            continue
+        if candidate.suffix.lower() not in ('.tiff', '.tif'):
+            continue
+        if candidate.stem.lower() == stem_lower:
+            return candidate
+    return expected_path
+
 
 def HCR_confocal_imaging(manifest, only_paths=False):
     """
@@ -69,9 +93,9 @@ def HCR_confocal_imaging(manifest, only_paths=False):
     reference_round_number = manifest['HCR_confocal_imaging']['reference_round']
     for i in manifest['HCR_confocal_imaging']['rounds']:
         if i['round'] == reference_round_number:
-            reference_round = Path(manifest['base_path']) / manifest['mouse_name'] / 'HCR' / f"{manifest['mouse_name']}_HCR{reference_round_number}.tiff"
+            reference_round = _resolve_hcr_path(Path(manifest['base_path']) / manifest['mouse_name'] / 'HCR' / f"{manifest['mouse_name']}_HCR{reference_round_number}.tiff")
         else:
-            mov_rounds.append(Path(manifest['base_path']) / manifest['mouse_name'] / 'HCR' / f"{manifest['mouse_name']}_HCR{i['round']}_to_HCR{reference_round_number}.tiff")
+            mov_rounds.append(_resolve_hcr_path(Path(manifest['base_path']) / manifest['mouse_name'] / 'HCR' / f"{manifest['mouse_name']}_HCR{i['round']}_to_HCR{reference_round_number}.tiff"))
     
     while True:
         missing_files = []
