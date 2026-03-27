@@ -1,143 +1,138 @@
 {
     // =========================================================================
-    // EASIFISH PIPELINE MANIFEST — DEMO (5 HCR rounds, hi-res stitched)
+    // EASIFISH PIPELINE MANIFEST — TEMPLATE
     //
-    // Copy this file and fill in your values. Run with:
-    //   python master_pipeline.py --manifest your_manifest.hjson
-    //   python master_pipeline.py --manifest your_manifest.hjson --only_hcr
+    // Copy this file, fill in your values, and run:
+    //   python master_pipeline.py --manifest your_file.hjson
+    //   python master_pipeline.py --manifest your_file.hjson --only_hcr
+    //
+    // See also: demo_hcr_only.hjson, demo_hires.hjson, demo_standard.hjson
+    // for mode-specific templates.
     // =========================================================================
 
     data: {
-        base_path: "/mnt/nasquatch/data/2p/jonna/EASI_FISH/pipeline"
-        mouse_name: "CIM132"
+        // Root path on the cluster. Expected structure:
+        //   {base_path}/{mouse_name}/2P/   — 2-photon .sbx files
+        //   {base_path}/{mouse_name}/HCR/  — HCR confocal .tif stacks
+        base_path: "/mnt/nasquatch/data/2p/YOUR_LAB/EASI_FISH/pipeline"
 
-        // --- 2P imaging (omit this section entirely if using --only_hcr) ---
+        // Folder name under base_path for this experiment
+        mouse_name: "MOUSE001"
+
+        // ----- 2P imaging (omit entirely for --only_hcr mode) -----
         two_photon_imaging: {
+            // Only one session is supported
             sessions: [
                 {
-                    date: "240408"
+                    // Date string used in folder names: {mouse}_{date}_{run}
+                    date: "240101"
 
-                    // Suite2p run — the run containing the suite2p/ folder
-                    functional_run: ["002"]
+                    // Run number containing the suite2p/ folder
+                    functional_run: ["001"]
 
-                    // Planes to process. First plane = reference (used for HCR landmarks).
-                    // New format (preferred):
-                    functional_planes: ["1", "0", "2", "3"]
-                    // Old format (still supported):
-                    //   functional_plane: ["1"]
-                    //   additional_functional_planes: ["0", "2", "3"]
+                    // Planes to process. First = reference (used for HCR landmark alignment).
+                    functional_planes: ["0"]
+                    // Multi-plane: functional_planes: ["1", "0", "2", "3"]
 
-                    // Hi-res anatomical runs (green + red must match 1:1).
-                    // Use these for hi-res stitched workflow.
-                    anatomical_hires_green_runs: ["004", "005", "006"]
-                    anatomical_hires_red_runs: ["004", "005", "006"]
+                    // Hi-res tile runs for stitched workflow (green + red paired 1:1).
+                    // Leave empty [] for standard (low-res) mode.
+                    anatomical_hires_green_runs: []
+                    anatomical_hires_red_runs: []
 
-                    // Low-res anatomical runs (alternative to hi-res).
-                    // Leave empty if using hi-res runs above. Don't set both.
-                    // anatomical_lowres_green_runs: ["002"]
-                    // anatomical_lowres_red_runs: ["002"]
+                    // Low-res anatomical runs (alternative to hi-res). Don't set both.
+                    anatomical_lowres_green_runs: []
+                    anatomical_lowres_red_runs: []
 
-                    // Unwarp correction file — must exist in:
-                    //   {base_path}/Calibration_files_for_unwarping/
-                    unwarp_config: "andromeda_unwarp_values_240412_3p4_mag.npy"
+                    // Optical distortion correction (hi-res workflow only).
+                    // File must be in: {base_path}/Calibration_files_for_unwarping/
+                    unwarp_config: "your_unwarp_values.npy"
                     unwarp_steps: 28
                 }
             ]
         }
 
-        // --- HCR confocal imaging ---
+        // ----- HCR confocal imaging -----
         HCR_confocal_imaging: {
+            // Each round = one HCR experiment on the same tissue.
+            // DAPI should always be channel 0 (used for registration).
+            // Resolution: [x, y, z] voxel size in microns (from confocal metadata).
             rounds: [
                 {
                     round: "01"
-                    channels: ["DAPI", "GCAMP", "PDYN", "CHRIMSON", "VGAT"]
-                    resolution: [1.515, 1.515, 5.0]  // [x, y, z] in microns/pixel
+                    channels: ["DAPI", "PROBE_A", "PROBE_B"]
+                    resolution: [1.515, 1.515, 5.0]
                 }
                 {
                     round: "02"
-                    channels: ["DAPI", "FOXP2", "CCK", "SST"]
+                    channels: ["DAPI", "PROBE_C", "PROBE_D", "PROBE_E"]
                     resolution: [1.515, 1.515, 5.0]
                 }
-                {
-                    round: "03"
-                    channels: ["DAPI", "CALCA", "TAC1"]
-                    resolution: [1.515, 1.515, 5.0]
-                }
-                {
-                    round: "04"
-                    channels: ["DAPI", "GRP", "SYT10", "CHAT"]
-                    resolution: [1.515, 1.515, 5.0]
-                }
-                {
-                    round: "05"
-                    channels: ["DAPI", "CRH", "OPRM1", "TH"]
-                    resolution: [1.515, 1.515, 5.0]
-                }
+                // Add more rounds as needed:
+                // { round: "03", channels: ["DAPI", "PROBE_F"], resolution: [1.515, 1.515, 5.0] }
             ]
 
-            // All other rounds register to this one. Pick the round with best signal.
+            // All other rounds register to this one. Pick the one with best signal.
             reference_round: "01"
         }
     }
 
     params: {
 
-        // --- HCR round-to-round registration ---
-        // Downsampling factors for BigStream registration.
-        // Higher = faster but less precise. [3,3,2] is a good default.
+        // ----- HCR round-to-round registration -----
+        // Downsampling [x, y, z] for BigStream. Higher = faster, less precise.
         HCR_to_HCR_registration: {
             downsampling: [3, 3, 2]
         }
 
-        // --- 2P orientation relative to HCR ---
+        // ----- 2P orientation relative to HCR -----
+        // Coarse transform to roughly align 2P with HCR before landmark registration.
+        // Overlay your 2P mean image on HCR reference to figure these out.
         rotation_2p_to_HCR: {
-            rotation: 90       // degrees, positive = counterclockwise
-            fliplr: false
-            flipud: false
+            rotation: 0        // degrees counterclockwise: 0, 90, 180, or 270
+            fliplr: false      // mirror left-right after rotation
+            flipud: false      // mirror up-down after rotation
         }
 
-        // --- HCR cellpose (3D segmentation on registered HCR stacks) ---
+        // ----- HCR cellpose (3D segmentation on registered stacks) -----
         HCR_cellpose: {
-            model_path: "/mnt/nasquatch/data/2p/jonna/EASI_FISH/cellpose_models/DAPI_model_241122"
-            cellpose_channel: 0  // which channel to segment (0 = DAPI, 1 = first probe, etc.)
-            diameter: 15
+            model_path: "/path/to/your/cellpose_model"
+            cellpose_channel: 0  // 0 = DAPI, 1 = second channel, etc.
+            diameter: 15         // expected cell diameter in pixels
             gpu: true
             flow_threshold: 0.5
             cellprob_threshold: -0.5
         }
 
-        // --- 2P cellpose (2D segmentation on Suite2p mean images) ---
+        // ----- 2P cellpose (2D segmentation on Suite2p mean images) -----
         2p_cellpose: {
-            model_path: "/mnt/nasquatch/data/2p/jonna/EASI_FISH/cellpose_models/Ribo_lowres_model"
+            model_path: "/path/to/your/2p_cellpose_model"
             cellpose_channel: 0
-            diameter: 7
+            diameter: 7          // typically smaller than HCR (lower magnification)
             gpu: true
             flow_threshold: 0
             cellprob_threshold: -1
         }
 
-        // --- HCR probe intensity extraction ---
+        // ----- HCR probe intensity extraction -----
         intensity_extraction: {
-            neuropil_radius: 50
-            neuropil_boundary: 1
+            neuropil_radius: 50        // neuropil ring radius (px) around each cell
+            neuropil_boundary: 1       // gap (px) between cell border and neuropil ring
             neuropil_pooling: ["mean", "median", "percentile-20"]
-            stack_median_filter: [3, 3, 3]
+            stack_median_filter: [3, 3, 3]  // [x, y, z] smoothing before extraction
         }
 
-        // --- Automation (optional, defaults to manual for all) ---
+        // ----- Automation (optional, all default to "manual") -----
         // automation: {
-        //     twop_to_hcr: "manual"      // "auto" = automated refinement (still needs landmarks)
-        //     lowres_to_hires: "manual"   // "auto" = SIFT + RANSAC instead of BigWarp landmarks
+        //     twop_to_hcr: "manual"      // "auto" = automated refinement (still needs initial landmarks)
+        //     lowres_to_hires: "manual"   // "auto" = SIFT + RANSAC (no BigWarp needed)
         //     stitching: "manual"         // "auto" = SIFT + phase correlation
         // }
 
-        // --- HCR registration selections (populated during interactive registration step) ---
+        // ----- HCR registration selections -----
+        // Populated during the interactive registration step. Leave commented until then.
         // HCR_selected_registrations: {
         //     rounds: [
-        //         { round: "02", selected_registrations: ["local_params_scan_nodeform/..."] }
-        //         { round: "03", selected_registrations: ["local_params_scan_nodeform/..."] }
-        //         { round: "04", selected_registrations: ["local_params_scan_nodeform/..."] }
-        //         { round: "05", selected_registrations: ["local_params_scan_nodeform/..."] }
+        //         { round: "02", selected_registrations: ["path/to/registration"] }
         //     ]
         // }
     }

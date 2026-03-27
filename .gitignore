@@ -7,6 +7,11 @@ __pycache__/
 # Personal/IDE settings
 .vscode/settings.json
 
+# Real experiment manifests (keep only demo*.hjson tracked)
+examples/*.hjson
+!examples/demo*.hjson
+!examples/param_example.hjson
+
 # Claude Code files (local only)
 CLAUDE.MD
 FIGURE_NOTEBOOKS.md
