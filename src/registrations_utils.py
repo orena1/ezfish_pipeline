@@ -2013,6 +2013,19 @@ def run_local_tile_ransac(twop_binary, hcr_3d_bin, z_map, centroids, cell_df,
                 tile_results.append({'cy': tc_y, 'cx': tc_x,
                     'dy': 0, 'dx': 0, 'dz': 0, 'accepted': False})
                 continue
+            # SV check: reject tile affines that imply stretching
+            J = np.array([[A_dy[0], A_dy[1]], [A_dx[0], A_dx[1]]])
+            T = np.eye(2) - J
+            svs = np.linalg.svd(T, compute_uv=False)
+            if not (np.all(svs >= 0.8) and np.all(svs <= 1.2)):
+                # Fall back to median displacement
+                tile_results.append({
+                    'cy': tc_y, 'cx': tc_x,
+                    'dy': float(np.median(in_tile.dy.values)),
+                    'dx': float(np.median(in_tile.dx.values)),
+                    'dz': float(np.median(in_tile.dz.values)),
+                    'accepted': True})
+                continue
             mc = np.array([[tc_y, tc_x, 1]])
             tile_results.append({
                 'cy': tc_y, 'cx': tc_x,
@@ -2029,7 +2042,7 @@ def run_local_tile_ransac(twop_binary, hcr_3d_bin, z_map, centroids, cell_df,
     dx_vals = np.array([t['dx'] for t in accepted])
     dz_vals = np.array([t['dz'] for t in accepted])
 
-    # Border anchor points: pin at edges using nearest accepted tile
+    # Border anchor points with distance-decay toward zero
     s = border_anchor_spacing
     border_pts = []
     for bx in np.arange(0, nx, s):
@@ -2044,11 +2057,14 @@ def run_local_tile_ransac(twop_binary, hcr_3d_bin, z_map, centroids, cell_df,
     nn_dy = NearestNDInterpolator(centers, dy_vals)
     nn_dx = NearestNDInterpolator(centers, dx_vals)
     nn_dz = NearestNDInterpolator(centers, dz_vals)
-    dy_vals = np.concatenate([dy_vals, nn_dy(border_pts)])
-    dx_vals = np.concatenate([dx_vals, nn_dx(border_pts)])
-    dz_vals = np.concatenate([dz_vals, nn_dz(border_pts)])
+    dists = np.min(np.linalg.norm(border_pts[:, None] - centers[None, :], axis=2), axis=1)
+    decay_radius = tile_size * 2.0
+    w = np.clip(1.0 - dists / decay_radius, 0, 1)
+    dy_vals = np.concatenate([dy_vals, nn_dy(border_pts) * w])
+    dx_vals = np.concatenate([dx_vals, nn_dx(border_pts) * w])
+    dz_vals = np.concatenate([dz_vals, nn_dz(border_pts) * w])
     centers = np.vstack([centers, border_pts])
-    print(f"  Border anchors: {n_border} points (spacing={s}px)")
+    print(f"  Border anchors: {n_border} points (spacing={s}px, decay={decay_radius:.0f}px)")
 
     yy, xx = np.mgrid[:ny, :nx]
     pts = np.column_stack([yy.ravel(), xx.ravel()])
