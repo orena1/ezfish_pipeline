@@ -1,15 +1,17 @@
 from collections import defaultdict
 from pathlib import Path
 import shutil
-import cellpose
 from cellpose import models
 from cellpose import io
 
 # Cellpose 3 (cyto/cyto3 U-Net) and cellpose 4 (cellpose-SAM, ViT) share most
 # of the eval signature but differ on `channels` (cp4 is single-channel by
 # design, no `channels` arg) and on `diameter` (cp4 auto-detects when omitted).
-# Branching once at import time keeps the call sites clean.
-_CP_MAJOR = int(cellpose.__version__.split('.')[0])
+# Branching once at import time keeps the call sites clean. Use
+# importlib.metadata since cellpose 4 doesn't expose `__version__` on the
+# top-level module.
+from importlib.metadata import version as _pkg_version
+_CP_MAJOR = int(_pkg_version('cellpose').split('.')[0])
 import numpy as np
 import pandas as pd
 import scipy.io as sio

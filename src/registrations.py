@@ -1021,6 +1021,27 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
             'dz_cum':      np.zeros((ny_c, nx_c)),
         }
 
+        # ---- CASCADE SNAPSHOTS (for cp4-eval and future regression checks) ----
+        # Captures the alignment state at each named stage so a comparison
+        # notebook can plot IoU progression and spatial IoU heatmaps without
+        # re-running the cascade. baseline/global live in the outer (landmark
+        # bbox) crop; affine and the cascade-tile stages live in the inner
+        # (FOV) crop. frame_meta below records the origins.
+        cascade_snapshots = {
+            'baseline': {'iou': float(iou_baseline),
+                         'twop_labels': twop_labels_crop.astype(np.uint16, copy=True),
+                         'z_map': z_map_baseline.astype(np.float32, copy=True),
+                         'frame': 'outer_crop'},
+            'global':   {'iou': float(iou_global),
+                         'twop_labels': twop_global_labels.astype(np.uint16, copy=True),
+                         'z_map': z_map_global.astype(np.float32, copy=True),
+                         'frame': 'outer_crop'},
+            'affine':   {'iou': float(iou_affine),
+                         'twop_labels': twop_affine_labels.astype(np.uint16, copy=True),
+                         'z_map': z_map_affine.astype(np.float32, copy=True),
+                         'frame': 'inner_crop'},
+        }
+
         df_post_rematch = None  # will be set after first cascade stage
         for _si, tile_size in enumerate(CASCADE_STAGES):
             td = TILE_DEFAULTS[tile_size]
@@ -1115,6 +1136,17 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
             cascade_state['dx_cum'] += dx_inc
             cascade_state['dz_cum'] += dz_inc
 
+            # Snapshot at end of this cascade stage (always recorded, including
+            # the reverted no-op case so cp3↔cp4 comparison can see at which
+            # stages each version stalled or regressed).
+            cascade_snapshots[f'tile_{tile_size}'] = {
+                'iou':         float(cascade_state['iou']),
+                'twop_labels': cascade_state['twop_labels'].astype(np.uint16, copy=True),
+                'z_map':       cascade_state['z_map'].astype(np.float32, copy=True),
+                'frame':       'inner_crop',
+                'tile_size':   int(tile_size),
+            }
+
             # Post-correction re-match: measure actual remaining residuals
             # This feeds accurate adaptive params to the next cascade stage.
             if _si < len(CASCADE_STAGES) - 1:  # no need after last stage
@@ -1135,6 +1167,26 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
 
         iou_final = cascade_state['iou']
         rprint(f"  [bold]Final: IoU {iou_baseline:.3f}→{iou_final:.3f} ({iou_final - iou_baseline:+.3f})[/bold]")
+
+        # ---- SAVE CASCADE SNAPSHOTS ----
+        # Pickled per-stage state for offline analysis (cp3↔cp4 comparison,
+        # regression checks, parameter tuning). Adds ~50-150 MB per plane.
+        import pickle as _pkl
+        snapshots_path = output_root(full_manifest) / '2P' / 'registered' / f'cascade_snapshots_plane{plane}.pkl'
+        snapshots_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(snapshots_path, 'wb') as _f:
+            _pkl.dump({
+                'snapshots': cascade_snapshots,
+                'stages_order': list(cascade_snapshots.keys()),
+                'frame_meta': {
+                    'outer_crop_origin': (int(bb_y0), int(bb_x0)),
+                    'outer_crop_shape': (int(bb_y1 - bb_y0), int(bb_x1 - bb_x0)),
+                    'inner_crop_origin_within_outer': (int(cy0), int(cx0)),
+                    'inner_crop_shape': (int(cy1 - cy0), int(cx1 - cx0)),
+                    'full_hcr_shape': (int(y1), int(x1)),
+                },
+            }, _f)
+        rprint(f"  [dim]Cascade snapshots → {snapshots_path.name}[/dim]")
 
         # ---- UNCROP: Compose displacement fields back to full HCR space ----
         # Total displacement in inner-crop space
