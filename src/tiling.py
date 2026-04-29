@@ -10,7 +10,7 @@ from sbxreader import sbx_get_metadata, sbx_memmap
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imwrite
 from .registrations import verify_rounds
-from .meta import check_rotation, get_automation_config, get_rotation_config, get_stitching_config, parse_json
+from .meta import check_rotation, get_automation_config, get_rotation_config, get_stitching_config, parse_json, output_root
 from .auto_stitching import auto_stitch_tiles, StitchingError
 from skimage.transform import rotate
 
@@ -84,7 +84,7 @@ def unwarp_tiles(full_manifest: dict, session: dict):
     num_tiles = len(session['anatomical_hires_green_runs'])
     tiles_to_unwarp = []
     for i in range(1, 1 + num_tiles):
-        unwarp_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'unwarped' / f'stack_unwarped_C12_{i:03}.tiff'
+        unwarp_path = output_root(full_manifest) / '2P' / 'tile' / 'unwarped' / f'stack_unwarped_C12_{i:03}.tiff'
         if not os.path.exists(unwarp_path):
             tiles_to_unwarp.append(i)
 
@@ -94,8 +94,8 @@ def unwarp_tiles(full_manifest: dict, session: dict):
 
     print(f'Unwarping {len(tiles_to_unwarp)}/{num_tiles} tiles for session {session["date"]}')
     for i in tiles_to_unwarp:
-        warp_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'warped' / f'stack_warped_C12_{i:03}.tiff'
-        unwarp_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'unwarped' / f'stack_unwarped_C12_{i:03}.tiff'
+        warp_path = output_root(full_manifest) / '2P' / 'tile' / 'warped' / f'stack_warped_C12_{i:03}.tiff'
+        unwarp_path = output_root(full_manifest) / '2P' / 'tile' / 'unwarped' / f'stack_unwarped_C12_{i:03}.tiff'
         unwarp_path.parent.mkdir(exist_ok=True, parents=True)
         unwarp_tile(warp_path,
                     session['unwarp_config'],
@@ -148,7 +148,7 @@ def process_session_sbx(full_manifest: dict , session:dict):
         return
 
     base_2P = Path(manifest['base_path']) / manifest['mouse_name'] / '2P'
-    save_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'warped'
+    save_path = output_root(full_manifest) / '2P' / 'tile' / 'warped'
     mouse_name = manifest['mouse_name']
     date = session['date']
 
@@ -217,10 +217,10 @@ def stitch_tiles_and_rotate(full_manifest: dict, session: dict):
     # Full stitched volume (Z,C,Y,X) — plane-neutral name so subsequent
     # functional planes short-circuit auto_stitch_tiles instead of re-writing
     # the identical stack under a different filename.
-    stitched_file  = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'stitched' / 'hires_stitched.tiff'
-    tile_base_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile'
+    stitched_file  = output_root(full_manifest) / '2P' / 'tile' / 'stitched' / 'hires_stitched.tiff'
+    tile_base_path = output_root(full_manifest) / '2P' / 'tile'
     unwarped_path = tile_base_path / 'unwarped'
-    save_path_registered = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered'
+    save_path_registered = output_root(full_manifest) / '2P' / 'registered'
     save_path_registered.mkdir(exist_ok=True, parents=True)
     stitched_file.parent.mkdir(exist_ok=True, parents=True)
 

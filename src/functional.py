@@ -5,7 +5,7 @@ from rich import print as rprint
 from rich.progress import track
 from skimage.transform import rotate
 from .registrations import verify_rounds
-from .meta import check_rotation, get_rotation_config, parse_json
+from .meta import check_rotation, get_rotation_config, parse_json, output_root
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imwrite
 from sbxreader import sbx_get_metadata, sbx_memmap
@@ -73,8 +73,8 @@ def prepare_tiff_input(full_manifest: dict, session: dict):
 
     src_path = base_path / mouse_name / '2P' / f'plane_{functional_plane}.tiff'
     hires_src = base_path / mouse_name / '2P' / f'plane_{functional_plane}_hires.tiff'
-    save_path = base_path / mouse_name / 'OUTPUT' / '2P' / 'cellpose'
-    save_path_registered = base_path / mouse_name / 'OUTPUT' / '2P' / 'registered'
+    save_path = output_root(full_manifest) / '2P' / 'cellpose'
+    save_path_registered = output_root(full_manifest) / '2P' / 'registered'
     save_path.mkdir(exist_ok=True, parents=True)
     save_path_registered.mkdir(exist_ok=True, parents=True)
 
@@ -132,8 +132,8 @@ def prepare_suite2p_input(full_manifest: dict, session: dict):
     functional_plane = int(session['functional_plane'][0])
 
     suite2p_path = base_path / mouse_name / '2P' / 'suite2p'
-    save_path = base_path / mouse_name / 'OUTPUT' / '2P' / 'cellpose'
-    save_path_registered = base_path / mouse_name / 'OUTPUT' / '2P' / 'registered'
+    save_path = output_root(full_manifest) / '2P' / 'cellpose'
+    save_path_registered = output_root(full_manifest) / '2P' / 'registered'
     save_path.mkdir(exist_ok=True, parents=True)
     save_path_registered.mkdir(exist_ok=True, parents=True)
 
@@ -235,8 +235,8 @@ def extract_suite2p_registered_planes(full_manifest: dict , session: dict, combi
     base_path = Path(manifest['base_path'])
 
     suite2p_path = base_path / mouse_name / '2P' /  f'{mouse_name}_{date}_{suite2p_run}' / 'suite2p'
-    save_path = base_path / mouse_name / 'OUTPUT' / '2P' / 'cellpose'
-    save_path_registered = base_path / mouse_name / 'OUTPUT' / '2P' / 'registered'
+    save_path = output_root(full_manifest) / '2P' / 'cellpose'
+    save_path_registered = output_root(full_manifest) / '2P' / 'registered'
 
     save_path.mkdir(exist_ok=True, parents=True)
     save_path_registered.mkdir(exist_ok=True, parents=True)

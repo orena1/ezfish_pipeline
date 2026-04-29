@@ -57,6 +57,8 @@ sys.path = ["/mnt/nasquatch/data/2p/jonna/Code_Python/Notebooks_Jonna/BigStream/
 
 from bigstream.piecewise_transform import distributed_apply_transform
 
+from .meta import output_root
+
 
 def _resolve_hcr_path(expected_path: Path) -> Path:
     """Resolve an HCR TIFF path with case-insensitive and extension-flexible matching.
@@ -136,8 +138,8 @@ def registration_apply(full_manifest):
 
         round_folder_name = f"HCR{HCR_round_to_register}_to_HCR{reference_round['round']}"
 
-        reg_path =  Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'registrations'/ round_folder_name / round_to_rounds[HCR_round_to_register]['registrations'][0]
-        full_stack_path =  Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
+        reg_path =  output_root(full_manifest) / 'HCR' / 'registrations'/ round_folder_name / round_to_rounds[HCR_round_to_register]['registrations'][0]
+        full_stack_path =  output_root(full_manifest) / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
         if full_stack_path.exists():
             continue
         full_stack_path.parent.mkdir(exist_ok=True, parents=True)
@@ -218,7 +220,7 @@ def registration_apply(full_manifest):
         tif_imwrite(full_stack_path, full_stack.transpose(3, 0, 2, 1), imagej=True, metadata={'axes': 'ZCYX'})
 
     # Now let's also copy the reference_round to the full_registered_stacks folder
-    reference_round_full_stack_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
+    reference_round_full_stack_path = output_root(full_manifest) / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
     if not reference_round_full_stack_path.exists():
         shutil.copyfile(HCR_fix_image_path, reference_round_full_stack_path)
             
@@ -255,7 +257,7 @@ def verify_rounds(full_manifest, parse_registered = False, print_rounds = False,
         txt_to_rich = f"[green]Rounds available for {func} [/green]:"
         for i in selected_registrations['HCR_selected_registrations']['rounds']:
             assert i['round'] in round_to_rounds, f"Round {i['round']} not defined in manifest!"
-            selected_registration_path =  Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'registrations'/ f"HCR{i['round']}_to_HCR{reference_round_number}" / i['selected_registrations'][0]
+            selected_registration_path =  output_root(full_manifest) / 'HCR' / 'registrations'/ f"HCR{i['round']}_to_HCR{reference_round_number}" / i['selected_registrations'][0]
             assert os.path.exists(selected_registration_path), f"Registration {selected_registration_path} not found although it exists in the manifest params"
 
             round_to_rounds[i['round']]['registrations'] = i['selected_registrations']
@@ -276,7 +278,7 @@ def register_rounds(full_manifest):
     # If only one round (reference), nothing to register — just copy reference and return
     if len(round_to_rounds) == 0:
         rprint("\n[bold cyan]Only one HCR round — skipping round-to-round registration[/bold cyan]")
-        reference_round_full_stack_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
+        reference_round_full_stack_path = output_root(full_manifest) / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
         reference_round_full_stack_path.parent.mkdir(parents=True, exist_ok=True)
         if not reference_round_full_stack_path.exists():
             shutil.copyfile(reference_round['image_path'], reference_round_full_stack_path)
@@ -291,7 +293,7 @@ def register_rounds(full_manifest):
     rprint("Registration process uses step-by-step jupyter notebooks\n")
 
     # Ensure reference round is copied in case user has only Rounds = 1
-    reference_round_full_stack_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
+    reference_round_full_stack_path = output_root(full_manifest) / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
     if not reference_round_full_stack_path.exists():
         reference_round_full_stack_path.parent.mkdir(parents=True, exist_ok=True)
         rprint(f"[yellow]Copying reference round {reference_round['round']} to full_registered_stacks[/yellow]")
@@ -368,7 +370,7 @@ def create_rotated_masks_for_standard_mode(full_manifest, session):
 
     for plane_idx in all_planes:
         plane_idx = int(plane_idx)
-        masks_path = base_path / mouse / 'OUTPUT' / '2P' / 'cellpose' / f'lowres_meanImg_C0_plane{plane_idx}_seg.npy'
+        masks_path = output_root(full_manifest) / '2P' / 'cellpose' / f'lowres_meanImg_C0_plane{plane_idx}_seg.npy'
         if not masks_path.exists():
             rprint(f"  [yellow]Plane {plane_idx}: masks not found, skipping[/yellow]")
             continue
@@ -382,7 +384,7 @@ def create_rotated_masks_for_standard_mode(full_manifest, session):
         if flip_ud:
             masks = np.flipud(masks)
 
-        output_path = base_path / mouse / 'OUTPUT' / '2P' / 'cellpose' / f'lowres_meanImg_C0_plane{plane_idx}_seg_rotated.tiff'
+        output_path = output_root(full_manifest) / '2P' / 'cellpose' / f'lowres_meanImg_C0_plane{plane_idx}_seg_rotated.tiff'
         tif_imwrite(str(output_path), masks.astype(np.uint16))
         rprint(f"  Plane {plane_idx}: saved rotated masks")
 
@@ -435,7 +437,7 @@ def register_lowres_to_hires(full_manifest, session):
         TARGET_PLANES = [REFERENCE_PLANE] + ADDITIONAL_PLANES
 
     # Output directories
-    output_dir = base_path / mouse / 'OUTPUT' / '2P' / 'registered'
+    output_dir = output_root(full_manifest) / '2P' / 'registered'
     qa_dir = output_dir / 'QualityCheck' / 'lowres_to_hires'
     qa_dir.mkdir(parents=True, exist_ok=True)
 
@@ -453,13 +455,13 @@ def register_lowres_to_hires(full_manifest, session):
 
         # --- LOAD IMAGES ---
         # Low-res: rotated mean image from Suite2p
-        lowres_img_path = base_path / mouse / 'OUTPUT' / '2P' / 'registered' / f'lowres_meanImg_C0_plane{plane_idx}_rotated.tiff'
+        lowres_img_path = output_root(full_manifest) / '2P' / 'registered' / f'lowres_meanImg_C0_plane{plane_idx}_rotated.tiff'
 
         # High-res: rotated stitched image (use mean projection of channel 0)
-        hires_img_path = base_path / mouse / 'OUTPUT' / '2P' / 'registered' / f'hires_stitched_plane{plane_idx}_rotated.tiff'
+        hires_img_path = output_root(full_manifest) / '2P' / 'registered' / f'hires_stitched_plane{plane_idx}_rotated.tiff'
 
         # Low-res masks: cellpose output (before rotation)
-        lowres_masks_path = base_path / mouse / 'OUTPUT' / '2P' / 'cellpose' / f'lowres_meanImg_C0_plane{plane_idx}_seg.npy'
+        lowres_masks_path = output_root(full_manifest) / '2P' / 'cellpose' / f'lowres_meanImg_C0_plane{plane_idx}_seg.npy'
 
         # Check files exist
         missing = []
@@ -493,7 +495,7 @@ def register_lowres_to_hires(full_manifest, session):
             lowres_masks = np.flipud(lowres_masks)
 
         # Save rotated masks as TIFF (same location as landmark path uses)
-        rotated_masks_path = base_path / mouse / 'OUTPUT' / '2P' / 'cellpose' / f'lowres_meanImg_C0_plane{plane_idx}_seg_rotated.tiff'
+        rotated_masks_path = output_root(full_manifest) / '2P' / 'cellpose' / f'lowres_meanImg_C0_plane{plane_idx}_seg_rotated.tiff'
         tif_imwrite(str(rotated_masks_path), lowres_masks.astype(np.uint16))
 
         # Extract 2D from high-res (could be ZCYX or CYX)
@@ -713,7 +715,7 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
     TARGET_PLANES = [CURRENT_PLANE]  # Process only the current plane per call
 
     # Check existing outputs and prompt user for each plane
-    output_dir = base_path / mouse / 'OUTPUT' / '2P' / 'registered'
+    output_dir = output_root(full_manifest) / '2P' / 'registered'
     overwrite_state = [None]
     planes_to_process = []
 
@@ -734,22 +736,22 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
                                                                     print_rounds = False, print_registered = False)
 
     # HCR paths
-    hcr_ref_round_path = base_path / mouse / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
-    hcr_ref_masks_path = base_path / mouse / 'OUTPUT' / 'HCR' / 'cellpose' / f"HCR{reference_round['round']}_masks.tiff"
+    hcr_ref_round_path = output_root(full_manifest) / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
+    hcr_ref_masks_path = output_root(full_manifest) / 'HCR' / 'cellpose' / f"HCR{reference_round['round']}_masks.tiff"
 
     # WORKFLOW DETECTION: Choose reference image and landmarks based on has_hires
-    landmarks_dir = base_path / mouse / 'OUTPUT' / '2P' / 'registered'
+    landmarks_dir = output_root(full_manifest) / '2P' / 'registered'
     # Reference round number for file naming (strip leading zeros: "01" -> "1")
     hcr_ref = str(int(reference_round['round']))
 
     if has_hires:
-        twop_ref_image_path = base_path / mouse / 'OUTPUT' / '2P' / 'registered' / f'hires_stitched_plane{REFERENCE_PLANE}_rotated.tiff'
+        twop_ref_image_path = output_root(full_manifest) / '2P' / 'registered' / f'hires_stitched_plane{REFERENCE_PLANE}_rotated.tiff'
         landmarks_path, landmarks_source = auto.find_landmark_file(
             landmarks_dir, REFERENCE_PLANE, prefix="hires_stitched_", hcr_ref=hcr_ref
         )
         rprint(f"[dim]Mode: high-res stitched[/dim]")
     else:
-        twop_ref_image_path = base_path / mouse / 'OUTPUT' / '2P' / 'cellpose' / f'lowres_meanImg_C0_plane{REFERENCE_PLANE}_seg_rotated.tiff'
+        twop_ref_image_path = output_root(full_manifest) / '2P' / 'cellpose' / f'lowres_meanImg_C0_plane{REFERENCE_PLANE}_seg_rotated.tiff'
         landmarks_path, landmarks_source = auto.find_landmark_file(
             landmarks_dir, REFERENCE_PLANE, prefix="", hcr_ref=hcr_ref
         )
@@ -767,7 +769,7 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
         # Build clear instructions telling user which files to open in BigWarp
         if has_hires:
             twop_file = f"hires_stitched_plane{REFERENCE_PLANE}_rotated.tiff"
-            twop_file_path = base_path / mouse / 'OUTPUT' / '2P' / 'registered' / twop_file
+            twop_file_path = output_root(full_manifest) / '2P' / 'registered' / twop_file
             instructions = (
                 f"In BigWarp, open these two images:\n"
                 f"  Moving: {twop_file_path}\n"
@@ -776,7 +778,7 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
             )
         else:
             twop_file = f"lowres_meanImg_C0_plane{REFERENCE_PLANE}_seg_rotated.tiff"
-            twop_file_path = base_path / mouse / 'OUTPUT' / '2P' / 'cellpose' / twop_file
+            twop_file_path = output_root(full_manifest) / '2P' / 'cellpose' / twop_file
             instructions = (
                 f"In BigWarp, open these two images:\n"
                 f"  Moving: {twop_file_path}\n"
@@ -798,7 +800,7 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
     rprint(f"[dim]Using {landmarks_source} landmarks: {landmarks_path.name}[/dim]")
 
     # Create output folders
-    output_folder = base_path / mouse / 'OUTPUT' / 'MERGED' / 'aligned_masks'
+    output_folder = output_root(full_manifest) / 'MERGED' / 'aligned_masks'
     output_folder.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -830,14 +832,14 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
     twop_2d_planes = {}
     for plane in TARGET_PLANES:
         if has_hires:
-            twop_path = base_path / mouse / 'OUTPUT' / '2P' / 'registered' / f'lowres_plane{plane}_masks_in_hires_space.tiff'
+            twop_path = output_root(full_manifest) / '2P' / 'registered' / f'lowres_plane{plane}_masks_in_hires_space.tiff'
             if not twop_path.exists():
                 raise FileNotFoundError(
                     f"High-res transformed masks not found: {twop_path}\n"
                     f"Please ensure register_lowres_to_hires() has completed successfully."
                 )
         else:
-            twop_path = base_path / mouse / 'OUTPUT' / '2P' / 'cellpose' / f'lowres_meanImg_C0_plane{plane}_seg_rotated.tiff'
+            twop_path = output_root(full_manifest) / '2P' / 'cellpose' / f'lowres_meanImg_C0_plane{plane}_seg_rotated.tiff'
         twop_2d_planes[plane] = tif_imread(str(twop_path))
         rprint(f"[dim]  2P masks plane {plane}: shape={twop_2d_planes[plane].shape} (from {twop_path.name})[/dim]")
 
@@ -1199,11 +1201,11 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
         twop_3d[z_coords, yy, xx] = twop_final_labels
 
         # Save the final aligned 3D volume
-        output_path = base_path / mouse / 'OUTPUT' / '2P' / 'registered' / f'twop_plane{plane}_aligned_3d.tiff'
+        output_path = output_root(full_manifest) / '2P' / 'registered' / f'twop_plane{plane}_aligned_3d.tiff'
         tif_imwrite(str(output_path), twop_3d.astype(np.uint16))
 
         # Save QualityCheck overlay TIFFs
-        qa_folder = base_path / mouse / 'OUTPUT' / '2P' / 'registered' / 'QualityCheck'
+        qa_folder = output_root(full_manifest) / '2P' / 'registered' / 'QualityCheck'
         qa_folder.mkdir(parents=True, exist_ok=True)
 
         hcr_baseline_full = sample_hcr_binary_at_zmap(hcr_ref_masks > 0, z_map_base_full)
@@ -1253,7 +1255,7 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
                     overlay_after_es, imagej=True, metadata={'axes': 'CYX'})
 
         # --- SAVE REGISTRATION PARAMS ---
-        params_path = base_path / mouse / 'OUTPUT' / '2P' / 'registered' / f'twop_plane{plane}_registration_params.npz'
+        params_path = output_root(full_manifest) / '2P' / 'registered' / f'twop_plane{plane}_registration_params.npz'
         params_path.parent.mkdir(parents=True, exist_ok=True)
         import io as _io
         buf = _io.BytesIO()

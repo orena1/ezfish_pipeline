@@ -19,7 +19,7 @@ from scipy.spatial import ConvexHull
 from scipy.interpolate import LinearNDInterpolator
 from .registrations import verify_rounds
 from .functional import get_number_of_suite2p_planes
-from .meta import get_intensity_extraction_config, get_round_folder_name
+from .meta import get_intensity_extraction_config, get_round_folder_name, output_root
 
 
 
@@ -102,7 +102,7 @@ def run_cellpose(full_manifest):
     to_process = []
     for HCR_round_to_register in all_rounds:
         round_folder_name = get_round_folder_name(HCR_round_to_register, reference_round['round'])
-        output_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
+        output_path = output_root(full_manifest) / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
         if output_path.exists():
             skipped.append(round_folder_name)
         else:
@@ -117,8 +117,8 @@ def run_cellpose(full_manifest):
     model_wrapper = CellposeModelWrapper(params)
 
     for HCR_round_to_register, round_folder_name in tqdm(to_process, desc="HCR cellpose"):
-        full_stack_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
-        output_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
+        full_stack_path = output_root(full_manifest) / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
+        output_path = output_root(full_manifest) / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         raw_image = tif_imread(full_stack_path)
@@ -163,7 +163,7 @@ def run_cellpose_2p(tiff_path: Path, output_path: Path, cellpose_params: dict):
 def extract_2p_cellpose_masks(full_manifest: dict, session: dict):
     manifest = full_manifest['data']
     params = full_manifest['params']
-    cellpose_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'cellpose'
+    cellpose_path = output_root(full_manifest) / '2P' / 'cellpose'
 
     # Get the current plane being processed
     current_plane = session['functional_plane'][0]
@@ -313,7 +313,7 @@ def extract_probs_intensities(full_manifest):
             channels_names = reference_round['channels']
         else:
             channels_names = round_to_rounds[HCR_round_to_register]['channels']
-        output_folder = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'extract_intensities'
+        output_folder = output_root(full_manifest) / 'HCR' / 'extract_intensities'
         pkl_output_path = output_folder / f"{round_folder_name}_probs_intensities.pkl"
         if not pkl_output_path.exists():
             to_process.append((HCR_round_to_register, round_folder_name, channels_names))
@@ -328,7 +328,7 @@ def extract_probs_intensities(full_manifest):
     # Pre-flight: check TIFF channel count vs manifest for all rounds (metadata-only, cheap)
     mismatches = []
     for _, round_folder_name, channels_names in to_process:
-        stack_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
+        stack_path = output_root(full_manifest) / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
         with TiffFile(stack_path) as tf:
             n_ch = tf.series[0].shape[1]
         if n_ch != len(channels_names):
@@ -354,9 +354,9 @@ def extract_probs_intensities(full_manifest):
         median_filter = np.ones((median_filter_config[0], 1, median_filter_config[1], median_filter_config[2]))
 
     for HCR_round_to_register, round_folder_name, channels_names in to_process:
-        full_stack_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
-        full_stack_masks_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
-        output_folder = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'extract_intensities'
+        full_stack_path = output_root(full_manifest) / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
+        full_stack_masks_path = output_root(full_manifest) / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
+        output_folder = output_root(full_manifest) / 'HCR' / 'extract_intensities'
         output_folder.mkdir(parents=True, exist_ok=True)
         csv_output_path = output_folder / f"{round_folder_name}_probs_intensities.csv"
         pkl_output_path = output_folder / f"{round_folder_name}_probs_intensities.pkl"
@@ -457,8 +457,8 @@ def extract_electrophysiology_intensities(full_manifest: dict , session: dict):
     suite2p_run = session['functional_run'][0]
 
     suite2p_path = Path(manifest['base_path']) / manifest['mouse_name'] / '2P' /  f'{mouse_name}_{date}_{suite2p_run}' / 'suite2p'
-    save_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'suite2p'
-    cellpose_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'cellpose'
+    save_path = output_root(full_manifest) / '2P' / 'suite2p'
+    cellpose_path = output_root(full_manifest) / '2P' / 'cellpose'
     save_path.mkdir(exist_ok=True, parents=True)
     functional_plane = session['functional_plane'][0]
 
@@ -818,10 +818,10 @@ def align_masks(full_manifest: dict,
     round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered = True, 
                                                                     print_rounds = False, print_registered = False)
     
-    reference_round_tiff = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
-    reference_round_masks = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'cellpose' / f"HCR{reference_round['round']}_masks.tiff"
+    reference_round_tiff = output_root(full_manifest) / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
+    reference_round_masks = output_root(full_manifest) / 'HCR' / 'cellpose' / f"HCR{reference_round['round']}_masks.tiff"
 
-    output_folder = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'MERGED' / 'aligned_masks'
+    output_folder = output_root(full_manifest) / 'MERGED' / 'aligned_masks'
     output_folder.mkdir(parents=True, exist_ok=True)
 
     # Collect matching results for summary
@@ -833,7 +833,7 @@ def align_masks(full_manifest: dict,
         for HCR_round_to_register in register_rounds:
             round_folder_name = get_round_folder_name(HCR_round_to_register, reference_round['round'])
 
-            mov_stack_masks = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
+            mov_stack_masks = output_root(full_manifest) / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
 
             save_path = output_folder / f"{round_folder_name}.csv"
             if save_path.exists():
@@ -870,7 +870,7 @@ def align_masks(full_manifest: dict,
     rprint("="*80)
 
     plane = session['functional_plane'][0]
-    reg_save_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered'
+    reg_save_path = output_root(full_manifest) / '2P' / 'registered'
 
     # Use automated registration output (3D volume from twop_to_hcr_registration)
     masks_2p_aligned_3d_path = reg_save_path / f'twop_plane{plane}_aligned_3d.tiff'
@@ -928,9 +928,9 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
 
     round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered = True, 
                                                                     print_rounds = False, print_registered = False)
-    HCR_intensities_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'extract_intensities'
-    HCR_mapping_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'MERGED' / 'aligned_masks'
-    merged_table_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'MERGED' / 'aligned_extracted_features'
+    HCR_intensities_path = output_root(full_manifest) / 'HCR' / 'extract_intensities'
+    HCR_mapping_path = output_root(full_manifest) / 'MERGED' / 'aligned_masks'
+    merged_table_path = output_root(full_manifest) / 'MERGED' / 'aligned_extracted_features'
     merged_table_path.mkdir(parents=True, exist_ok=True)
     
     # Check if median filter was applied

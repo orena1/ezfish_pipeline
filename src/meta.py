@@ -12,6 +12,18 @@ def parse_json(json_file):
     """
     with open(json_file, 'r') as f:
         return hjson.load(f)
+
+
+def output_root(full_manifest) -> Path:
+    """Pipeline OUTPUT directory: base_path / mouse_name / OUTPUT{output_dir_suffix}.
+
+    Honors params.output_dir_suffix so cp4-eval (or any future what-if run) can
+    write to OUTPUT_cp4/ without overwriting the cp3 OUTPUT/ baseline. Default
+    suffix is empty, preserving existing behavior for every existing manifest.
+    """
+    data = full_manifest['data']
+    suffix = full_manifest.get('params', {}).get('output_dir_suffix', '')
+    return Path(data['base_path']) / data['mouse_name'] / f'OUTPUT{suffix}'
     
 def user_input_missing(check_results, message, color):
     if  (np.array(check_results)[:,1]==False).any():
