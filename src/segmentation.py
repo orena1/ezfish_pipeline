@@ -110,7 +110,7 @@ class CellposeModelWrapper:
         self.params = params
         self.model = None
 
-    def eval(self, raw_image):
+    def eval(self, raw_image, progress=None):
         if self.model is None:
             # Use cached model (optimization: reuse across pipeline)
             self.model = _get_cached_cellpose_model(
@@ -118,10 +118,10 @@ class CellposeModelWrapper:
                 self.params['HCR_cellpose']['gpu']
             )
 
-        return self.model.eval(
-            raw_image,
-            **_eval_kwargs(self.params['HCR_cellpose'], do_3D=True),
-        )
+        kw = _eval_kwargs(self.params['HCR_cellpose'], do_3D=True)
+        if progress is not None:
+            kw['progress'] = progress
+        return self.model.eval(raw_image, **kw)
 
 def run_cellpose(full_manifest):
     manifest = full_manifest['data']
@@ -153,21 +153,22 @@ def run_cellpose(full_manifest):
     model_wrapper = CellposeModelWrapper(params)
 
     # Disable the outer round-counter bar when there's only one round to process
-    # (cellpose itself prints per-slice progress during 3D inference, so the
-    # 0/1→1/1 round counter is just noise in the single-round case).
+    # (the per-slice intra-round bar below is more useful in that case).
     iterator = tqdm(to_process, desc="HCR cellpose", disable=len(to_process) <= 1)
     for HCR_round_to_register, round_folder_name in iterator:
         full_stack_path = output_root(full_manifest) / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
         output_path = output_root(full_manifest) / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if len(to_process) == 1:
-            rprint(f"  [dim]Cellpose on {round_folder_name}...[/dim]")
-
         raw_image = tif_imread(full_stack_path)
         cellpose_input = raw_image[:, cellpose_channel_index, :, :]
 
-        masks, _, _ = model_wrapper.eval(cellpose_input)
+        # Per-slice progress bar (cellpose ticks once per Z-slice during 3D
+        # inference). Useful for big HCR stacks that take 10s of minutes.
+        nz = cellpose_input.shape[0]
+        with tqdm(total=nz, desc=f"  {round_folder_name} (cellpose-SAM)",
+                  unit="slice", leave=False) as pb:
+            masks, _, _ = model_wrapper.eval(cellpose_input, progress=pb)
         tif_imsave(output_path, masks)
 
 def run_cellpose_2p(tiff_path: Path, output_path: Path, cellpose_params: dict):
