@@ -79,12 +79,18 @@ def _eval_kwargs(cellpose_params: dict, do_3D: bool) -> dict:
     cp3: passes `channels=[0,0]` (DAPI-only grayscale) and `diameter` always.
     cp4: drops `channels` (single-channel by SAM design); `diameter` is
          passed only when set (None / null in manifest = auto-detect).
+    Both: when `do_3D=True`, pass `z_axis=0`. cp3 inferred this from the
+    image shape, but cp4 raises ValueError if z_axis is omitted on a 3D
+    array. The HCR pipeline always feeds a (Z, Y, X) array so z_axis=0 is
+    correct in both versions.
     """
     kw = dict(
         flow_threshold=cellpose_params['flow_threshold'],
         cellprob_threshold=cellpose_params['cellprob_threshold'],
         do_3D=do_3D,
     )
+    if do_3D:
+        kw['z_axis'] = 0
     diameter = cellpose_params.get('diameter')
     if diameter is not None:
         kw['diameter'] = diameter
