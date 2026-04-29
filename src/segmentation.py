@@ -1,8 +1,15 @@
 from collections import defaultdict
 from pathlib import Path
 import shutil
+import cellpose
 from cellpose import models
 from cellpose import io
+
+# Cellpose 3 (cyto/cyto3 U-Net) and cellpose 4 (cellpose-SAM, ViT) share most
+# of the eval signature but differ on `channels` (cp4 is single-channel by
+# design, no `channels` arg) and on `diameter` (cp4 auto-detects when omitted).
+# Branching once at import time keeps the call sites clean.
+_CP_MAJOR = int(cellpose.__version__.split('.')[0])
 import numpy as np
 import pandas as pd
 import scipy.io as sio
@@ -49,7 +56,12 @@ def _apply_neuropil_pooling(pooling_method: str, values: np.ndarray) -> np.ndarr
         raise ValueError(f"Unsupported pooling method: {pooling_method}")
 
 def _get_cached_cellpose_model(model_path: str, gpu: bool):
-    """Get or create a cached Cellpose model instance."""
+    """Get or create a cached Cellpose model instance.
+
+    Works for both cp3 (custom cyto-style checkpoint paths) and cp4
+    (`pretrained_model='cpsam'` for the SAM generalist, or a path to a
+    fine-tuned cpsam checkpoint).
+    """
     cache_key = (model_path, gpu)
     if cache_key not in _cellpose_model_cache:
         _cellpose_model_cache[cache_key] = models.CellposeModel(
@@ -57,6 +69,26 @@ def _get_cached_cellpose_model(model_path: str, gpu: bool):
             gpu=gpu
         )
     return _cellpose_model_cache[cache_key]
+
+
+def _eval_kwargs(cellpose_params: dict, do_3D: bool) -> dict:
+    """Build kwargs for `model.eval()` that work on both cellpose 3 and 4.
+
+    cp3: passes `channels=[0,0]` (DAPI-only grayscale) and `diameter` always.
+    cp4: drops `channels` (single-channel by SAM design); `diameter` is
+         passed only when set (None / null in manifest = auto-detect).
+    """
+    kw = dict(
+        flow_threshold=cellpose_params['flow_threshold'],
+        cellprob_threshold=cellpose_params['cellprob_threshold'],
+        do_3D=do_3D,
+    )
+    diameter = cellpose_params.get('diameter')
+    if diameter is not None:
+        kw['diameter'] = diameter
+    if _CP_MAJOR < 4:
+        kw['channels'] = [0, 0]
+    return kw
 
 # CellposeModelWrapper class
 # This class encapsulates the Cellpose model and its configuration.
@@ -80,11 +112,7 @@ class CellposeModelWrapper:
 
         return self.model.eval(
             raw_image,
-            channels=[0,0],
-            diameter=self.params['HCR_cellpose']['diameter'],
-            flow_threshold=self.params['HCR_cellpose']['flow_threshold'],
-            cellprob_threshold=self.params['HCR_cellpose']['cellprob_threshold'],
-            do_3D=True,
+            **_eval_kwargs(self.params['HCR_cellpose'], do_3D=True),
         )
 
 def run_cellpose(full_manifest):
@@ -143,11 +171,7 @@ def run_cellpose_2p(tiff_path: Path, output_path: Path, cellpose_params: dict):
 
     masks, flows, styles = model.eval(
         raw_image,
-        channels=[0, 0],
-        diameter=cellpose_params['diameter'],
-        flow_threshold=cellpose_params['flow_threshold'],
-        cellprob_threshold=cellpose_params['cellprob_threshold'],
-        do_3D=False,
+        **_eval_kwargs(cellpose_params, do_3D=False),
     )
 
     io.masks_flows_to_seg(raw_image, masks, flows, str(tiff_path.parent / tiff_path.stem), channels=[0,0])
