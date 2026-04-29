@@ -12,6 +12,7 @@ from suite2p.io import binary
 from scipy.sparse import csr_matrix
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imsave
+from tifffile import TiffFile
 from tqdm.auto import tqdm
 from rich import print as rprint
 from scipy.spatial import ConvexHull
@@ -178,11 +179,23 @@ def extract_2p_cellpose_masks(full_manifest: dict, session: dict):
         rprint(f"[bold]Running Cellpose on 2P plane {current_plane}[/bold]")
         run_cellpose_2p(tiff_path, twop_cellpose_file, params['2p_cellpose'])
 
-    rprint(f"\n[bold]Verify 2P cellpose segmentation for plane {current_plane}:[/bold]")
-    rprint(f"  File: [yellow]{twop_cellpose_file}[/yellow]")
-    rprint("\nPress [green]Enter[/green] to continue...")
+    return twop_cellpose_file
+
+
+def verify_2p_cellpose_segmentations(seg_files: list):
+    """Single consolidated prompt for verifying 2P cellpose segmentations across all planes.
+
+    Caller passes a list of (plane, seg_file) tuples produced by
+    extract_2p_cellpose_masks; user opens whichever planes need editing in the
+    Cellpose GUI, then presses Enter once to continue.
+    """
+    if not seg_files:
+        return
+    rprint("\n[bold]Verify 2P cellpose segmentations:[/bold]")
+    for plane, path in seg_files:
+        rprint(f"  plane {plane}: [yellow]{path}[/yellow]")
+    rprint("\nOpen any plane that needs editing in the Cellpose GUI, then press [green]Enter[/green] to continue...")
     input()
-    return 
 
 def compute_M(data):
     cols = np.arange(data.size)
@@ -311,6 +324,17 @@ def extract_probs_intensities(full_manifest):
         return
 
     rprint(f"HCR intensities: extracting {len(to_process)}/{len(all_rounds)} rounds")
+
+    # Pre-flight: check TIFF channel count vs manifest for all rounds (metadata-only, cheap)
+    mismatches = []
+    for _, round_folder_name, channels_names in to_process:
+        stack_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
+        with TiffFile(stack_path) as tf:
+            n_ch = tf.series[0].shape[1]
+        if n_ch != len(channels_names):
+            mismatches.append(f"  {round_folder_name}: TIFF has {n_ch} channels, manifest lists {len(channels_names)} ({channels_names})")
+    if mismatches:
+        raise ValueError("HCR channel-count mismatch (fix manifest channel list or re-register stack):\n" + "\n".join(mismatches))
 
     # neuropil parameters
     intensity_config = get_intensity_extraction_config(params)

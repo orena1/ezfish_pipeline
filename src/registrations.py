@@ -295,7 +295,7 @@ def register_rounds(full_manifest):
     if not reference_round_full_stack_path.exists():
         reference_round_full_stack_path.parent.mkdir(parents=True, exist_ok=True)
         rprint(f"[yellow]Copying reference round {reference_round['round']} to full_registered_stacks[/yellow]")
-        shutil.copy(reference_round['image_path'], reference_round_full_stack_path)
+        shutil.copyfile(reference_round['image_path'], reference_round_full_stack_path)
         rprint(f"[green]✓ Reference round HCR{reference_round['round']} ready in full_registered_stacks[/green]")
 
 
@@ -534,36 +534,71 @@ def register_lowres_to_hires(full_manifest, session):
         tif_imwrite(str(output_masks_path), hires_masks.astype(np.uint16))
 
         # --- TILE-BASED REFINEMENT ---
-        # Optimized parameters from notebook testing (tests/lowres_hires_registration_test.ipynb)
-        # Key finding: direct per-tile corrections outperform griddata interpolation (+7% NCC)
+        # Tiles cover only the lores FOV region (not the full hires canvas).
+        # At high scale factors (>3x), lores covers only a fraction of the hires
+        # stitched image. Tiling the full hires wastes tiles on empty regions.
         tile_refinement_enabled = sift_config.get('tile_refinement', True)
         lowres_final = lowres_aligned  # Default to global-only if tile refinement disabled/fails
 
         if tile_refinement_enabled:
             scale_factor = hires_2d.shape[0] / lowres_2d.shape[0]
-            tile_size_hires = int(300 * scale_factor)  # 300px in lowres space
 
-            # Best parameters from notebook testing (tests/lowres_hires_registration_test.ipynb)
-            # Best by Quality Rate: ratio=0.8, ransac=5.0, min_matches=3, feat_size=8, spatial=0
+            # Adaptive tile size: smaller tiles for higher scale factors
+            # At 2x scale, 300px lores = 600px hires tiles (original behavior)
+            # At 4.5x scale, 100px lores = 454px hires tiles (finer granularity needed)
+            tile_size_lores = 300 if scale_factor < 3.0 else 100
+            tile_size_hires = int(tile_size_lores * scale_factor)
+
             tile_config = {
                 'tile_size': tile_size_hires, 'tile_overlap': 0.3, 'blend_width': 10, 'max_shift': 40,
                 'n_features': 100, 'min_matches': 3, 'ratio_threshold': 0.8, 'ransac_reproj_threshold': 5.0,
-                'min_feature_size': 8, 'max_spatial_distance': 0,  # 0 = no spatial limit (best results)
-                'percentile_norm': (2, 98),  # Percentile-based normalization for feature detection
-                'require_ncc_improvement': True, 'min_overlap_fraction': 0.5,
+                'min_feature_size': 8, 'max_spatial_distance': 0,
+                'percentile_norm': (2, 98),
+                'require_ncc_improvement': False, 'min_overlap_fraction': 0.3,
             }
 
-            hires_masks_refined, lowres_refined, tile_info = refine_lowres_to_hires_with_tiles(
-                lowres_aligned, hires_2d, hires_masks, config=tile_config
+            # Find where lores content sits in hires space via the global affine
+            M = np.array(transform_params['affine_matrix'])
+            lr_h, lr_w = lowres_2d.shape
+            hr_h, hr_w = hires_2d.shape
+            sx_up, sy_up = hr_w / lr_w, hr_h / lr_h  # upsampling factors
+
+            corners_up = np.array([
+                [0, 0], [lr_w * sx_up, 0],
+                [0, lr_h * sy_up], [lr_w * sx_up, lr_h * sy_up]
+            ], dtype=np.float64)
+            corners_hr = np.zeros_like(corners_up)
+            for ci in range(4):
+                px, py = corners_up[ci]
+                corners_hr[ci, 0] = M[0, 0] * px + M[0, 1] * py + M[0, 2]
+                corners_hr[ci, 1] = M[1, 0] * px + M[1, 1] * py + M[1, 2]
+
+            lr_y_min = max(0, int(corners_hr[:, 1].min()))
+            lr_y_max = min(hr_h, int(corners_hr[:, 1].max()))
+            lr_x_min = max(0, int(corners_hr[:, 0].min()))
+            lr_x_max = min(hr_w, int(corners_hr[:, 0].max()))
+
+            coverage = (lr_y_max - lr_y_min) * (lr_x_max - lr_x_min) / (hr_h * hr_w)
+            rprint(f"  [dim]Lores FOV: y=[{lr_y_min},{lr_y_max}] x=[{lr_x_min},{lr_x_max}] ({coverage:.0%} of hires)[/dim]")
+
+            # Crop both images to lores FOV and run tile refinement on the crop
+            lr_crop = lowres_aligned[lr_y_min:lr_y_max, lr_x_min:lr_x_max]
+            hr_crop = hires_2d[lr_y_min:lr_y_max, lr_x_min:lr_x_max]
+            masks_crop = hires_masks[lr_y_min:lr_y_max, lr_x_min:lr_x_max]
+
+            masks_refined_crop, lowres_refined_crop, tile_info = refine_lowres_to_hires_with_tiles(
+                lr_crop, hr_crop, masks_crop, config=tile_config
             )
 
             actual_tiles = [t for t in tile_info if 'cy' in t]
             n_success = sum(1 for t in actual_tiles if t.get('success'))
-            rprint(f"  [dim]Tile refinement: {n_success}/{len(actual_tiles)} tiles[/dim]")
+            rprint(f"  [dim]Tile refinement: {n_success}/{len(actual_tiles)} tiles ({tile_size_lores}px lores tiles)[/dim]")
 
             if n_success >= 1:
-                hires_masks = hires_masks_refined
-                lowres_final = lowres_refined
+                # Put refined crops back into full images
+                hires_masks[lr_y_min:lr_y_max, lr_x_min:lr_x_max] = masks_refined_crop
+                lowres_final = lowres_aligned.copy()
+                lowres_final[lr_y_min:lr_y_max, lr_x_min:lr_x_max] = lowres_refined_crop
                 tif_imwrite(str(output_masks_path), hires_masks.astype(np.uint16))
 
         # Generate separate QA overlay files for easy composite comparison
@@ -1180,6 +1215,42 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
         overlay_after = np.stack([hcr_local.astype(np.uint16), twop_final_binary.astype(np.uint16)], axis=0)
         qa_after_path = qa_folder / f'plane{plane}_AFTER_registration_overlay.tiff'
         tif_imwrite(str(qa_after_path), overlay_after, imagej=True, metadata={'axes': 'CYX'})
+
+        # --- ERODED + EDGE-SMOOTHED QA OVERLAYS ---
+        # Same channels as the baseline overlays (CYX: ch0 HCR, ch1 2P) but
+        # matches the aligner exactly: HCR is eroded in 3D (per-Z slice), then
+        # sampled at the exact z-map Z (z_expand=0, no ±1 max-projection). 2P
+        # is eroded in 2D. Both get a light Gaussian edge-smooth for readability.
+        from scipy.ndimage import gaussian_filter
+        from .registrations_utils import sample_hcr_at_zmap
+
+        def _smooth_binary(mask, sigma=0.8):
+            smoothed = gaussian_filter(mask.astype(np.float32), sigma=sigma)
+            return (smoothed > 0.5).astype(np.uint16)
+
+        hcr_eroded_3d = hcr_ref_masks
+        if EROSION_HCR > 0:
+            hcr_eroded_3d = hcr_ref_masks.copy()
+            for z_idx in range(hcr_eroded_3d.shape[0]):
+                hcr_eroded_3d[z_idx] = erode_labels(hcr_eroded_3d[z_idx], EROSION_HCR)
+
+        hcr_before_lbl = sample_hcr_at_zmap(hcr_eroded_3d, z_map_base_full, z_expand=0)
+        hcr_after_lbl = sample_hcr_at_zmap(hcr_eroded_3d, z_map_local, z_expand=0)
+        twop_before_er = erode_labels(twop_warped, EROSION) if EROSION > 0 else twop_warped
+        twop_after_er = erode_labels(twop_final_labels, EROSION) if EROSION > 0 else twop_final_labels
+
+        overlay_before_es = np.stack([
+            _smooth_binary(hcr_before_lbl > 0),
+            _smooth_binary(twop_before_er > 0),
+        ], axis=0)
+        overlay_after_es = np.stack([
+            _smooth_binary(hcr_after_lbl > 0),
+            _smooth_binary(twop_after_er > 0),
+        ], axis=0)
+        tif_imwrite(str(qa_folder / f'plane{plane}_BEFORE_registration_overlay_eroded_smoothed.tiff'),
+                    overlay_before_es, imagej=True, metadata={'axes': 'CYX'})
+        tif_imwrite(str(qa_folder / f'plane{plane}_AFTER_registration_overlay_eroded_smoothed.tiff'),
+                    overlay_after_es, imagej=True, metadata={'axes': 'CYX'})
 
         # --- SAVE REGISTRATION PARAMS ---
         params_path = base_path / mouse / 'OUTPUT' / '2P' / 'registered' / f'twop_plane{plane}_registration_params.npz'

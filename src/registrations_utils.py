@@ -1126,8 +1126,8 @@ def refine_lowres_to_hires_with_tiles(lowres_aligned, hires_2d, masks, config=No
             scale_y = np.sqrt(b**2 + d**2)
             dx, dy = affine_matrix[0, 2], affine_matrix[1, 2]
 
-            # Reject if scale deviates more than 5% from identity or shift exceeds max
-            scale_ok = (0.95 <= scale_x <= 1.05) and (0.95 <= scale_y <= 1.05)
+            # Reject if scale deviates more than 20% from identity or shift exceeds max
+            scale_ok = (0.80 <= scale_x <= 1.20) and (0.80 <= scale_y <= 1.20)
             shift_ok = (abs(dx) <= max_shift) and (abs(dy) <= max_shift)
 
             if not scale_ok:
@@ -1643,12 +1643,16 @@ def compute_tile_defaults(tile_size):
     For known tile sizes (300, 100, 50), returns v13-validated values.
     For arbitrary sizes, interpolates from observed ratios.
     """
+    # rbf_smoothing=0: RBF interpolates EXACTLY through tile values, so each
+    # tile's center receives the displacement its per-tile IoU check validated.
+    # Nonzero smoothing regresses the tile values toward neighbors, which
+    # silently corrupts well-aligned tiles via votes from elsewhere.
     KNOWN = {
-        300: dict(overlap=0.5, min_cells=8, min_cells_affine=3, rbf_smoothing=50,
+        300: dict(overlap=0.5, min_cells=8, min_cells_affine=3, rbf_smoothing=0,
                   clamp_mult=2.0, border_spacing=120),
-        100: dict(overlap=0.5, min_cells=4, min_cells_affine=3, rbf_smoothing=100,
+        100: dict(overlap=0.5, min_cells=4, min_cells_affine=3, rbf_smoothing=0,
                   clamp_mult=1.5, border_spacing=100),
-        50:  dict(overlap=0.5, min_cells=2, min_cells_affine=3, rbf_smoothing=250,
+        50:  dict(overlap=0.5, min_cells=2, min_cells_affine=3, rbf_smoothing=0,
                   clamp_mult=1.2, border_spacing=50),
     }
     if tile_size in KNOWN:
@@ -1656,12 +1660,11 @@ def compute_tile_defaults(tile_size):
 
     # Auto-compute from ratios observed across known sizes
     min_cells = max(2, min(12, int(tile_size / 37)))
-    rbf_smoothing = max(30, min(500, int(15000 / tile_size)))
     clamp_mult = max(1.1, min(2.5, 1.0 + tile_size / 300))
     border_spacing = max(30, min(200, int(tile_size * 0.35)))
 
     return dict(overlap=0.5, min_cells=min_cells, min_cells_affine=3,
-                rbf_smoothing=rbf_smoothing, clamp_mult=clamp_mult,
+                rbf_smoothing=0, clamp_mult=clamp_mult,
                 border_spacing=border_spacing)
 
 
@@ -1704,7 +1707,8 @@ def compute_adaptive_matching_params(cell_df, tile_size, stage_idx=0,
 
 def find_cell_displacements(twop_binary, twop_labels, hcr_3d_bin, z_map, centroids,
                             patch_radius=60, search_xy=30, search_z=3,
-                            fov_dilation=10, min_peak_ratio=1.3):
+                            fov_dilation=10, min_peak_ratio=1.3,
+                            edge_margin=None):
     """Find (dy, dx, dz) per 2P cell via FFT-IoU on binary patches.
 
     For each cell:
@@ -1740,11 +1744,34 @@ def find_cell_displacements(twop_binary, twop_labels, hcr_3d_bin, z_map, centroi
         hcr_slices[dz] = sample_hcr_binary_at_zmap(hcr_3d_bin, z_map, z_offset=dz)
     print(f"  Pre-sampled {len(hcr_slices)} HCR Z-slices in {time.time() - t0:.1f}s")
 
-    fov_dilated = binary_dilation(twop_binary, iterations=fov_dilation)
-
-    # Search radius: must fit within patch
+    # FIX 1: dilate the FOV mask so the matcher always has real HCR to score
+    # against, even at maximum shift. Without this, an edge cell shifted by
+    # ~search_xy lands outside fov_local and the matcher exploits asymmetric
+    # coverage to find spurious large shifts. Bigger dilation = matcher can
+    # always reach real HCR cells anywhere it shifts.
     cell_search_xy = min(search_xy, (full_size - 10) // 2)
-    print(f"  Patch: {full_size}x{full_size}, search: +/-{cell_search_xy}px")
+    fov_dilation_eff = max(fov_dilation, cell_search_xy + 20)
+    fov_dilated = binary_dilation(twop_binary, iterations=fov_dilation_eff)
+
+    # FIX 2: edge mask — skip cells whose centroid is within edge_margin of
+    # the actual FOV boundary. Build a FILLED FOV (dilate + fill holes) so
+    # erosion shrinks the boundary, not individual cells. Cap edge_margin to
+    # a small value so we only skip true edge cells, not interior ones.
+    from scipy.ndimage import binary_fill_holes as _bfh
+    if edge_margin is None:
+        edge_margin = min(cell_search_xy, 15)
+    fov_filled = _bfh(binary_dilation(twop_binary, iterations=20))
+    twop_interior = (binary_erosion(fov_filled, iterations=edge_margin)
+                     if edge_margin > 0 else fov_filled)
+    # Sanity: make sure we didn't erode the entire FOV away
+    if twop_interior.sum() < 0.5 * fov_filled.sum():
+        print(f"  WARNING: edge erosion removed >50% of FOV "
+              f"({twop_interior.sum()}/{fov_filled.sum()}); disabling edge skip")
+        edge_margin = 0
+        twop_interior = fov_filled
+
+    print(f"  Patch: {full_size}x{full_size}, search: +/-{cell_search_xy}px, "
+          f"fov_dilation={fov_dilation_eff}, edge_margin={edge_margin}")
     print(f"  Patch:search ratio: {full_size / max(1, 2 * cell_search_xy):.1f}:1")
 
     # Pre-compute FFT shape (same for all cells with same patch size)
@@ -1754,11 +1781,19 @@ def find_cell_displacements(twop_binary, twop_labels, hcr_3d_bin, z_map, centroi
     results = []
     n_shifted = 0
     n_ambiguous = 0
+    n_edge_skipped = 0
     for cy, cx in tqdm(centroids, desc="Per-cell matching"):
         iy, ix = int(round(cy)), int(round(cx))
 
         # Find the label at this centroid
         cell_label = int(twop_labels[min(iy, ny - 1), min(ix, nx - 1)])
+
+        # FIX 2: skip cells whose centroid is too close to the FOV boundary.
+        # Their search patch would extend beyond the 2P region and the
+        # matcher would exploit asymmetric coverage to find spurious shifts.
+        if edge_margin > 0 and not twop_interior[min(iy, ny - 1), min(ix, nx - 1)]:
+            n_edge_skipped += 1
+            continue
 
         # Extraction bounds: keep full patch size, shift to stay in image
         py0 = max(0, min(iy - r, ny - full_size))
@@ -1833,6 +1868,7 @@ def find_cell_displacements(twop_binary, twop_labels, hcr_3d_bin, z_map, centroi
             n_ambiguous += 1
 
     print(f"  Edge cells (shifted extraction): {n_shifted}")
+    print(f"  Edge-skipped cells (within {edge_margin}px of FOV boundary): {n_edge_skipped}")
     print(f"  Ambiguous matches (peak_ratio < {min_peak_ratio}): {n_ambiguous}")
     return results
 
@@ -1966,7 +2002,8 @@ def run_local_tile_ransac(twop_binary, hcr_3d_bin, z_map, centroids, cell_df,
                           min_cells_affine=3,
                           min_iou=0.10, min_gain=0.04,
                           border_anchor_spacing=100,
-                          smoothing=50):
+                          smoothing=50,
+                          debug_dump_path=None):
     """Fit per-tile affines from cell matches, return smooth RBF displacement fields.
 
     1. Divide image into overlapping tiles
@@ -1984,6 +2021,7 @@ def run_local_tile_ransac(twop_binary, hcr_3d_bin, z_map, centroids, cell_df,
     print(f"  Cells passing local threshold: {len(good)} / {len(cell_df)}")
 
     tile_results = []
+    n_iou_rejected = 0
     for ty in range(0, ny - tile_size // 2, step):
         for tx in range(0, nx - tile_size // 2, step):
             ty1, tx1 = min(ny, ty + tile_size), min(nx, tx + tile_size)
@@ -1996,31 +2034,143 @@ def run_local_tile_ransac(twop_binary, hcr_3d_bin, z_map, centroids, cell_df,
                 continue
             if len(in_tile) < min_cells_affine:
                 # Median fallback: too few cells for stable affine fit
-                tile_results.append({
-                    'cy': tc_y, 'cx': tc_x,
-                    'dy': float(np.median(in_tile.dy.values)),
-                    'dx': float(np.median(in_tile.dx.values)),
-                    'dz': float(np.median(in_tile.dz.values)),
-                    'accepted': True})
-                continue
-            src = in_tile[['cy', 'cx']].values
-            M = np.hstack([src, np.ones((len(in_tile), 1))])
-            try:
-                A_dy = np.linalg.lstsq(M, in_tile.dy.values, rcond=None)[0]
-                A_dx = np.linalg.lstsq(M, in_tile.dx.values, rcond=None)[0]
-                A_dz = np.linalg.lstsq(M, in_tile.dz.values, rcond=None)[0]
-            except np.linalg.LinAlgError:
-                tile_results.append({'cy': tc_y, 'cx': tc_x,
-                    'dy': 0, 'dx': 0, 'dz': 0, 'accepted': False})
-                continue
-            mc = np.array([[tc_y, tc_x, 1]])
+                cand_dy = float(np.median(in_tile.dy.values))
+                cand_dx = float(np.median(in_tile.dx.values))
+                cand_dz = float(np.median(in_tile.dz.values))
+            else:
+                src = in_tile[['cy', 'cx']].values
+                M = np.hstack([src, np.ones((len(in_tile), 1))])
+                try:
+                    A_dy = np.linalg.lstsq(M, in_tile.dy.values, rcond=None)[0]
+                    A_dx = np.linalg.lstsq(M, in_tile.dx.values, rcond=None)[0]
+                    A_dz = np.linalg.lstsq(M, in_tile.dz.values, rcond=None)[0]
+                except np.linalg.LinAlgError:
+                    tile_results.append({'cy': tc_y, 'cx': tc_x,
+                        'dy': 0, 'dx': 0, 'dz': 0, 'accepted': False})
+                    continue
+                # SV check: reject tile affines that imply stretching
+                J = np.array([[A_dy[0], A_dy[1]], [A_dx[0], A_dx[1]]])
+                T = np.eye(2) - J
+                svs = np.linalg.svd(T, compute_uv=False)
+                if not (np.all(svs >= 0.8) and np.all(svs <= 1.2)):
+                    cand_dy = float(np.median(in_tile.dy.values))
+                    cand_dx = float(np.median(in_tile.dx.values))
+                    cand_dz = float(np.median(in_tile.dz.values))
+                else:
+                    mc = np.array([[tc_y, tc_x, 1]])
+                    cand_dy = float(mc @ A_dy)
+                    cand_dx = float(mc @ A_dx)
+                    cand_dz = float(mc @ A_dz)
+
+            # Per-tile IoU check: only accept if displacement improves local overlap
+            t_2p = twop_binary[ty:ty1, tx:tx1]
+            if t_2p.any():
+                t_hcr_before = sample_hcr_binary_at_zmap(
+                    hcr_3d_bin[:, ty:ty1, tx:tx1], z_map[ty:ty1, tx:tx1])
+                iou_before = compute_iou(t_2p, t_hcr_before)
+                t_2p_shifted = shift_2d(t_2p.astype(np.int32),
+                                        int(round(cand_dy)), int(round(cand_dx))) > 0
+                t_hcr_after = sample_hcr_binary_at_zmap(
+                    hcr_3d_bin[:, ty:ty1, tx:tx1], z_map[ty:ty1, tx:tx1] + cand_dz)
+                iou_after = compute_iou(t_2p_shifted, t_hcr_after)
+                if iou_after < iou_before:
+                    n_iou_rejected += 1
+                    tile_results.append({'cy': tc_y, 'cx': tc_x,
+                        'dy': 0, 'dx': 0, 'dz': 0, 'accepted': False})
+                    continue
+
             tile_results.append({
                 'cy': tc_y, 'cx': tc_x,
-                'dy': float(mc @ A_dy), 'dx': float(mc @ A_dx),
-                'dz': float(mc @ A_dz), 'accepted': True})
+                'dy': cand_dy, 'dx': cand_dx, 'dz': cand_dz, 'accepted': True})
 
+    if debug_dump_path is not None:
+        import pickle as _pkl
+        with open(debug_dump_path, 'wb') as _f:
+            _pkl.dump({
+                'tile_results': tile_results,
+                'twop_binary': twop_binary,
+                'hcr_3d_bin': hcr_3d_bin,
+                'z_map': z_map,
+                'centroids': centroids,
+                'cell_df': cell_df,
+                'tile_size': tile_size,
+                'border_anchor_spacing': border_anchor_spacing,
+                'smoothing': smoothing,
+                'ny': ny, 'nx': nx,
+                'n_iou_rejected': n_iou_rejected,
+            }, _f)
+        print(f"  [debug] dumped local-tile state → {debug_dump_path}")
+
+    dy_f, dx_f, dz_f, tile_results = _synthesize_warp_from_tiles(
+        tile_results, ny, nx, tile_size,
+        border_anchor_spacing=border_anchor_spacing,
+        smoothing=smoothing,
+        n_iou_rejected=n_iou_rejected,
+    )
+    return dy_f, dx_f, dz_f, tile_results
+
+
+def _synthesize_warp_from_tiles(
+    tile_results, ny, nx, tile_size,
+    border_anchor_spacing=100,
+    smoothing=50,
+    mad_k=3.0,
+    mad_floor=1.0,
+    border_decay_mult=2.0,
+    data_sigma_mult=1.0,
+    use_nn_fallback=False,
+    disable_border_anchors=False,
+    disable_data_weight=False,
+    border_weight_floor=0.0,
+    n_iou_rejected=0,
+    verbose=True,
+):
+    """Turn a list of accepted/rejected tile affines into dense RBF warp fields.
+
+    Extracted from run_local_tile_ransac so edge-correction sweeps can iterate
+    without re-running per-cell matching or tile fitting. Default kwargs
+    reproduce the production behavior exactly.
+
+    Edge-correction knobs (all additive, defaults preserve current behavior):
+      - mad_k, mad_floor: spatial-outlier rejection on accepted tiles
+      - border_decay_mult: decay_radius = tile_size * border_decay_mult
+                           (linear fade of border-anchor value to 0 at that radius)
+      - data_sigma_mult: post-RBF Gaussian fade sigma = tile_size * data_sigma_mult
+      - use_nn_fallback: far-from-data regions fall back to nearest-tile value
+                        instead of 0 (blend = data_weight*RBF + (1-data_weight)*NN)
+      - disable_border_anchors: skip adding border anchor points
+      - disable_data_weight: skip final data-weight multiply
+      - border_weight_floor: minimum weight applied to border anchors
+                             (0.0 = current linear decay to 0)
+    """
+    # Spatial-outlier rejection on accepted tiles (works on a mutable copy
+    # so the caller's tile_results is preserved for repeat sweeps).
+    tile_results = [dict(t) for t in tile_results]
     accepted = [t for t in tile_results if t['accepted']]
-    print(f"  Accepted tiles: {len(accepted)} / {len(tile_results)}")
+    n_outlier_rejected = 0
+    if len(accepted) >= 6:
+        from scipy.spatial import cKDTree as _kdt
+        _ac = np.array([[t['cy'], t['cx']] for t in accepted])
+        _ady = np.array([t['dy'] for t in accepted])
+        _adx = np.array([t['dx'] for t in accepted])
+        _tree = _kdt(_ac)
+        K = min(8, len(accepted) - 1)
+        _, _idx = _tree.query(_ac, k=K + 1)
+        for i, t in enumerate(accepted):
+            nb_idx = _idx[i, 1:]
+            nb_dy = _ady[nb_idx]
+            nb_dx = _adx[nb_idx]
+            med_dy, med_dx = float(np.median(nb_dy)), float(np.median(nb_dx))
+            mad_dy = max(float(np.median(np.abs(nb_dy - med_dy))), mad_floor)
+            mad_dx = max(float(np.median(np.abs(nb_dx - med_dx))), mad_floor)
+            if (abs(t['dy'] - med_dy) > mad_k * mad_dy or
+                abs(t['dx'] - med_dx) > mad_k * mad_dx):
+                t['accepted'] = False
+                n_outlier_rejected += 1
+        accepted = [t for t in tile_results if t['accepted']]
+    if verbose:
+        print(f"  Accepted tiles: {len(accepted)} / {len(tile_results)} "
+              f"(IoU-rejected: {n_iou_rejected}, spatial-outlier: {n_outlier_rejected})")
     if len(accepted) < 3:
         return np.zeros((ny, nx)), np.zeros((ny, nx)), np.zeros((ny, nx)), tile_results
 
@@ -2028,27 +2178,34 @@ def run_local_tile_ransac(twop_binary, hcr_3d_bin, z_map, centroids, cell_df,
     dy_vals = np.array([t['dy'] for t in accepted])
     dx_vals = np.array([t['dx'] for t in accepted])
     dz_vals = np.array([t['dz'] for t in accepted])
+    acc_centers = centers.copy()
 
-    # Border anchor points: pin at edges using nearest accepted tile
-    s = border_anchor_spacing
-    border_pts = []
-    for bx in np.arange(0, nx, s):
-        border_pts.append([0.0, float(bx)])
-        border_pts.append([float(ny - 1), float(bx)])
-    for by in np.arange(s, ny - 1, s):
-        border_pts.append([float(by), 0.0])
-        border_pts.append([float(by), float(nx - 1)])
-    border_pts = np.array(border_pts)
-    n_border = len(border_pts)
+    if not disable_border_anchors:
+        s = border_anchor_spacing
+        border_pts = []
+        for bx in np.arange(0, nx, s):
+            border_pts.append([0.0, float(bx)])
+            border_pts.append([float(ny - 1), float(bx)])
+        for by in np.arange(s, ny - 1, s):
+            border_pts.append([float(by), 0.0])
+            border_pts.append([float(by), float(nx - 1)])
+        border_pts = np.array(border_pts)
+        n_border = len(border_pts)
 
-    nn_dy = NearestNDInterpolator(centers, dy_vals)
-    nn_dx = NearestNDInterpolator(centers, dx_vals)
-    nn_dz = NearestNDInterpolator(centers, dz_vals)
-    dy_vals = np.concatenate([dy_vals, nn_dy(border_pts)])
-    dx_vals = np.concatenate([dx_vals, nn_dx(border_pts)])
-    dz_vals = np.concatenate([dz_vals, nn_dz(border_pts)])
-    centers = np.vstack([centers, border_pts])
-    print(f"  Border anchors: {n_border} points (spacing={s}px)")
+        nn_dy_i = NearestNDInterpolator(centers, dy_vals)
+        nn_dx_i = NearestNDInterpolator(centers, dx_vals)
+        nn_dz_i = NearestNDInterpolator(centers, dz_vals)
+        dists = np.min(np.linalg.norm(border_pts[:, None] - centers[None, :], axis=2), axis=1)
+        decay_radius = tile_size * border_decay_mult
+        w = np.clip(1.0 - dists / decay_radius, 0, 1)
+        w = np.maximum(w, border_weight_floor)
+        dy_vals = np.concatenate([dy_vals, nn_dy_i(border_pts) * w])
+        dx_vals = np.concatenate([dx_vals, nn_dx_i(border_pts) * w])
+        dz_vals = np.concatenate([dz_vals, nn_dz_i(border_pts) * w])
+        centers = np.vstack([centers, border_pts])
+        if verbose:
+            print(f"  Border anchors: {n_border} points (spacing={s}px, "
+                  f"decay={decay_radius:.0f}px, floor={border_weight_floor})")
 
     yy, xx = np.mgrid[:ny, :nx]
     pts = np.column_stack([yy.ravel(), xx.ravel()])
@@ -2058,4 +2215,23 @@ def run_local_tile_ransac(twop_binary, hcr_3d_bin, z_map, centroids, cell_df,
         kernel='thin_plate_spline', smoothing=smoothing)(pts).reshape(ny, nx)
     dz_f = RBFInterpolator(centers, dz_vals,
         kernel='thin_plate_spline', smoothing=smoothing)(pts).reshape(ny, nx)
+
+    if not disable_data_weight:
+        from scipy.spatial import cKDTree
+        tree = cKDTree(acc_centers)
+        dist_to_data = tree.query(pts)[0].reshape(ny, nx)
+        sigma = float(tile_size) * data_sigma_mult
+        data_weight = np.exp(-dist_to_data**2 / (2 * sigma**2))
+        if use_nn_fallback:
+            nn_dy_full = NearestNDInterpolator(acc_centers, [t['dy'] for t in accepted])(pts).reshape(ny, nx)
+            nn_dx_full = NearestNDInterpolator(acc_centers, [t['dx'] for t in accepted])(pts).reshape(ny, nx)
+            nn_dz_full = NearestNDInterpolator(acc_centers, [t['dz'] for t in accepted])(pts).reshape(ny, nx)
+            dy_f = data_weight * dy_f + (1 - data_weight) * nn_dy_full
+            dx_f = data_weight * dx_f + (1 - data_weight) * nn_dx_full
+            dz_f = data_weight * dz_f + (1 - data_weight) * nn_dz_full
+        else:
+            dy_f *= data_weight
+            dx_f *= data_weight
+            dz_f *= data_weight
+
     return dy_f, dx_f, dz_f, tile_results

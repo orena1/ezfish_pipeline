@@ -21,6 +21,26 @@ def update_map(map_x, map_y, poly_vals, src):
         map_y[:,j] = [y for y in range(map_y.shape[0])]
 
 
+def unwarp_2d(img: np.ndarray, unwarp_config: Path, steps: int) -> np.ndarray:
+    """Apply resonant-scanner distortion correction to a 2D image.
+
+    Mirrors the inline lowres unwarp used in the JS078 test notebook
+    (cv2.remap with a per-column polynomial map). Returns a float32 copy.
+    """
+    img2d = img.astype(np.float32)
+    vals = np.load(str(unwarp_config))
+    steps = int(steps)
+    poly_vals = np.poly1d(vals)(np.arange(img2d.shape[1]) / img2d.shape[1] * steps)
+    map_x = np.zeros(img2d.shape, dtype=np.float32)
+    map_y = np.zeros(img2d.shape, dtype=np.float32)
+    col_map = (np.cumsum(poly_vals) / max(np.cumsum(poly_vals))) * img2d.shape[1]
+    for i in range(map_x.shape[0]):
+        map_x[i, :] = col_map
+    for j in range(map_y.shape[1]):
+        map_y[:, j] = np.arange(map_y.shape[0])
+    return cv2.remap(img2d, map_x, map_y, cv2.INTER_LINEAR)
+
+
 def unwarp_tile(image_path: Path, unwarp_config: Path, steps: int, image_output_path: Path):
     #load the image
     images = tif_imread(image_path)
@@ -83,6 +103,40 @@ def unwarp_tiles(full_manifest: dict, session: dict):
                     unwarp_path)
         
 
+def _hires_sbx_channel_mean(sbx_path: Path, channel: int, register: bool) -> np.ndarray:
+    '''
+    Return the time-mean of one channel of an SBX file as a (Z, Y, X) array.
+
+    When register=True, each Z-plane's frames are motion-corrected with
+    StackReg(RIGID_BODY) before averaging (tmats computed on the center crop,
+    ported from register_sbx_general.py). When register=False, a plain
+    time-mean is returned (original pipeline behavior).
+
+    Handles both single-plane and optotune multi-plane SBX (shape (T, Z, C, Y, X)).
+    '''
+    dat = sbx_memmap(sbx_path)  # memmap (T, Z, C, Y, X)
+    n_planes = dat.shape[1]
+    ch = channel if channel >= 0 else dat.shape[2] + channel
+
+    if not register:
+        return np.array(dat[:, :, ch]).mean(0)  # (Z, Y, X)
+
+    from pystackreg import StackReg
+
+    # Match register_sbx_general.py: drop 3 leading frames for single-plane,
+    # 2 leading cycles for multiplane (each memmap T index is one full cycle).
+    skip = 3 if n_planes == 1 else 2
+
+    sr = StackReg(StackReg.RIGID_BODY)
+    plane_means = []
+    for z in range(n_planes):
+        plane = np.array(dat[skip:, z, ch, :, :])  # (T, Y, X)
+        tmats = sr.register_stack(plane[:, 50:-50, 50:-50], reference='mean', verbose=False)
+        registered = sr.transform_stack(plane, tmats=tmats)
+        plane_means.append(registered.mean(0))
+    return np.stack(plane_means, axis=0)  # (Z, Y, X)
+
+
 def process_session_sbx(full_manifest: dict , session:dict):
     '''
     extract the mean of anatomical hires green and red runs to tiff file in the correct pathways.
@@ -97,6 +151,14 @@ def process_session_sbx(full_manifest: dict , session:dict):
     save_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'warped'
     mouse_name = manifest['mouse_name']
     date = session['date']
+
+    # Motion-correct SBX frames before averaging into the hi-res tile.
+    # Default on: sbx/suite2p users haven't pre-registered these stacks.
+    # Tiff-mode users provide their own post-registration hires tiff and never
+    # reach this function, but gate defensively on input_format anyway.
+    input_format = session.get('input_format', 'sbx')
+    params = full_manifest.get('params', {})
+    register_hires = params.get('hires_sbx_registration', True) and input_format != 'tiff'
 
     # Support variable number of tiles (not just 3)
     num_tiles = len(session['anatomical_hires_green_runs'])
@@ -113,7 +175,8 @@ def process_session_sbx(full_manifest: dict , session:dict):
         # All tiles already processed - no message needed (avoids per-plane spam)
         return
 
-    print(f'Processing {len(tiles_to_process)}/{num_tiles} tiles for session {date}')
+    reg_suffix = ' (with per-plane StackReg motion correction)' if register_hires else ''
+    print(f'Processing {len(tiles_to_process)}/{num_tiles} tiles for session {date}{reg_suffix}')
     save_path.mkdir(exist_ok=True, parents=True)
 
     for j in tiles_to_process:
@@ -127,8 +190,8 @@ def process_session_sbx(full_manifest: dict , session:dict):
         red_sbx = base_2P / f'{mouse_name}_{date}_{red_run}' / f'{mouse_name}_{date}_{red_run}.sbx'
 
         print(f'  Tile {j+1}: {green_sbx.name} + {red_sbx.name}')
-        green_stack = np.expand_dims(np.array(sbx_memmap(green_sbx)[:,:,0]).mean(0),1)
-        red_stack = np.expand_dims(np.array(sbx_memmap(red_sbx)[:,:,-1]).mean(0),1)
+        green_stack = np.expand_dims(_hires_sbx_channel_mean(green_sbx, 0, register_hires), 1)
+        red_stack = np.expand_dims(_hires_sbx_channel_mean(red_sbx, -1, register_hires), 1)
         combined_stack = np.concatenate([green_stack,red_stack],1)
 
         tif_imwrite(save_filename, combined_stack.astype(np.float32),
@@ -151,8 +214,10 @@ def stitch_tiles_and_rotate(full_manifest: dict, session: dict):
     tile_to_num = {'left':'001', 'center':'002', 'right':'003'}
     plane = session['functional_plane'][0]
 
-    # NEW NAMING: Use hires_stitched_plane{X}.tiff instead of stack_stitched_C01_plane{X}.tiff
-    stitched_file  = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'stitched' / f'hires_stitched_plane{plane}.tiff'
+    # Full stitched volume (Z,C,Y,X) — plane-neutral name so subsequent
+    # functional planes short-circuit auto_stitch_tiles instead of re-writing
+    # the identical stack under a different filename.
+    stitched_file  = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile' / 'stitched' / 'hires_stitched.tiff'
     tile_base_path = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'tile'
     unwarped_path = tile_base_path / 'unwarped'
     save_path_registered = Path(manifest['base_path']) / manifest['mouse_name'] / 'OUTPUT' / '2P' / 'registered'
@@ -248,12 +313,11 @@ def stitch_tiles_and_rotate(full_manifest: dict, session: dict):
 
     # First-run detection: prompt only if NO rotated files exist yet for any plane.
     mouse_name = manifest['mouse_name']
-    rotation_config = get_rotation_config(full_manifest['params'])
     any_rotated_exists = any(save_path_registered.glob('*_rotated.tiff'))
+    manifest_path = full_manifest['manifest_path']
 
     if not any_rotated_exists:
         reference_HCR_round = verify_rounds(full_manifest)[1]['image_path']
-        manifest_path = full_manifest['manifest_path']
 
         print('')
         print('=' * 70)
@@ -268,16 +332,16 @@ def stitch_tiles_and_rotate(full_manifest: dict, session: dict):
         print(f'')
         print(f'    {reference_HCR_round}')
         print(f'')
-        print(f'  Then update rotation_2p_to_HCRspec in your manifest:')
+        print(f'  Then update rotation_2p_to_HCR in your manifest:')
         print(f'    {manifest_path}')
         print(f'')
         print(f'  Set "rotation" (degrees), "fliplr" (true/false), "flipud" (true/false)')
         print('=' * 70)
         input('  Press Enter after updating the manifest...\n')
 
-        # Re-read the manifest from disk to pick up user's rotation changes
-        updated_manifest = parse_json(manifest_path)
-        rotation_config = get_rotation_config(updated_manifest['params'])
+    # Always re-read manifest from disk before applying rotation so subsequent
+    # planes pick up edits the user made during plane 0's prompt.
+    rotation_config = get_rotation_config(parse_json(manifest_path)['params'])
 
     data = tif_imread(stitched_file)
 

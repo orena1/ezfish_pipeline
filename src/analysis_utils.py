@@ -99,7 +99,9 @@ class AnalysisConfig:
     pre_stim: float = 10.0           # seconds before stimulus
     post_stim: float = 20.0          # seconds after stimulus
     sort_window: float = 5.0         # seconds for response sorting
-    p_threshold: float = 0.05        # p-value for excited/inhibited (same for both)
+    p_threshold: float = 0.05        # p-value fallback (used when per-direction thresholds not set)
+    p_threshold_excited: float = None   # p-value for excited classification (None = use p_threshold)
+    p_threshold_inhibited: float = None # p-value for inhibited classification (None = use p_threshold)
     stim_detection_threshold: float = 0.05
     min_stim_interval_frames: int = 100
     min_onset_interval_sec: float = 10.0  # min seconds between train onsets
@@ -2058,19 +2060,22 @@ def classify_responses(
     response_magnitudes = np.mean(response_values - baseline_values, axis=1)
     mean_responses = np.mean(response_values, axis=1)
 
-    # Classify
-    significant = p_values < config.p_threshold
-    excited_mask = significant & (response_magnitudes > 0)
-    inhibited_mask = significant & (response_magnitudes < 0)
+    # Classify (supports separate thresholds for excited/inhibited)
+    p_thresh_exc = getattr(config, 'p_threshold_excited', None) or config.p_threshold
+    p_thresh_inh = getattr(config, 'p_threshold_inhibited', None) or config.p_threshold
+
+    excited_mask = (p_values < p_thresh_exc) & (response_magnitudes > 0)
+    inhibited_mask = (p_values < p_thresh_inh) & (response_magnitudes < 0)
 
     n_excited = np.sum(excited_mask)
     n_inhibited = np.sum(inhibited_mask)
     n_responsive = n_excited + n_inhibited
 
-    rprint(f"  Classification (p < {config.p_threshold}):")
-    rprint(f"    Excited: {n_excited} ({100*n_excited/n_neurons:.1f}%)")
-    rprint(f"    Inhibited: {n_inhibited} ({100*n_inhibited/n_neurons:.1f}%)")
-    rprint(f"    Non-responsive: {n_neurons - n_responsive} ({100*(n_neurons - n_responsive)/n_neurons:.1f}%)")
+    thresh_str = f"exc p<{p_thresh_exc}, inh p<{p_thresh_inh}" if p_thresh_exc != p_thresh_inh else f"p < {p_thresh_exc}"
+    print(f"  Classification ({thresh_str}):")
+    print(f"    Excited: {n_excited} ({100*n_excited/n_neurons:.1f}%)")
+    print(f"    Inhibited: {n_inhibited} ({100*n_inhibited/n_neurons:.1f}%)")
+    print(f"    Non-responsive: {n_neurons - n_responsive} ({100*(n_neurons - n_responsive)/n_neurons:.1f}%)")
 
     return {
         'excited_mask': excited_mask,
@@ -3493,7 +3498,7 @@ def plot_gene_response_spatial(
         ax.set_title(f'{gene}', fontsize=11, fontweight='bold')
         ax.invert_yaxis()
         ax.set_aspect('equal')
-        ax.legend(fontsize=7, loc='upper right', framealpha=0.8)
+        # Legend removed - too crowded for spatial plots
         ax.set_xlabel('X')
         ax.set_ylabel('Y')
 
@@ -4677,7 +4682,7 @@ def plot_gene_classification_diagnostic(
         ax2.set_title(f'{gene}: {n_pos} positive ({pct:.1f}%)')
         ax2.invert_yaxis()
         ax2.set_aspect('equal')
-        ax2.legend(loc='upper right', fontsize=8, markerscale=2)
+        ax2.legend(loc='upper right', fontsize=10, markerscale=2)
     else:
         ax2.text(0.5, 0.5, 'Coordinates\nnot found', ha='center', va='center',
                 transform=ax2.transAxes)
@@ -4768,15 +4773,15 @@ def plot_gene_classification_diagnostic(
         text_str = '\n'.join([l for l in text_lines if l])
 
         ax3.text(0.97, 0.97, text_str, transform=ax3.transAxes,
-                fontsize=8, verticalalignment='top', horizontalalignment='right',
+                fontsize=9, verticalalignment='top', horizontalalignment='right',
                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8),
                 family='monospace')
 
         xlabel = 'Expression (normalized)' if norm_method != 'none' else 'Expression value'
-        ax3.set_xlabel(xlabel)
-        ax3.set_ylabel('Count')
-        ax3.set_title(f'{gene}: Distribution')
-        ax3.legend(loc='upper left', fontsize=8)
+        ax3.set_xlabel(xlabel, fontsize=10)
+        ax3.set_ylabel('Count', fontsize=10)
+        ax3.set_title(f'{gene}: Distribution', fontsize=11)
+        ax3.legend(loc='upper left', fontsize=9)
     else:
         ax3.text(0.5, 0.5, 'No valid values', ha='center', va='center',
                 transform=ax3.transAxes)
@@ -5020,14 +5025,7 @@ def plot_gene_classification_grid(
                             ax4.scatter(full_x[pos_mask], full_y[pos_mask],
                                        c='magenta', s=3, alpha=0.7, rasterized=True)
 
-                            # Add 2P FOV rectangle
-                            if twop_fov_bounds is not None:
-                                from matplotlib.patches import Rectangle
-                                x_min, x_max, y_min, y_max = twop_fov_bounds
-                                rect = Rectangle((x_min, y_min), x_max - x_min, y_max - y_min,
-                                                linewidth=2, edgecolor='cyan', facecolor='none',
-                                                linestyle='--', label='2P FOV')
-                                ax4.add_patch(rect)
+                            # 2P FOV rectangle removed (not accurate for all samples)
 
                             n_pos = np.sum(pos_mask)
                             n_total = np.sum(full_valid_coords & ~np.isnan(full_gene_values))
@@ -5064,15 +5062,9 @@ def plot_gene_classification_grid(
 
                                 # Add colorbar
                                 cbar = plt.colorbar(im, ax=ax5, fraction=0.046, pad=0.04)
-                                cbar.set_label('Count', fontsize=8)
+                                cbar.set_label('Count', fontsize=10)
 
-                                # Add 2P FOV rectangle
-                                if twop_fov_bounds is not None:
-                                    x_min, x_max, y_min, y_max = twop_fov_bounds
-                                    rect = Rectangle((x_min, y_min), x_max - x_min, y_max - y_min,
-                                                    linewidth=2, edgecolor='cyan', facecolor='none',
-                                                    linestyle='--')
-                                    ax5.add_patch(rect)
+                                # 2P FOV rectangle removed (not accurate for all samples)
 
                                 ax5.set_title(f'Positive Density')
                                 ax5.set_xlabel('X')

@@ -59,10 +59,15 @@ def main(args = None):
         # First plane is the reference (used for HCR alignment and landmarks)
         reference_plane = all_planes[0]
 
-        # Process 2P data for each plane
+        # Process 2P data for each plane. Cellpose runs eagerly per plane; the
+        # verification prompt is consolidated into a single Enter press after
+        # the loop so the user doesn't get prompted between every plane.
+        cellpose_seg_files = []
         for plane in all_planes:
             session['functional_plane'] = [plane]
-            process_plane(full_manifest, session, has_hires)
+            seg_file = process_plane(full_manifest, session, has_hires)
+            cellpose_seg_files.append((plane, seg_file))
+        sg.verify_2p_cellpose_segmentations(cellpose_seg_files)
 
         # Now do low-res to high-res registration for ALL planes at once
         # Method depends on automation config: 'landmarks' (default) or 'auto' (SIFT-based)
@@ -100,7 +105,9 @@ def main(args = None):
                 full_manifest, session, has_hires,
                 automation_enabled=(automation['twop_to_hcr'] == 'auto')
             )
-            sg.extract_electrophysiology_intensities(full_manifest, session)
+            input_format = fc._get_input_format(session)
+            if input_format not in ('tiff', 'suite2p'):
+                sg.extract_electrophysiology_intensities(full_manifest, session)
 
         # Now align 2P masks to HCR and merge (needs twop_aligned_3d.tiff from above)
         for plane in all_planes:
@@ -117,21 +124,40 @@ def main(args = None):
 
 
 def process_plane(full_manifest, session, has_hires):
-    """Process 2P data for a single plane (no HCR processing - that's done once in main)."""
-    plane = session['functional_plane'][0]
-    rprint(f"\n[bold green]Processing 2P plane {plane}[/bold green]")
+    """Process 2P data for a single plane (no HCR processing - that's done once in main).
 
-    if has_hires:
+    Functional lowres mean extraction (driven by input_format) and hires tile
+    stitching (driven by has_hires) are orthogonal: any input_format can opt
+    into hires stitching by declaring anatomical_hires_*_runs in the manifest.
+    """
+    plane = session['functional_plane'][0]
+    input_format = fc._get_input_format(session)
+    rprint(f"\n[bold green]Processing 2P plane {plane} (input: {input_format})[/bold green]")
+
+    # 1. Hires tile stitching first (sbx + suite2p modes). Running stitching
+    # ahead of the lowres rotation prompt means the user gets a 2-channel
+    # (green + red) stitched preview to judge the flip/rotation against HCR.
+    # Tiff mode skips here because the user supplies a pre-stitched
+    # plane_{N}_hires.tiff which prepare_tiff_input handles.
+    if has_hires and input_format != 'tiff':
         tl.process_session_sbx(full_manifest, session)
         tl.unwarp_tiles(full_manifest, session)
         tl.stitch_tiles_and_rotate(full_manifest, session)
-        fc.extract_suite2p_registered_planes(full_manifest, session)
+
+    # 2. Functional lowres mean image. If stitching prompted and wrote a
+    # *_rotated.tiff above, the lowres rotation step below will skip the
+    # prompt and pick up the same rotation_config from the updated manifest.
+    if input_format == 'tiff':
+        fc.prepare_tiff_input(full_manifest, session)
+    elif input_format == 'suite2p':
+        fc.prepare_suite2p_input(full_manifest, session)
     else:
         has_red = bool(session.get('anatomical_lowres_red_runs'))
         fc.extract_suite2p_registered_planes(full_manifest, session, combine_with_red=has_red)
 
-    # Extract cellpose masks from 2p images
-    sg.extract_2p_cellpose_masks(full_manifest, session)
+    # Extract cellpose masks from 2p images. Returns the seg.npy path so the
+    # caller can collect across planes and prompt once at the end.
+    return sg.extract_2p_cellpose_masks(full_manifest, session)
 
 if __name__ == "__main__":
 
