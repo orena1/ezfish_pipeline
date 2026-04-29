@@ -152,10 +152,17 @@ def run_cellpose(full_manifest):
     rprint(f"HCR cellpose: processing {len(to_process)}/{len(all_rounds)} rounds")
     model_wrapper = CellposeModelWrapper(params)
 
-    for HCR_round_to_register, round_folder_name in tqdm(to_process, desc="HCR cellpose"):
+    # Disable the outer round-counter bar when there's only one round to process
+    # (cellpose itself prints per-slice progress during 3D inference, so the
+    # 0/1→1/1 round counter is just noise in the single-round case).
+    iterator = tqdm(to_process, desc="HCR cellpose", disable=len(to_process) <= 1)
+    for HCR_round_to_register, round_folder_name in iterator:
         full_stack_path = output_root(full_manifest) / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
         output_path = output_root(full_manifest) / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
         output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if len(to_process) == 1:
+            rprint(f"  [dim]Cellpose on {round_folder_name}...[/dim]")
 
         raw_image = tif_imread(full_stack_path)
         cellpose_input = raw_image[:, cellpose_channel_index, :, :]
