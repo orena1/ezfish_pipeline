@@ -52,8 +52,8 @@ def verify_manifest(manifest, args):
     if not args.only_hcr:
         assert 'two_photon_imaging' in manifest, "'two_photon_imaging' section required for full pipeline mode"
         assert len(manifest['two_photon_imaging']['sessions'])==1, 'only support one 2P sessions'
-        date_two_photons = manifest['two_photon_imaging']['sessions'][0]['date']
         session = manifest['two_photon_imaging']['sessions'][0]
+        input_format = session.get('input_format', 'sbx')
 
     #test that reference round exists
     reference_round = manifest['HCR_confocal_imaging']['reference_round']
@@ -62,9 +62,27 @@ def verify_manifest(manifest, args):
             break
     else:
         raise Exception(f"reference round was not found {reference_round} is not in rounds")
-    
-    # verify that all 2p runs exists.
-    if not args.only_hcr:
+
+    if not args.only_hcr and input_format == 'tiff':
+        # Validate tiff inputs exist
+        twop_dir = base_path / mouse_name / '2P'
+        planes = session.get('functional_planes', session.get('functional_plane', []))
+        for plane in planes:
+            tiff_path = twop_dir / f'plane_{plane}.tiff'
+            if not tiff_path.exists():
+                raise FileNotFoundError(f"Expected 2P tiff input not found: {tiff_path}")
+            # Detect pre-stitched hires from presence of plane_{N}_hires.tiff
+            if (twop_dir / f'plane_{plane}_hires.tiff').exists():
+                has_hires = True
+
+    elif not args.only_hcr and input_format == 'suite2p':
+        # Validate suite2p folder exists
+        suite2p_path = base_path / mouse_name / '2P' / 'suite2p' / 'plane0' / 'ops.npy'
+        user_input_missing(np.array([[suite2p_path, os.path.exists(suite2p_path)]]), 'Suite2p path is missing, do you wish to continue?', color='pink')
+
+    elif not args.only_hcr:
+        # Default SBX mode — original validation
+        date_two_photons = session['date']
         check_results = []
         for k in session:
             if '_run' in k:
@@ -79,8 +97,13 @@ def verify_manifest(manifest, args):
         suite2p_path = base_path / mouse_name / '2P' /  f'{mouse_name}_{date_two_photons}_{suite2p_run}' / 'suite2p' /'plane0/ops.npy'
         user_input_missing(np.array([[suite2p_path, os.path.exists(suite2p_path)]]), 'Suite2p path is missing, do you wish to continue?', color='pink')
 
-    # verify anatomical runs configuration
-    if not args.only_hcr:
+    # Verify anatomical runs configuration. Hires tile stitching from raw
+    # sbx tiles is orthogonal to the functional input source — it runs for
+    # both sbx and suite2p modes whenever anatomical_hires_*_runs are
+    # declared. Tiff mode skips sbx-based stitching entirely (users supply
+    # a pre-stitched plane_{N}_hires.tiff instead) and has_hires is set
+    # above based on that file's presence.
+    if not args.only_hcr and input_format != 'tiff':
         has_lowres_green = len(session.get('anatomical_lowres_green_runs', [])) > 0
         has_hires_green = len(session.get('anatomical_hires_green_runs', [])) > 0
 
@@ -88,6 +111,16 @@ def verify_manifest(manifest, args):
             assert not has_lowres_green, "Cannot have both lowres and hires runs"
             assert len(session['anatomical_hires_green_runs'])==len(session['anatomical_hires_red_runs']), "Number of hires green and red runs do not match"
             has_hires = True
+            # Validate hires tile .sbx files exist (suite2p mode skips sbx
+            # validation above but still needs the tile sbx files for stitching)
+            if input_format == 'suite2p':
+                date_two_photons = session.get('date')
+                if date_two_photons:
+                    tile_check = []
+                    for run in session['anatomical_hires_green_runs'] + session['anatomical_hires_red_runs']:
+                        tile_sbx = base_path / mouse_name / '2P' / f'{mouse_name}_{date_two_photons}_{run}' / f'{mouse_name}_{date_two_photons}_{run}.sbx'
+                        tile_check.append([tile_sbx, os.path.exists(tile_sbx)])
+                    user_input_missing(np.array(tile_check), 'Some hires tile sbx files are missing, do you wish to continue?', color='red')
         elif has_lowres_green:
             assert len(session['anatomical_lowres_green_runs'])==len(session['anatomical_lowres_red_runs']), "Number of lowres green and red runs do not match"
         # else: no anatomical runs — lowres mode using Suite2p mean image only

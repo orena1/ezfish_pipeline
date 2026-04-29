@@ -60,6 +60,7 @@ twop = [
     "suite2p>=0.14.4",
     "sbxreader>=0.2.2",
     "roifile",
+    "pystackreg>=0.2.7",
 ]
 
 # BigStream registration and its dependencies

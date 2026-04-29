@@ -93,26 +93,121 @@ def compute_overlap_correlation(img1, img2, dy, dx, noise_floor=15.0):
     return np.mean(o1_norm * o2_norm)
 
 
-def find_best_shift(img1, img2, expected_dx, noise_floor=15.0):
+def find_best_shift_phase(img1, img2, expected_dx, noise_floor=15.0, dy_range=150):
     """
-    Find optimal (dy, dx) shift using coarse-to-fine grid search.
+    Find optimal (dy, dx) shift using phase correlation (FFT-based).
+
+    Much faster than grid search — single FFT pass per overlap strip.
+    Falls back to grid search if phase correlation gives implausible results.
 
     Args:
         img1, img2: 2D tile images
         expected_dx: Expected horizontal shift based on overlap_fraction
         noise_floor: Minimum pixel value for signal
+        dy_range: Maximum vertical shift to search (±dy_range pixels)
 
     Returns:
         (best_dy, best_dx, best_correlation) or (None, None, -inf) if failed
     """
-    # Search range: centered on expected_dx, with generous margins
-    # dx: expected ± 50% of expected (but at least ±100px)
+    try:
+        from skimage.registration import phase_cross_correlation
+    except ImportError:
+        # skimage not available, use grid search
+        return find_best_shift_grid(img1, img2, expected_dx, noise_floor, dy_range)
+
+    h, w = img1.shape
+    expected_overlap = w - expected_dx
+
+    if expected_overlap <= 20:
+        return find_best_shift_grid(img1, img2, expected_dx, noise_floor, dy_range)
+
+    # Extract overlap strips — use 1.5x the expected overlap width.
+    # Some margin beyond the exact overlap helps phase correlation lock onto features,
+    # while keeping the matching fraction high enough to avoid spurious peaks.
+    strip_width = min(int(expected_overlap * 1.5), w)
+
+    strip1 = img1[:, w - strip_width:].astype(np.float64)
+    strip2 = img2[:, :strip_width].astype(np.float64)
+
+    # Check for sufficient signal in both strips
+    if (strip1 > noise_floor).sum() < 1000 or (strip2 > noise_floor).sum() < 1000:
+        return find_best_shift_grid(img1, img2, expected_dx, noise_floor, dy_range)
+
+    try:
+        # Phase correlation: finds shift to apply to strip2 to match strip1
+        shift, error, phasediff = phase_cross_correlation(
+            strip1, strip2, upsample_factor=10
+        )
+        dy_phase = shift[0]   # row shift
+        dx_phase = shift[1]   # col shift
+
+        # Phase correlation is cyclic (FFT-based), so shifts can wrap around.
+        # For dx: a shift of -189 in a 497px strip is equivalent to +308.
+        # For dy: a shift of -1900 in a 2000px strip is equivalent to +100.
+        # Try both raw and wrapped, pick whichever gives total_dx closer to expected.
+        strip_h, strip_w = strip1.shape
+        dx_candidates = [dx_phase, dx_phase + strip_w, dx_phase - strip_w]
+        dy_candidates = [dy_phase, dy_phase + strip_h, dy_phase - strip_h]
+
+        # Convert strip-relative shift to tile-relative shift
+        # strip1 starts at tile1 column (w - strip_width)
+        # tile2 origin in tile1 coords: (w - strip_width) + dx_phase
+        best_candidate = None
+        best_dist = np.inf
+        dx_margin = max(100, int(expected_dx * 0.5))
+
+        for dx_c in dx_candidates:
+            for dy_c in dy_candidates:
+                total_dx_c = (w - strip_width) + dx_c
+                total_dy_c = dy_c
+                # Score by distance to expected (dx near expected_dx, dy near 0)
+                dist = abs(total_dx_c - expected_dx) + abs(total_dy_c) * 0.5
+                if dist < best_dist:
+                    # Check plausibility
+                    if abs(total_dy_c) <= dy_range and \
+                       max(10, expected_dx - dx_margin) <= total_dx_c <= expected_dx + dx_margin:
+                        best_dist = dist
+                        best_candidate = (total_dy_c, total_dx_c)
+
+        if best_candidate is None:
+            warnings.warn(f"Phase correlation shifts not plausible (raw dy={dy_phase:.1f}, dx={dx_phase:.1f}), falling back to grid search")
+            return find_best_shift_grid(img1, img2, expected_dx, noise_floor, dy_range)
+
+        total_dy, total_dx = best_candidate
+
+        # Fine-tune: search ±5px around phase result to find best integer-pixel correlation
+        best_corr = -np.inf
+        best_dy, best_dx = int(round(total_dy)), int(round(total_dx))
+        for dy_off in range(-5, 6):
+            for dx_off in range(-5, 6):
+                dy_test = int(round(total_dy)) + dy_off
+                dx_test = int(round(total_dx)) + dx_off
+                corr = compute_overlap_correlation(img1, img2, dy_test, dx_test, noise_floor)
+                if corr > best_corr:
+                    best_corr = corr
+                    best_dy, best_dx = dy_test, dx_test
+
+        if best_corr < 0.1:
+            warnings.warn(f"Phase correlation shift ({total_dy:.1f}, {total_dx:.1f}) has low correlation {best_corr:.3f}, falling back to grid search")
+            return find_best_shift_grid(img1, img2, expected_dx, noise_floor, dy_range)
+
+        return best_dy, best_dx, best_corr
+
+    except Exception as e:
+        warnings.warn(f"Phase correlation failed ({e}), falling back to grid search")
+        return find_best_shift_grid(img1, img2, expected_dx, noise_floor, dy_range)
+
+
+def find_best_shift_grid(img1, img2, expected_dx, noise_floor=15.0, dy_range=150):
+    """
+    Find optimal (dy, dx) shift using coarse-to-fine grid search.
+    Fallback for when phase correlation fails.
+    """
     dx_margin = max(100, int(expected_dx * 0.5))
     dx_min = max(10, expected_dx - dx_margin)
     dx_max = expected_dx + dx_margin
 
-    # dy: expect ~0 for horizontal tiling, search ±100px
-    dy_min, dy_max = -100, 100
+    dy_min, dy_max = -dy_range, dy_range
 
     # === COARSE SEARCH (10px steps) ===
     x_coarse = np.arange(dx_min, dx_max + 1, 10)
@@ -144,6 +239,14 @@ def find_best_shift(img1, img2, expected_dx, noise_floor=15.0):
                 best_shift = (dy, dx)
 
     return best_shift[0], best_shift[1], best_corr
+
+
+def find_best_shift(img1, img2, expected_dx, noise_floor=15.0, dy_range=150):
+    """
+    Find optimal (dy, dx) shift. Tries phase correlation first (fast),
+    falls back to grid search if it fails.
+    """
+    return find_best_shift_phase(img1, img2, expected_dx, noise_floor, dy_range)
 
 
 def compute_pairwise_shifts(
@@ -476,15 +579,10 @@ def auto_stitch_tiles(
         tile_data, positions_by_z, z_planes, overlap_fraction, show_progress=True
     )
 
-    # Save
+    # Save — single ZCYX file. Per-z-plane slices are not written separately:
+    # downstream code always extracts the functional plane from this stack.
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tif_imwrite(output_path, stitched.astype(np.float32), imagej=True, metadata={'axes': 'ZCYX'})
-
-    for plane in range(stitched.shape[0]):
-        plane_dir = output_path.parent / f'plane{plane}'
-        plane_dir.mkdir(exist_ok=True)
-        tif_imwrite(plane_dir / output_path.name, stitched[plane].astype(np.float32),
-                   imagej=True, metadata={'axes': 'CYX'})
 
     rprint(f"[green]Stitching complete:[/green] {output_path}")
 
