@@ -1,0 +1,77 @@
+{
+    // ---------------------------------------------------------------------
+    //  in vivo 2P -> ex vivo volume alignment — minimal manifest
+    //
+    //  Use case: you have a pre-processed 2P mean image (single TIFF per
+    //  plane, low-res or hi-res, green / red / both) and want to align it
+    //  to an ex vivo reference volume (HCR / RNAscope / MERFISH / IHC /
+    //  cleared-tissue light sheet — any multi-channel 3D stack).
+    //
+    //  Place inputs at:
+    //    {base_path}/{mouse_name}/2P/plane_{N}.tiff           (required; 2D or CYX)
+    //    {base_path}/{mouse_name}/2P/plane_{N}_hires.tiff     (optional; pre-stitched hires)
+    //    {base_path}/{mouse_name}/HCR/{mouse_name}_HCR{R}.tiff (one per ex vivo round)
+    //
+    //  Run:
+    //    python master_pipeline.py --manifest examples/demo_tiff_minimal.hjson --tiff_only
+    // ---------------------------------------------------------------------
+
+    data: {
+        base_path: "/mnt/nasquatch/data/2p/YOUR_LAB/EASI_FISH/pipeline"
+        mouse_name: "SAMPLE001"
+
+        two_photon_imaging: {
+            sessions: [{
+                date: "250101"               // free-form date string; not used to locate files in tiff mode
+                input_format: "tiff"         // --tiff_only forces this; harmless to leave set
+                functional_planes: ["0"]     // list each plane number you have a plane_{N}.tiff for
+            }]
+        }
+
+        HCR_confocal_imaging: {
+            rounds: [
+                { round: "01", channels: ["DAPI", "PROBE_A", "PROBE_B"], resolution: [1.515, 1.515, 5.0] }
+                // { round: "02", channels: ["DAPI", "PROBE_C"], resolution: [1.515, 1.515, 5.0] }
+            ]
+            reference_round: "01"
+        }
+    }
+
+    params: {
+        // 2P orientation relative to HCR. Set once after eyeballing one plane.
+        rotation_2p_to_HCR: { rotation: 0, fliplr: false, flipud: false }
+
+        HCR_to_HCR_registration: { downsampling: [3, 3, 2] }
+
+        HCR_cellpose: {
+            model_path: "/path/to/HCR_cellpose_model"
+            cellpose_channel: 0      // index into the channels array above
+            diameter: 15
+            gpu: true
+            flow_threshold: 0.5
+            cellprob_threshold: -0.5
+        }
+
+        2p_cellpose: {
+            model_path: "/path/to/2P_cellpose_model"
+            cellpose_channel: 0
+            diameter: 7
+            gpu: true
+            flow_threshold: 0
+            cellprob_threshold: -1
+        }
+
+        // ----- 2P -> HCR registration -----
+        // Defaults work for most cases; tune these first if alignment is off.
+        // See agent_docs/parameter_tuning.md for the full tiered guide.
+        twop_to_hcr_registration: {
+            cascade_stages: [300, 100, 50]   // local tile sizes (px); [400, 200, 100] for sparse cells, [200, 100, 50] for dense
+            erosion: 2                       // 2P mask shrink (px); 0 for cp4-SAM masks
+            erosion_hcr: 0                   // HCR mask shrink (px); try 1 if HCR cells bleed
+            z_range_global: [-15, 15]        // z-offset search range (slices); widen to [-25, 25] for large z offset
+            xy_max_global: 500               // xy search range (px); raise to 600 if landmarks coarse
+            hull_margin: -100                // inward hull erosion (px, negative); less negative (-50) for poor landmark coverage
+            flip_z: false                    // true when HCR acquisition has inverted z-axis
+        }
+    }
+}

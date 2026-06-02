@@ -23,6 +23,11 @@ def main(args = None):
     full_manifest = mt.main_pipeline_manifest(args.manifest)
     specs, has_hires = mt.verify_manifest(full_manifest, args)
 
+    if getattr(args, 'tiff_only', False):
+        rprint("[bold cyan]in vivo 2P -> ex vivo volume alignment[/bold cyan]")
+    elif args.only_hcr:
+        rprint("[bold cyan]HCR rounds + segmentation[/bold cyan]")
+
     # Get automation config (defaults to 'manual' if not specified)
     automation = mt.get_automation_config(full_manifest.get('params', {}))
     if automation['twop_to_hcr'] == 'auto':
@@ -137,7 +142,7 @@ def process_plane(full_manifest, session, has_hires):
     """
     plane = session['functional_plane'][0]
     input_format = fc._get_input_format(session)
-    rprint(f"\n[bold green]Processing 2P plane {plane} (input: {input_format})[/bold green]")
+    rprint(f"\n[bold green]Processing 2P plane {plane}[/bold green]")
 
     # 1. Hires tile stitching first (sbx + suite2p modes). Running stitching
     # ahead of the lowres rotation prompt means the user gets a 2-channel
@@ -168,7 +173,11 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--manifest', required=True, help='Path to the pipeline manifest file e.g. examples/CIM132.hjson')
-    parser.add_argument('--only_hcr', action='store_true', help='Run only HCR part of the pipeline')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--only_hcr', action='store_true', help='HCR rounds + segmentation only; no 2P data')
+    mode.add_argument('--tiff_only', action='store_true',
+                      help='Align a pre-processed 2P mean image (TIFF) to an ex vivo volume. '
+                           'See examples/demo_tiff_minimal.hjson.')
 
     args = parser.parse_args()
     #args = {'manifest': 'examples/CIM132.hjson'}

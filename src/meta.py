@@ -85,6 +85,10 @@ def verify_manifest(manifest, args):
         assert 'two_photon_imaging' in manifest, "'two_photon_imaging' section required for full pipeline mode"
         assert len(manifest['two_photon_imaging']['sessions'])==1, 'only support one 2P sessions'
         session = manifest['two_photon_imaging']['sessions'][0]
+        if getattr(args, 'tiff_only', False):
+            if session.get('input_format') and session['input_format'] != 'tiff':
+                rprint(f"[yellow]--tiff_only: ignoring manifest input_format={session['input_format']!r}[/yellow]")
+            session['input_format'] = 'tiff'
         input_format = session.get('input_format', 'sbx')
 
     #test that reference round exists

@@ -164,8 +164,17 @@ def _rotate_plane(full_manifest, save_filename_C, save_path_registered, function
 
     any_rotated_exists = any(save_path_registered.glob('*_rotated.tiff'))
     manifest_path = full_manifest['manifest_path']
+    # Presence of rotation block = user-configured; banner only fires for true first-run.
+    rotation_explicitly_provided = (
+        'rotation_2p_to_HCR' in full_manifest['params']
+        or 'rotation_2p_to_HCRspec' in full_manifest['params']
+    )
 
-    if not any_rotated_exists:
+    if not any_rotated_exists and rotation_explicitly_provided:
+        cfg = get_rotation_config(full_manifest['params'])
+        rprint(f"  Applying rotation_2p_to_HCR: rotation={cfg.get('rotation', 0)}, "
+               f"fliplr={cfg.get('fliplr', False)}, flipud={cfg.get('flipud', False)}")
+    elif not any_rotated_exists:
         reference_HCR_round = verify_rounds(full_manifest)[1]['image_path']
 
         print('')
