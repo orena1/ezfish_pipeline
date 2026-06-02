@@ -1,0 +1,98 @@
+# ezfish_all_cp4 environment v2 — looser pins for fast solving
+# Identical to ezfish_all_environment_v2.yml except cellpose 4 (cellpose-SAM)
+# instead of cellpose 3. Use this when the fully-pinned cp4 yaml hits classic-
+# conda conflict-resolution hell. Trade-off: less reproducible pin set.
+#
+# USAGE:
+#   conda env create -f ezfish_all_cp4_environment_v2.yml -p /mnt/colab/shared_envs/ezfish_all_cp4
+#
+# BIGSTREAM: After creating, install bigstream:
+#   conda activate /mnt/colab/shared_envs/ezfish_all_cp4
+#   pip install -e /mnt/nasquatch/data/2p/jonna/Code_Python/Notebooks_Jonna/BigStream/bigstream_v2_andermann
+
+name: ezfish_all_cp4
+
+channels:
+  - conda-forge
+  - pytorch
+  - nvidia
+  - defaults
+
+dependencies:
+  - python=3.12
+
+  # Core scientific
+  - numpy>=1.26,<2
+  - scipy
+  - pandas
+  - scikit-image
+  - scikit-learn
+
+  # PyTorch with CUDA
+  - pytorch::pytorch=2.5
+  - pytorch::torchvision
+  - pytorch::torchaudio
+  - pytorch::pytorch-cuda=12.1
+
+  # Image I/O
+  - tifffile
+  - imagecodecs
+  - imageio
+  - pillow
+  - opencv
+
+  # Visualization
+  - matplotlib
+  - seaborn
+  - bokeh
+
+  # Interactive plotting (key for hcr_env functionality)
+  - ipympl
+  - ipywidgets
+
+  # Jupyter
+  - jupyterlab
+  - ipykernel
+
+  # Data formats
+  - zarr
+  - h5py
+  - numcodecs
+
+  # Parallel/distributed
+  - dask
+  - distributed
+  - dask-jobqueue
+  - numba
+
+  # Utilities
+  - tqdm
+  - rich
+  - natsort
+  - pyyaml
+  - joblib
+
+  # GUI
+  - pyqt
+
+  # Pip packages
+  - pip
+  - pip:
+    - simpleitk==2.3.1
+    - cellpose>=4.0.0
+    - suite2p>=0.14.4
+    - git+https://github.com/GFleishman/ClusterWrap.git@fa718ac49
+    - sbxreader
+    - roifile
+    - pystackreg>=0.2.7
+    - umap-learn
+    - statsmodels
+    - plotly
+    - xgboost
+    - fastremap
+    - fishspot>=0.3.0
+    - morphsnakes
+    - pynrrd
+    - pydantic>=2.7
+    - flatten_json
+    - hjson

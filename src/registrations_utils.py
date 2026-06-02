@@ -425,6 +425,65 @@ def apply_shift_fields(mask_2d, dy_field, dx_field, order=0, return_labels=False
         # Return binary (for IoU calculation)
         return shifted > 0.5
 
+def read_tiff_resolution(tiff_path):
+    """Return [x, y, z] um/px from ImageJ TIFF metadata, or None if unreadable.
+
+    Expects XResolution/YResolution as pixels-per-micron and ImageJ `spacing` for Z,
+    with `unit=micron`. Any missing piece yields None.
+    """
+    try:
+        with TiffFile(str(tiff_path)) as t:
+            ij = t.imagej_metadata or {}
+            if str(ij.get('unit', '')).lower() not in ('micron', 'microns', 'um', 'µm'):
+                return None
+            xr = t.pages[0].tags.get('XResolution')
+            yr = t.pages[0].tags.get('YResolution')
+            z_um = ij.get('spacing')
+            if xr is None or yr is None or not z_um or z_um <= 0:
+                return None
+            (xn, xd), (yn, yd) = xr.value, yr.value
+            if not xd or not yd or xn <= 0 or yn <= 0:
+                return None
+            return [float(xd / xn), float(yd / yn), float(z_um)]
+    except Exception:
+        return None
+
+
+def resolve_hcr_resolution(tiff_path, manifest_resolution=None, tolerance=0.01):
+    """Pick final HCR resolution. TIFF metadata is the default; manifest overrides.
+
+    Warns loudly when an override disagrees with metadata by more than `tolerance`.
+    Raises ValueError if neither source is available.
+    """
+    tiff_res = read_tiff_resolution(tiff_path)
+    name = Path(tiff_path).name
+
+    if tiff_res is None and manifest_resolution is None:
+        raise ValueError(
+            f"HCR resolution unavailable: no readable TIFF metadata at {tiff_path} "
+            f"and no `resolution` set in manifest's rounds entry.")
+
+    if tiff_res is None:
+        print(f"  [WARN] HCR resolution: TIFF metadata unreadable at {name}; "
+              f"using manifest {manifest_resolution} unverified.")
+        return list(manifest_resolution)
+
+    if manifest_resolution is None:
+        print(f"  HCR resolution from {name}: "
+              f"[{tiff_res[0]:.4f}, {tiff_res[1]:.4f}, {tiff_res[2]:.4f}] um/px")
+        return tiff_res
+
+    max_frac = max(abs((m - t) / t) for m, t in zip(manifest_resolution, tiff_res))
+    if max_frac > tolerance:
+        print(f"  [WARN] HCR resolution: manifest {list(manifest_resolution)} "
+              f"disagrees with {name} {[round(v, 4) for v in tiff_res]} "
+              f"by {max_frac*100:.1f}%. Using manifest as override "
+              f"(remove field to trust metadata).")
+    else:
+        print(f"  HCR resolution: manifest matches {name} ({list(manifest_resolution)} um/px).")
+    return list(manifest_resolution)
+
+
 def add_px_columns(landmarks_df, hcr_resolution):
     """
     Convert landmark coordinates to pixel units.
@@ -1010,6 +1069,7 @@ def refine_lowres_to_hires_with_tiles(lowres_aligned, hires_2d, masks, config=No
     tile_overlap = config.get('tile_overlap', 0.3)
     blend_width = config.get('blend_width', 40)
     max_shift = config.get('max_shift', 40)
+    scale_tol = config.get('scale_tol', 0.20)  # accepted local scale window: [1-scale_tol, 1+scale_tol]
     min_overlap_fraction = config.get('min_overlap_fraction', 0.5)
     require_ncc_improvement = config.get('require_ncc_improvement', True)
 
@@ -1021,7 +1081,6 @@ def refine_lowres_to_hires_with_tiles(lowres_aligned, hires_2d, masks, config=No
     ratio_threshold = config.get('ratio_threshold', 0.7)
     ransac_reproj_threshold = config.get('ransac_reproj_threshold', 3.0)
     percentile_norm = config.get('percentile_norm', (2, 98))  # Percentile-based normalization
-    verbose = config.get('verbose', False)
 
     h, w = hires_2d.shape
     step = max(1, int(tile_size * (1 - tile_overlap)))
@@ -1051,13 +1110,12 @@ def refine_lowres_to_hires_with_tiles(lowres_aligned, hires_2d, masks, config=No
         'percentile_norm': percentile_norm,
     }
 
-    # Accumulators for direct tile application with weighted blending
-    warped_img_sum = np.zeros((h, w), dtype=np.float64)
-    weight_sum = np.zeros((h, w), dtype=np.float64)
-    # For masks: use winner-takes-all (highest weight wins) instead of weighted average
-    # Weighted averaging corrupts label IDs (e.g., averaging label 5 and 10 gives 7.5 -> wrong cell!)
-    masks_result = masks.copy()  # Start with original masks
-    masks_max_weight = np.zeros((h, w), dtype=np.float64)  # Track highest weight per pixel
+    # Accumulate per-pixel DISPLACEMENTS (not warped pixels). Averaging warped
+    # pixels superposes copies when adjacent tiles' affines disagree; averaging
+    # displacements and remapping once is coherent. Masks ride the same field.
+    dy_field_sum = np.zeros((h, w), dtype=np.float64)
+    dx_field_sum = np.zeros((h, w), dtype=np.float64)
+    weight_sum   = np.zeros((h, w), dtype=np.float64)
 
     tile_results = []
     # Track failure reasons for diagnostics
@@ -1126,8 +1184,9 @@ def refine_lowres_to_hires_with_tiles(lowres_aligned, hires_2d, masks, config=No
             scale_y = np.sqrt(b**2 + d**2)
             dx, dy = affine_matrix[0, 2], affine_matrix[1, 2]
 
-            # Reject if scale deviates more than 20% from identity or shift exceeds max
-            scale_ok = (0.80 <= scale_x <= 1.20) and (0.80 <= scale_y <= 1.20)
+            # Reject if scale deviates more than scale_tol from identity or shift exceeds max_shift
+            scale_lo, scale_hi = 1.0 - scale_tol, 1.0 + scale_tol
+            scale_ok = (scale_lo <= scale_x <= scale_hi) and (scale_lo <= scale_y <= scale_hi)
             shift_ok = (abs(dx) <= max_shift) and (abs(dy) <= max_shift)
 
             if not scale_ok:
@@ -1140,7 +1199,9 @@ def refine_lowres_to_hires_with_tiles(lowres_aligned, hires_2d, masks, config=No
                 failure_reasons['bad_shift'] += 1
                 continue
 
-            # Apply affine correction to get warped tile
+            # Warp the tile once for NCC quality gating only — not used downstream.
+            # (The actual refinement applies a single coherent remap built from the
+            # blended displacement field below; this warp is just for validation.)
             warped_lowres_tile = cv2.warpAffine(
                 lowres_tile, affine_matrix, (tile_w, tile_h),
                 flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
@@ -1153,11 +1214,16 @@ def refine_lowres_to_hires_with_tiles(lowres_aligned, hires_2d, masks, config=No
                 failure_reasons['ncc_worse'] += 1
                 continue
 
-            # Apply same affine to masks (nearest-neighbor for labels)
-            warped_masks_tile = cv2.warpAffine(
-                masks_tile, affine_matrix, (tile_w, tile_h),
-                flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_REPLICATE
-            )
+            # Build the per-tile displacement field from the INVERSE of the affine.
+            # cv2.estimateAffine2D returns the FORWARD matrix (src→dst); cv2.warpAffine
+            # auto-inverts it internally. cv2.remap does NOT auto-invert, so we must
+            # invert here so dx_field = output - src goes the correct direction.
+            M_inv = cv2.invertAffineTransform(affine_matrix)
+            yy_tile, xx_tile = np.mgrid[0:tile_h, 0:tile_w].astype(np.float64)
+            a_, b_, tx_ = M_inv[0]
+            c_, d_, ty_ = M_inv[1]
+            dx_tile = (a_ * xx_tile + b_ * yy_tile + tx_) - xx_tile
+            dy_tile = (c_ * xx_tile + d_ * yy_tile + ty_) - yy_tile
 
             # Create feathered weight mask (1 in center, tapered to 0 at edges)
             weight = np.ones((tile_h, tile_w), dtype=np.float64)
@@ -1170,15 +1236,10 @@ def refine_lowres_to_hires_with_tiles(lowres_aligned, hires_2d, masks, config=No
                 weight[:, j] *= factor
                 weight[:, tile_w - 1 - j] *= factor
 
-            # Accumulate weighted contributions for image (blending is fine for images)
-            warped_img_sum[y0:y1, x0:x1] += warped_lowres_tile * weight
-            weight_sum[y0:y1, x0:x1] += weight
-
-            # For masks: winner-takes-all (update only where this tile has higher weight)
-            # This preserves label IDs instead of corrupting them via averaging
-            update_mask = weight > masks_max_weight[y0:y1, x0:x1]
-            masks_result[y0:y1, x0:x1] = np.where(update_mask, warped_masks_tile, masks_result[y0:y1, x0:x1])
-            masks_max_weight[y0:y1, x0:x1] = np.maximum(masks_max_weight[y0:y1, x0:x1], weight)
+            # Accumulate weighted DISPLACEMENT contributions (not warped pixels).
+            dy_field_sum[y0:y1, x0:x1] += dy_tile * weight
+            dx_field_sum[y0:y1, x0:x1] += dx_tile * weight
+            weight_sum  [y0:y1, x0:x1] += weight
 
             tile_results.append({'cy': cy, 'success': True, 'ncc_before': ncc_before, 'ncc_after': ncc_after, 'shift': (dx, dy)})
 
@@ -1186,27 +1247,37 @@ def refine_lowres_to_hires_with_tiles(lowres_aligned, hires_2d, masks, config=No
             tile_results.append({'cy': cy, 'success': False, 'reason': 'exception', 'error': str(e)})
             failure_reasons['exception'] += 1
 
-    # Print failure summary
-    if verbose:
-        print(f"  Tile failure breakdown: {failure_reasons}")
-
-    # If no successful tiles, return original
+    # Always-on failure summary + accepted-tile shift stats.
+    n_total   = len(tile_positions)
     n_success = sum(1 for t in tile_results if t.get('success'))
+    if n_total - n_success > 0:
+        parts = [f"{r}={n}" for r, n in failure_reasons.items() if n > 0]
+        print(f"  Tile refinement: {n_success}/{n_total} accepted — failed: {', '.join(parts)}")
+    if n_success > 0:
+        mags = np.linalg.norm([t['shift'] for t in tile_results if t.get('success')], axis=1)
+        p95 = float(np.percentile(mags, 95))
+        warn = "  — P95 near cap, consider raising max_shift" if p95 > 0.9 * max_shift else ""
+        print(f"  Accepted-tile shift |dxy|: median={np.median(mags):.2f}px, P95={p95:.2f}px (cap={max_shift}){warn}")
+
     if n_success < 1:
         return masks.copy(), lowres_aligned.copy(), tile_results
 
-    # Compute final result: divide by total weight for image, use winner-takes-all for masks
-    no_coverage_mask = weight_sum < 0.01
-    weight_sum_safe = np.maximum(weight_sum, 1e-6)
+    # Per-pixel weighted average of displacements. Outside the tile envelope
+    # the field is identity, so cv2.remap passes lowres_aligned through.
+    weight_safe = np.maximum(weight_sum, 1e-6)
+    dy_field = dy_field_sum / weight_safe
+    dx_field = dx_field_sum / weight_safe
+    no_cov = weight_sum < 0.01
+    dy_field[no_cov] = 0.0
+    dx_field[no_cov] = 0.0
 
-    lowres_refined = warped_img_sum / weight_sum_safe
-
-    # Fill uncovered regions with original values
-    lowres_refined[no_coverage_mask] = lowres_aligned[no_coverage_mask]
-    # masks_result already has original values where no tile was applied (initialized from masks.copy())
-
-    # Ensure masks are integer type
-    masks_refined = masks_result.astype(masks.dtype)
+    yy_full, xx_full = np.mgrid[0:h, 0:w].astype(np.float32)
+    map_x = (xx_full + dx_field).astype(np.float32)
+    map_y = (yy_full + dy_field).astype(np.float32)
+    lowres_refined = cv2.remap(lowres_aligned.astype(np.float32), map_x, map_y,
+                               cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    masks_refined  = cv2.remap(masks, map_x, map_y,
+                               cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0).astype(masks.dtype)
 
     return masks_refined, lowres_refined, tile_results
 
@@ -1659,7 +1730,7 @@ def compute_tile_defaults(tile_size):
         return KNOWN[tile_size].copy()
 
     # Auto-compute from ratios observed across known sizes
-    min_cells = max(2, min(12, int(tile_size / 37)))
+    min_cells = max(2, min(6, int(tile_size / 50)))
     clamp_mult = max(1.1, min(2.5, 1.0 + tile_size / 300))
     border_spacing = max(30, min(200, int(tile_size * 0.35)))
 
@@ -1670,14 +1741,20 @@ def compute_tile_defaults(tile_size):
 
 def compute_adaptive_matching_params(cell_df, tile_size, stage_idx=0,
                                      percentile=95, multiplier=1.5,
-                                     tile_ratio=0.3, patch_ratio=2.0,
+                                     tile_ratio=0.4, patch_ratio=2.0,
                                      patch_tile_ratio=0.6,
+                                     z_tile_ratio=0.01,
                                      search_xy_min=3, search_xy_max=50,
-                                     search_z_default=2, search_z_fine=1):
+                                     search_z_min=2, search_z_max=5):
     """Compute adaptive search/patch sizes from current residual magnitudes.
 
-    For stage 0 (first cascade stage): uses tile-proportional defaults.
-    For subsequent stages: measures residuals from post-correction re-match.
+    For stage 0 (first cascade stage): uses tile-proportional defaults
+      - search_xy = tile_size * tile_ratio
+      - search_z  = max(search_z_min, round(tile_size * z_tile_ratio))
+    For subsequent stages: residual-driven from post-correction re-match
+      - search_xy = ceil(P95(|dxy|) * multiplier), capped at tile_size*tile_ratio and search_xy_max
+      - search_z  = ceil(P95(|dz|)  * multiplier), capped at search_z_max
+        (falls back to stage-0 proportional value if cell_df has no 'dz' column)
 
     Returns (patch_radius, search_xy, search_z).
     """
@@ -1685,22 +1762,30 @@ def compute_adaptive_matching_params(cell_df, tile_size, stage_idx=0,
         # First stage or no data: tile-proportional defaults
         patch_r = int(tile_size * patch_tile_ratio)
         search_xy = int(tile_size * tile_ratio)
-        search_z = search_z_default
+        search_z = max(search_z_min, int(round(tile_size * z_tile_ratio)))
         return patch_r, search_xy, search_z
 
     resid_mag = np.sqrt(cell_df.dy.values**2 + cell_df.dx.values**2)
-    p = np.percentile(resid_mag, percentile)
+    p_xy = np.percentile(resid_mag, percentile)
 
-    # Search range: enough to capture residuals with margin
-    search_xy = max(search_xy_min, int(np.ceil(p * multiplier)))
-    # Cap at fraction of tile size
+    # XY search: enough to capture residuals with margin
+    search_xy = max(search_xy_min, int(np.ceil(p_xy * multiplier)))
+    # Cap at fraction of tile size and absolute max
     search_xy = min(search_xy, int(tile_size * tile_ratio), search_xy_max)
     # Patch must be at least patch_ratio * search
     patch_radius = max(search_xy, int(search_xy * patch_ratio))
     # Cap at tile size
     patch_radius = min(patch_radius, tile_size)
 
-    search_z = search_z_fine
+    # Z search: residual-driven if dz residuals available, else tile-proportional fallback.
+    # The rematch's own search_z bounds what we can measure here, so this can saturate
+    # when residual z exceeds the rematch window.
+    if 'dz' in cell_df.columns:
+        p_z = np.percentile(np.abs(cell_df.dz.values), percentile)
+        search_z = max(1, int(np.ceil(p_z * multiplier)))
+    else:
+        search_z = max(search_z_min, int(round(tile_size * z_tile_ratio)))
+    search_z = min(search_z, search_z_max)
 
     return patch_radius, search_xy, search_z
 
@@ -2003,6 +2088,17 @@ def run_local_tile_ransac(twop_binary, hcr_3d_bin, z_map, centroids, cell_df,
                           min_iou=0.10, min_gain=0.04,
                           border_anchor_spacing=100,
                           smoothing=50,
+                          # Edge-correction knobs forwarded to _synthesize_warp_from_tiles.
+                          # Defaults preserve original conservative behavior.
+                          # use_nn_fallback=True eliminates the data-weight "snap to zero"
+                          # outside the accepted-tile envelope by blending to nearest-tile
+                          # shift instead — safe because NN value is bounded by per-tile
+                          # IoU + MAD checks the accepted tiles already passed.
+                          use_nn_fallback=False,
+                          data_sigma_mult=1.0,
+                          border_decay_mult=2.0,
+                          border_weight_floor=0.0,
+                          disable_border_anchors=False,
                           debug_dump_path=None):
     """Fit per-tile affines from cell matches, return smooth RBF displacement fields.
 
@@ -2057,7 +2153,7 @@ def run_local_tile_ransac(twop_binary, hcr_3d_bin, z_map, centroids, cell_df,
                     cand_dx = float(np.median(in_tile.dx.values))
                     cand_dz = float(np.median(in_tile.dz.values))
                 else:
-                    mc = np.array([[tc_y, tc_x, 1]])
+                    mc = np.array([tc_y, tc_x, 1])
                     cand_dy = float(mc @ A_dy)
                     cand_dx = float(mc @ A_dx)
                     cand_dz = float(mc @ A_dz)
@@ -2105,6 +2201,11 @@ def run_local_tile_ransac(twop_binary, hcr_3d_bin, z_map, centroids, cell_df,
         tile_results, ny, nx, tile_size,
         border_anchor_spacing=border_anchor_spacing,
         smoothing=smoothing,
+        use_nn_fallback=use_nn_fallback,
+        data_sigma_mult=data_sigma_mult,
+        border_decay_mult=border_decay_mult,
+        border_weight_floor=border_weight_floor,
+        disable_border_anchors=disable_border_anchors,
         n_iou_rejected=n_iou_rejected,
     )
     return dy_f, dx_f, dz_f, tile_results
@@ -2114,7 +2215,7 @@ def _synthesize_warp_from_tiles(
     tile_results, ny, nx, tile_size,
     border_anchor_spacing=100,
     smoothing=50,
-    mad_k=3.0,
+    mad_k=4.0,
     mad_floor=1.0,
     border_decay_mult=2.0,
     data_sigma_mult=1.0,

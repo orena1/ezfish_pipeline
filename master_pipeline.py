@@ -1,12 +1,12 @@
 import argparse
 from pathlib import Path
-from rich import print as rprint
 from src import functional as fc
 from src import tiling as tl
 from src import registrations as rf
 from src import registrations_landmarks as rf_landmarks
 from src import meta as mt
 from src import segmentation as sg
+from src.meta import rprint
 
 # This is the main pipeline script that runs the entire pipeline
 
@@ -116,7 +116,12 @@ def main(args = None):
             # Determine if this is the reference plane
             plane_reference = None if plane == reference_plane else reference_plane
             sg.align_masks(full_manifest, session, only_hcr=args.only_hcr, reference_plane=plane_reference)
+            # Augment IoU CSV with somaprint columns (geometric matcher,
+            # parallel to IoU; no-op if disabled in manifest).
+            sg.align_somaprint(full_manifest, session, only_hcr=args.only_hcr)
             sg.merge_masks(full_manifest, session, only_hcr=args.only_hcr)
+
+        sg.print_match_summary(full_manifest, all_planes)
 
         rprint('\n' + '='*80)
         rprint('[bold green]Pipeline completed successfully for all planes![/bold green]')

@@ -5,8 +5,11 @@ Keeps it simple: ~100 lines, no classes, reuse existing patterns.
 
 import pandas as pd
 from pathlib import Path
-from rich import print as rprint
-from rich.prompt import Prompt
+
+try:
+    from .meta import rprint, Prompt  # Relative import (running as part of a package)
+except ImportError:
+    from meta import rprint, Prompt  # Absolute import (running in Jupyter notebook)
 
 
 def find_landmark_file(base_dir, plane, prefix="", suffix="_landmarks.csv", hcr_ref="1"):
@@ -161,9 +164,9 @@ def prompt_registration_checkpoint(qa_paths, auto_landmarks_path, step_name, pla
     rprint(f"  [yellow]{auto_landmarks_path}[/yellow]")
 
     rprint("\n[bold]After checking QA images, choose:[/bold]")
-    rprint("  [green][y][/green] Accept - continue with auto results")
-    rprint("  [yellow][r][/yellow] Refine - edit landmarks_auto.csv in BigWarp, then re-run")
-    rprint("  [red][n][/red] Skip - skip this plane, continue with others\n")
+    rprint("  \\[[green]y[/green]] Accept - continue with auto results")
+    rprint("  \\[[yellow]r[/yellow]] Refine - edit landmarks_auto.csv in BigWarp, then re-run")
+    rprint("  \\[[red]n[/red]] Skip - skip this plane, continue with others\n")
 
     choice = Prompt.ask("Your choice", choices=["y", "r", "n"], default="y")
 

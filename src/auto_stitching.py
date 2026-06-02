@@ -28,7 +28,11 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from tqdm import tqdm
-from rich import print as rprint
+
+try:
+    from .meta import rprint  # Relative import (running as part of a package)
+except ImportError:
+    from meta import rprint  # Absolute import (running in Jupyter notebook)
 
 
 class StitchingError(Exception):
@@ -255,11 +259,10 @@ def compute_pairwise_shifts(
     z_planes: List[int],
     overlap_fraction: float = 0.40,
     noise_floor: float = 15.0,
+    stitch_channel: int = 0,
 ) -> Tuple[Dict[Tuple[int, int], Dict], Dict[Tuple[int, int], Dict[int, Dict]]]:
     """
     Compute pairwise shifts for all tile pairs across all z-planes.
-
-    Uses channel 0 (green/GCaMP) for registration.
 
     Args:
         tile_data: Dict mapping tile number to data array (Z, C, Y, X)
@@ -267,6 +270,8 @@ def compute_pairwise_shifts(
         z_planes: List of z-plane indices
         overlap_fraction: Expected overlap as fraction of tile width (from config)
         noise_floor: Minimum pixel value to consider as signal
+        stitch_channel: Which channel of tile_data to use for cross-correlation
+            (default 0 = green; set to 1 for mice with PMT0 off / single-PMT red)
 
     Returns:
         consensus_shifts: Dict with mean shift across z-planes
@@ -283,8 +288,8 @@ def compute_pairwise_shifts(
     expected_dx = int(tile_width * (1 - overlap_fraction))
 
     for t1, t2 in tqdm(pairs, desc=f"Aligning {len(pairs)} tile pairs"):
-        data1 = tile_data[t1][:, 0, :, :]  # Channel 0
-        data2 = tile_data[t2][:, 0, :, :]
+        data1 = tile_data[t1][:, stitch_channel, :, :]
+        data2 = tile_data[t2][:, stitch_channel, :, :]
 
         shifts_by_z = {}
 
@@ -510,7 +515,8 @@ def auto_stitch_tiles(
     overlap_fraction: float = 0.40,
     noise_floor: float = 15.0,
     min_signal_frac: float = 0.01,
-    upsample_factor: int = 10
+    upsample_factor: int = 10,
+    stitch_channel: int = 0,
 ) -> np.ndarray:
     """
     Main entry point for automated tile stitching.
@@ -524,6 +530,8 @@ def auto_stitch_tiles(
         noise_floor: Minimum pixel value for signal
         min_signal_frac: (unused, for API compatibility)
         upsample_factor: (unused, for API compatibility)
+        stitch_channel: Channel of the warped tiles used for cross-correlation
+            (default 0; set to 1 when PMT0 is off so ch0 has no signal).
 
     Returns:
         Stitched volume (Z, C, Y, X)
@@ -564,7 +572,8 @@ def auto_stitch_tiles(
     pairs = find_horizontal_pairs(num_tiles)
 
     consensus_shifts, per_plane_shifts = compute_pairwise_shifts(
-        tile_data, pairs, z_planes, overlap_fraction, noise_floor
+        tile_data, pairs, z_planes, overlap_fraction, noise_floor,
+        stitch_channel=stitch_channel,
     )
 
     # Compute positions

@@ -69,6 +69,10 @@
             flipud: false
         }
 
+        twop_to_hcr_registration: {
+            cascade_stages: [300, 100, 50]
+        }
+
         HCR_cellpose: {
             model_path: "/path/to/your/cellpose_model"
             cellpose_channel: 0

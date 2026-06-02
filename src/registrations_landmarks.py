@@ -8,10 +8,14 @@ to handle non-linear distortions between low-res and high-res images.
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from rich import print as rprint
 from skimage.transform import PiecewiseAffineTransform, warp
 from scipy.interpolate import Rbf
 from tifffile import imread as tif_imread, imwrite as tif_imwrite
+
+try:
+    from .meta import output_root, rprint  # Relative import (running as part of a package)
+except ImportError:
+    from meta import output_root, rprint  # Absolute import (running in Jupyter notebook)
 
 try:
     from . import automation as auto
@@ -114,7 +118,7 @@ def register_lowres_to_hires_landmarks(full_manifest, session):
     print(f"Planes: {TARGET_PLANES} (ref: {REFERENCE_PLANE})")
 
     # Output directories
-    output_dir = base_path / mouse / 'OUTPUT' / '2P' / 'registered'
+    output_dir = output_root(full_manifest) / '2P' / 'registered'
     qa_dir = output_dir / 'QualityCheck' / 'lowres_to_hires'
 
     # Create QualityCheck directory - handle case where 'QualityCheck' exists as a file
@@ -139,13 +143,13 @@ def register_lowres_to_hires_landmarks(full_manifest, session):
 
         # --- LOAD FILES ---
         # Low-res: rotated mean image from Suite2p
-        lowres_img_path = base_path / mouse / 'OUTPUT' / '2P' / 'registered' / f'lowres_meanImg_C0_plane{plane_idx}_rotated.tiff'
+        lowres_img_path = output_root(full_manifest) / '2P' / 'registered' / f'lowres_meanImg_C0_plane{plane_idx}_rotated.tiff'
 
         # High-res: rotated stitched image
-        hires_img_path = base_path / mouse / 'OUTPUT' / '2P' / 'registered' / f'hires_stitched_plane{plane_idx}_rotated.tiff'
+        hires_img_path = output_root(full_manifest) / '2P' / 'registered' / f'hires_stitched_plane{plane_idx}_rotated.tiff'
 
         # Low-res masks: cellpose output (will rotate on-the-fly)
-        lowres_masks_path = base_path / mouse / 'OUTPUT' / '2P' / 'cellpose' / f'lowres_meanImg_C0_plane{plane_idx}_seg.npy'
+        lowres_masks_path = output_root(full_manifest) / '2P' / 'cellpose' / f'lowres_meanImg_C0_plane{plane_idx}_seg.npy'
 
         # User-provided landmarks (only for reference plane)
         landmarks_path = output_dir / f'lowres_to_hires_plane{REFERENCE_PLANE}_landmarks.csv'
@@ -213,7 +217,7 @@ def register_lowres_to_hires_landmarks(full_manifest, session):
             lowres_masks = np.flipud(lowres_masks)
 
         # Save rotated masks as TIFF for use by rest of pipeline
-        rotated_masks_path = base_path / mouse / 'OUTPUT' / '2P' / 'cellpose' / f'lowres_meanImg_C0_plane{plane_idx}_seg_rotated.tiff'
+        rotated_masks_path = output_root(full_manifest) / '2P' / 'cellpose' / f'lowres_meanImg_C0_plane{plane_idx}_seg_rotated.tiff'
         tif_imwrite(str(rotated_masks_path), lowres_masks.astype(np.uint16))
 
         # Extract 2D from high-res (could be ZCYX or CYX)

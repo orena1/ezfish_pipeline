@@ -93,6 +93,20 @@
             flipud: false      // mirror up-down after rotation
         }
 
+        // ----- 2P→HCR registration -----
+        // See agent_docs/parameter_tuning.md for the full tiered guide.
+        // Lower-tier knobs (RANSAC, FFT-IoU thresholds, etc.) are read from
+        // the same block but fall through to defaults when unset.
+        twop_to_hcr_registration: {
+            cascade_stages: [300, 100, 50]   // local tile sizes (px); [400, 200, 100] for sparse cells, [200, 100, 50] for dense
+            erosion: 2                       // 2P mask shrink (px); 0 for cp4-SAM masks, 3-4 for boundary artifacts
+            erosion_hcr: 0                   // HCR mask shrink (px); try 1 if HCR cells bleed
+            z_range_global: [-15, 15]        // z-offset search range (slices); widen to [-25, 25] for large z offset
+            xy_max_global: 500               // xy search range (px); raise to 600 if landmarks coarse / TPS loose
+            hull_margin: -100                // inward hull erosion (px, negative); less negative (-50) for poor landmark coverage
+            flip_z: false                    // true when HCR acquisition has inverted z-axis
+        }
+
         // ----- HCR cellpose (3D segmentation on registered stacks) -----
         HCR_cellpose: {
             model_path: "/path/to/your/cellpose_model"
@@ -126,6 +140,19 @@
         //     twop_to_hcr: "manual"      // "auto" = automated refinement (still needs initial landmarks)
         //     lowres_to_hires: "manual"   // "auto" = SIFT + RANSAC (no BigWarp needed)
         //     stitching: "manual"         // "auto" = SIFT + phase correlation
+        // }
+
+        // ----- Somaprint matcher (optional; defaults shown) -----
+        // Geometric 2P→HCR matcher (neighbor-vector fingerprint + GMM curation).
+        // Runs alongside the IoU best-match step and writes a parallel set of
+        // twoP_somaprint_* columns into the merged feature table. Set
+        // enabled: false to skip (saves ~2-3 min/plane); rest tunes the matcher.
+        // somaprint: {
+        //     enabled: true
+        //     lr_threshold: 0.05        // smaller = stricter confidence gate
+        //     // m_2p: 15, m_hcr: 30, n_pairs: 10, lambda_scale: 10.0,
+        //     // radius_factor: 3.0, max_rounds: 4, terminate_pct: 5.0,
+        //     // n_pairs_r2: 10, min_confirmed_for_round2: 5, min_cells_for_gmm: 30
         // }
 
         // ----- HCR registration selections -----
