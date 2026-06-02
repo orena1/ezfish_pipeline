@@ -12,6 +12,11 @@
     //    {base_path}/{mouse_name}/2P/plane_{N}_hires.tiff     (optional; pre-stitched hires)
     //    {base_path}/{mouse_name}/HCR/{mouse_name}_HCR{R}.tiff (one per ex vivo round)
     //
+    //  Note on naming: the folder ("HCR/") and file prefix ("_HCR") are legacy
+    //  conventions from the original HCR-FISH use case; the pipeline treats the
+    //  files as a generic multi-channel ex vivo volume regardless. Accepts .tif
+    //  or .tiff, case-insensitive. R is the round number as a string ("01", "02").
+    //
     //  Run:
     //    python master_pipeline.py --manifest examples/demo_tiff_minimal.hjson --tiff_only
     // ---------------------------------------------------------------------
