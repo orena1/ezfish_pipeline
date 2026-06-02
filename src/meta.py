@@ -3,27 +3,47 @@ import sys
 import hjson
 import numpy as np
 from pathlib import Path
-from rich.prompt import Prompt
+
+# Rich-compat shim. All pipeline modules import rprint / track / Prompt from
+# here so the fallback lives in one place. If rich isn't installed (e.g. a
+# stripped-down notebook env), modules still import cleanly and lose only
+# the Rich markup formatting.
+try:
+    from rich import print as rprint
+    from rich.progress import track
+    from rich.prompt import Prompt
+except ImportError:
+    rprint = print
+
+    def track(iterable, *args, **kwargs):
+        return iterable
+
+    class Prompt:
+        @staticmethod
+        def ask(prompt, choices=None, default=None, **kwargs):
+            ans = input(str(prompt) + ' ').strip()
+            if not ans and default is not None:
+                return default
+            return ans
 
 
 def parse_json(json_file):
     """
-    Parse a json file and return a dictionary object
+    Parse a json/hjson manifest. Normalizes base_path slashes so the same
+    manifest works whether loaded on Linux (/mnt/...) or Windows (\\...).
     """
     with open(json_file, 'r') as f:
-        return hjson.load(f)
+        manifest = hjson.load(f)
+    bp = manifest.get('data', {}).get('base_path')
+    if isinstance(bp, str):
+        manifest['data']['base_path'] = bp.replace('\\', '/')
+    return manifest
 
 
 def output_root(full_manifest) -> Path:
-    """Pipeline OUTPUT directory: base_path / mouse_name / OUTPUT{output_dir_suffix}.
-
-    Honors params.output_dir_suffix so cp4-eval (or any future what-if run) can
-    write to OUTPUT_cp4/ without overwriting the cp3 OUTPUT/ baseline. Default
-    suffix is empty, preserving existing behavior for every existing manifest.
-    """
+    """Pipeline OUTPUT directory: base_path / mouse_name / OUTPUT."""
     data = full_manifest['data']
-    suffix = full_manifest.get('params', {}).get('output_dir_suffix', '')
-    return Path(data['base_path']) / data['mouse_name'] / f'OUTPUT{suffix}'
+    return Path(data['base_path']) / data['mouse_name'] / 'OUTPUT'
     
 def user_input_missing(check_results, message, color):
     if  (np.array(check_results)[:,1]==False).any():

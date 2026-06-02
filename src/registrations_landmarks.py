@@ -8,12 +8,14 @@ to handle non-linear distortions between low-res and high-res images.
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from rich import print as rprint
 from skimage.transform import PiecewiseAffineTransform, warp
 from scipy.interpolate import Rbf
 from tifffile import imread as tif_imread, imwrite as tif_imwrite
 
-from .meta import output_root
+try:
+    from .meta import output_root, rprint  # Relative import (running as part of a package)
+except ImportError:
+    from meta import output_root, rprint  # Absolute import (running in Jupyter notebook)
 
 try:
     from . import automation as auto

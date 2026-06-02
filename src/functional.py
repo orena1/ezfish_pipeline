@@ -1,11 +1,13 @@
 from pathlib import Path
 
 import numpy as np
-from rich import print as rprint
-from rich.progress import track
 from skimage.transform import rotate
-from .registrations import verify_rounds
-from .meta import check_rotation, get_rotation_config, parse_json, output_root
+try:
+    from .registrations import verify_rounds  # Relative import (running as part of a package)
+    from .meta import check_rotation, get_rotation_config, parse_json, output_root, rprint, track
+except ImportError:
+    from registrations import verify_rounds  # Absolute import (running in Jupyter notebook)
+    from meta import check_rotation, get_rotation_config, parse_json, output_root, rprint, track
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imwrite
 from sbxreader import sbx_get_metadata, sbx_memmap

@@ -5,13 +5,17 @@ from pathlib import Path
 import cv2
 import hjson
 import numpy as np
-from rich import print as rprint
 from sbxreader import sbx_get_metadata, sbx_memmap
 from tifffile import imread as tif_imread
 from tifffile import imwrite as tif_imwrite
-from .registrations import verify_rounds
-from .meta import check_rotation, get_automation_config, get_rotation_config, get_stitching_config, parse_json, output_root
-from .auto_stitching import auto_stitch_tiles, StitchingError
+try:
+    from .registrations import verify_rounds  # Relative import (running as part of a package)
+    from .meta import check_rotation, get_automation_config, get_rotation_config, get_stitching_config, parse_json, output_root, rprint
+    from .auto_stitching import auto_stitch_tiles, StitchingError
+except ImportError:
+    from registrations import verify_rounds  # Absolute import (running in Jupyter notebook)
+    from meta import check_rotation, get_automation_config, get_rotation_config, get_stitching_config, parse_json, output_root, rprint
+    from auto_stitching import auto_stitch_tiles, StitchingError
 from skimage.transform import rotate
 
 def update_map(map_x, map_y, poly_vals, src):
@@ -103,7 +107,9 @@ def unwarp_tiles(full_manifest: dict, session: dict):
                     unwarp_path)
         
 
-def _hires_sbx_channel_mean(sbx_path: Path, channel: int, register: bool) -> np.ndarray:
+def _hires_sbx_channel_mean(sbx_path: Path, channel: int, register: bool,
+                            subsample: int = 1, tmats_per_z=None,
+                            return_tmats: bool = False):
     '''
     Return the time-mean of one channel of an SBX file as a (Z, Y, X) array.
 
@@ -112,6 +118,16 @@ def _hires_sbx_channel_mean(sbx_path: Path, channel: int, register: bool) -> np.
     ported from register_sbx_general.py). When register=False, a plain
     time-mean is returned (original pipeline behavior).
 
+    Optimizations:
+      - The (T, Z, Y, X) chunk for the chosen channel is read in a single
+        contiguous pass instead of slicing per-Z (1 network read instead of n_planes).
+      - subsample > 1 keeps every Nth frame (after the leading skip) for both
+        tmat estimation and averaging — ~Nx fewer StackReg fits at the cost of
+        a slightly noisier mean.
+      - If tmats_per_z is provided (list of (T', 3, 3) arrays from a same-file
+        green pass), tmats are reused instead of re-estimated.
+      - return_tmats returns ((Z, Y, X), tmats_per_z) for downstream reuse.
+
     Handles both single-plane and optotune multi-plane SBX (shape (T, Z, C, Y, X)).
     '''
     dat = sbx_memmap(sbx_path)  # memmap (T, Z, C, Y, X)
@@ -119,7 +135,8 @@ def _hires_sbx_channel_mean(sbx_path: Path, channel: int, register: bool) -> np.
     ch = channel if channel >= 0 else dat.shape[2] + channel
 
     if not register:
-        return np.array(dat[:, :, ch]).mean(0)  # (Z, Y, X)
+        out = np.array(dat[:, :, ch]).mean(0)  # (Z, Y, X)
+        return (out, None) if return_tmats else out
 
     from pystackreg import StackReg
 
@@ -127,14 +144,26 @@ def _hires_sbx_channel_mean(sbx_path: Path, channel: int, register: bool) -> np.
     # 2 leading cycles for multiplane (each memmap T index is one full cycle).
     skip = 3 if n_planes == 1 else 2
 
+    # Single contiguous read of (T', Z, Y, X) for this channel.
+    stack = np.array(dat[skip::max(int(subsample), 1), :, ch, :, :])
+
     sr = StackReg(StackReg.RIGID_BODY)
     plane_means = []
+    out_tmats = [] if (return_tmats or tmats_per_z is not None) else None
     for z in range(n_planes):
-        plane = np.array(dat[skip:, z, ch, :, :])  # (T, Y, X)
-        tmats = sr.register_stack(plane[:, 50:-50, 50:-50], reference='mean', verbose=False)
+        plane = stack[:, z]  # (T', Y, X)
+        if tmats_per_z is not None:
+            tmats = tmats_per_z[z]
+        else:
+            tmats = sr.register_stack(plane[:, 50:-50, 50:-50], reference='mean', verbose=False)
         registered = sr.transform_stack(plane, tmats=tmats)
         plane_means.append(registered.mean(0))
-    return np.stack(plane_means, axis=0)  # (Z, Y, X)
+        if out_tmats is not None and tmats_per_z is None:
+            out_tmats.append(tmats)
+    out = np.stack(plane_means, axis=0)  # (Z, Y, X)
+    if return_tmats:
+        return out, (out_tmats if tmats_per_z is None else tmats_per_z)
+    return out
 
 
 def process_session_sbx(full_manifest: dict , session:dict):
@@ -159,6 +188,10 @@ def process_session_sbx(full_manifest: dict , session:dict):
     input_format = session.get('input_format', 'sbx')
     params = full_manifest.get('params', {})
     register_hires = params.get('hires_sbx_registration', True) and input_format != 'tiff'
+    # Frame subsampling for StackReg estimation+averaging. Default 4 gives ~4x
+    # speedup with negligible quality loss on anatomical hi-res tiles. Set to 1
+    # in the manifest to recover the original use-every-frame behavior.
+    hires_subsample = max(int(params.get('hires_sbx_subsample', 4)), 1)
 
     # Support variable number of tiles (not just 3)
     num_tiles = len(session['anatomical_hires_green_runs'])
@@ -190,8 +223,26 @@ def process_session_sbx(full_manifest: dict , session:dict):
         red_sbx = base_2P / f'{mouse_name}_{date}_{red_run}' / f'{mouse_name}_{date}_{red_run}.sbx'
 
         print(f'  Tile {j+1}: {green_sbx.name} + {red_sbx.name}')
-        green_stack = np.expand_dims(_hires_sbx_channel_mean(green_sbx, 0, register_hires), 1)
-        red_stack = np.expand_dims(_hires_sbx_channel_mean(red_sbx, -1, register_hires), 1)
+        # If green and red come from the same SBX file (typical: both channels
+        # acquired simultaneously), motion is identical — estimate tmats on green
+        # and reuse for red. Halves the StackReg work per tile.
+        same_file = register_hires and green_sbx.resolve() == red_sbx.resolve()
+        if same_file:
+            green_mean, tmats_per_z = _hires_sbx_channel_mean(
+                green_sbx, 0, True, subsample=hires_subsample, return_tmats=True
+            )
+            red_mean = _hires_sbx_channel_mean(
+                red_sbx, -1, True, subsample=hires_subsample, tmats_per_z=tmats_per_z
+            )
+        else:
+            green_mean = _hires_sbx_channel_mean(
+                green_sbx, 0, register_hires, subsample=hires_subsample
+            )
+            red_mean = _hires_sbx_channel_mean(
+                red_sbx, -1, register_hires, subsample=hires_subsample
+            )
+        green_stack = np.expand_dims(green_mean, 1)
+        red_stack = np.expand_dims(red_mean, 1)
         combined_stack = np.concatenate([green_stack,red_stack],1)
 
         tif_imwrite(save_filename, combined_stack.astype(np.float32),
@@ -272,6 +323,7 @@ def stitch_tiles_and_rotate(full_manifest: dict, session: dict):
         noise_floor = stitch_params.get('noise_floor', 15.0)
         min_signal_frac = stitch_params.get('min_signal_frac', 0.01)
         upsample_factor = stitch_params.get('upsample_factor', 10)
+        stitch_channel = stitch_params.get('stitch_channel', 0)
 
         try:
             # Run automated stitching
@@ -283,7 +335,8 @@ def stitch_tiles_and_rotate(full_manifest: dict, session: dict):
                 overlap_fraction=overlap_fraction,
                 noise_floor=noise_floor,
                 min_signal_frac=min_signal_frac,
-                upsample_factor=upsample_factor
+                upsample_factor=upsample_factor,
+                stitch_channel=stitch_channel,
             )
             rprint(f"[bold green]✓ Automated stitching successful![/bold green]")
 

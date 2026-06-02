@@ -735,13 +735,24 @@ def subtract_neuropil_with_qc(
     return original_df, subtracted_df, unclipped_df
 
 
-def select_best_match(group: pd.DataFrame) -> pd.Series:
+def _best_match_score_col(df: pd.DataFrame) -> str:
     """
-    Select the row with highest IoU from a group.
+    Choose which IoU column to rank 2P matches by.
 
-    Helper function for deduplication.
+    Current schema: `twoP_iou` is the plane-restricted (fair) IoU.
+    Legacy `twoP_iou_at_z` is accepted as an alias for any
+    pre-rename tables still floating around. Raises if neither is present.
     """
-    return group.loc[group['twoP_iou'].idxmax()]
+    if 'twoP_iou' in df.columns:
+        return 'twoP_iou'
+    if 'twoP_iou_at_z' in df.columns:
+        return 'twoP_iou_at_z'
+    raise KeyError("neither 'twoP_iou' nor 'twoP_iou_at_z' found in DataFrame")
+
+
+def select_best_match(group: pd.DataFrame) -> pd.Series:
+    """Select the row with the highest IoU (twoP_iou) from a group."""
+    return group.loc[group[_best_match_score_col(group)].idxmax()]
 
 
 def deduplicate_2p_matches(df: pd.DataFrame) -> pd.DataFrame:
@@ -749,10 +760,10 @@ def deduplicate_2p_matches(df: pd.DataFrame) -> pd.DataFrame:
     Keep only the best HCR-to-2P match per 2P cell.
 
     When multiple HCR cells match the same 2P cell (twoP_mask column),
-    keep the one with highest twoP_iou.
+    keep the one with the highest IoU (twoP_iou).
 
     Args:
-        df: DataFrame with 'twoP_mask' and 'twoP_iou' columns
+        df: DataFrame with 'twoP_mask' and an IoU column
 
     Returns:
         Deduplicated DataFrame
@@ -762,8 +773,10 @@ def deduplicate_2p_matches(df: pd.DataFrame) -> pd.DataFrame:
         rprint("[yellow]Warning: 'twoP_mask' column not found, skipping deduplication[/yellow]")
         return df
 
-    if 'twoP_iou' not in df.columns:
-        rprint("[yellow]Warning: 'twoP_iou' column not found, skipping deduplication[/yellow]")
+    try:
+        _best_match_score_col(df)
+    except KeyError:
+        rprint("[yellow]Warning: no twoP_iou(_at_z) column found, skipping deduplication[/yellow]")
         return df
 
     # Filter to only cells with 2P matches
@@ -828,7 +841,7 @@ def smart_merge_planes(
     reference_plane: int,
     mask_id_col: str = 'mask_id_main',
     twop_mask_col: str = 'twoP_mask',
-    twop_iou_col: str = 'twoP_iou',
+    twop_iou_col: str = None,
     hcr_coords: pd.DataFrame = None
 ) -> pd.DataFrame:
     """
@@ -847,7 +860,10 @@ def smart_merge_planes(
         reference_plane: The reference/functional plane number
         mask_id_col: Column name for HCR cell ID
         twop_mask_col: Column name for 2P mask ID
-        twop_iou_col: Column name for IoU score
+        twop_iou_col: Column name for IoU score used for tiebreaking. When
+                      None (default), uses 'twoP_iou_at_z' if present (the
+                      fair z-restricted IoU), else falls back to 'twoP_iou'
+                      (legacy 3D-symmetric IoU).
         hcr_coords: Optional DataFrame with HCR coordinates (from load_hcr_coordinates)
                     with columns: mask_id, hcr_x, hcr_y, hcr_z
 
@@ -873,6 +889,8 @@ def smart_merge_planes(
     # Find actual column names
     mask_col = get_col(combined, mask_id_col)
     twop_col = get_col(combined, twop_mask_col)
+    if twop_iou_col is None:
+        twop_iou_col = _best_match_score_col(combined)
     iou_col = get_col(combined, twop_iou_col)
 
     rprint(f"  Starting smart merge: {len(combined)} rows from {len(plane_dfs)} planes")

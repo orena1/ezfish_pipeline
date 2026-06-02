@@ -8,10 +8,10 @@ import numpy as np
 from pathlib import Path
 
 try:
-    from .meta import parse_json, get_hcr_to_hcr_registration_config, get_rotation_config  # Relative import (for running as part of a package)
+    from .meta import parse_json, get_hcr_to_hcr_registration_config, get_rotation_config, rprint, track  # Relative import (for running as part of a package)
     from . import automation as auto
 except ImportError:
-    from meta import parse_json, get_hcr_to_hcr_registration_config, get_rotation_config  # Absolute import (for running in Jupyter Notebook)
+    from meta import parse_json, get_hcr_to_hcr_registration_config, get_rotation_config, rprint, track  # Absolute import (for running in Jupyter Notebook)
     import automation as auto
 
 try:
@@ -27,6 +27,7 @@ try:
         build_z_quad_blend, extract_centroids, find_cell_displacements,
         fit_affine_ransac, run_local_tile_ransac,
         compute_tile_defaults, compute_adaptive_matching_params,
+        resolve_hcr_resolution,
     )
 except ImportError:
     from registrations_utils import (
@@ -39,12 +40,11 @@ except ImportError:
         build_z_quad_blend, extract_centroids, find_cell_displacements,
         fit_affine_ransac, run_local_tile_ransac,
         compute_tile_defaults, compute_adaptive_matching_params,
+        resolve_hcr_resolution,
     )
 import pandas as pd
 
-from rich.progress import track
 import SimpleITK as sitk
-from rich import print as rprint
 from tifffile import imwrite as tif_imwrite
 from tifffile import imread as tif_imread
 # RBFInterpolator/griddata now handled in registrations_utils.py
@@ -57,7 +57,10 @@ sys.path = ["/mnt/nasquatch/data/2p/jonna/Code_Python/Notebooks_Jonna/BigStream/
 
 from bigstream.piecewise_transform import distributed_apply_transform
 
-from .meta import output_root
+try:
+    from .meta import output_root
+except ImportError:
+    from meta import output_root
 
 
 def _resolve_hcr_path(expected_path: Path) -> Path:
@@ -545,15 +548,19 @@ def register_lowres_to_hires(full_manifest, session):
         if tile_refinement_enabled:
             scale_factor = hires_2d.shape[0] / lowres_2d.shape[0]
 
-            # Adaptive tile size: smaller tiles for higher scale factors
-            # At 2x scale, 300px lores = 600px hires tiles (original behavior)
-            # At 4.5x scale, 100px lores = 454px hires tiles (finer granularity needed)
-            tile_size_lores = 300 if scale_factor < 3.0 else 100
+            # Tile size in lowres pixels. Bigger tiles → more SIFT features per tile
+            # → more robust fits, especially at edges. 200 lowres ≈ 700-900 hires
+            # at typical scale factors (3-4.5x), still fine-grained enough to
+            # capture local nonlinear distortion.
+            tile_size_lores = sift_config.get('tile_size_lores', 200)
             tile_size_hires = int(tile_size_lores * scale_factor)
 
             tile_config = {
-                'tile_size': tile_size_hires, 'tile_overlap': 0.3, 'blend_width': 10, 'max_shift': 40,
-                'n_features': 100, 'min_matches': 3, 'ratio_threshold': 0.8, 'ransac_reproj_threshold': 5.0,
+                'tile_size': tile_size_hires, 'tile_overlap': 0.3, 'blend_width': 10,
+                'max_shift': max(60, int(tile_size_hires * 0.20)),
+                'scale_tol': 0.35,
+                'n_features': sift_config.get('tile_n_features', 500),  # was 100, bumped to handle bigger tiles
+                'min_matches': 3, 'ratio_threshold': 0.8, 'ransac_reproj_threshold': 5.0,
                 'min_feature_size': 8, 'max_spatial_distance': 0,
                 'percentile_norm': (2, 98),
                 'require_ncc_improvement': False, 'min_overlap_fraction': 0.3,
@@ -662,10 +669,13 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
     QUAD_BLEND_DIST = reg_params.get('quad_blend_dist', 300)
     FOV_CROP_MARGIN = reg_params.get('fov_crop_margin', 150)
 
-    # Single affine: coarse matching + RANSAC (v13: single pass is sufficient)
-    PATCH_RADIUS_COARSE = reg_params.get('patch_radius_coarse', 120)
-    SEARCH_XY_COARSE = reg_params.get('search_xy_coarse', 150)
-    SEARCH_Z_COARSE = reg_params.get('search_z_coarse', 9)
+    # Single affine: coarse matching + RANSAC (v13: single pass is sufficient).
+    # Defaults bumped 2026-06-02 after SRC110 plane 2 showed P95 |dz|=9 saturating the
+    # old +/-9 cap and P95 XY=129 hitting the old +/-115 effective cap (patch=240 clipped
+    # requested 150 down to 115). New defaults give the affine ~+/-180 XY / +/-12 Z effective.
+    PATCH_RADIUS_COARSE = reg_params.get('patch_radius_coarse', 185)
+    SEARCH_XY_COARSE = reg_params.get('search_xy_coarse', 175)
+    SEARCH_Z_COARSE = reg_params.get('search_z_coarse', 12)
 
     # Per-cell FFT-IoU settings
     MIN_PEAK_RATIO = reg_params.get('min_peak_ratio', 1.02)
@@ -682,20 +692,35 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
     RANSAC_MIN_SAMPLES = reg_params.get('ransac_min_samples', 6)
     RANSAC_MAX_TRIALS = reg_params.get('ransac_max_trials', 2000)
 
-    # Adaptive cascade parameters (v13)
-    SEARCH_XY_PERCENTILE = reg_params.get('search_xy_percentile', 95)
-    SEARCH_XY_MULTIPLIER = reg_params.get('search_xy_multiplier', 1.5)
-    SEARCH_XY_TILE_RATIO = reg_params.get('search_xy_tile_ratio', 0.3)
-    PATCH_SEARCH_RATIO = reg_params.get('patch_search_ratio', 2.0)
-    PATCH_TILE_RATIO = reg_params.get('patch_tile_ratio', 0.6)
-    SEARCH_XY_MIN = reg_params.get('search_xy_min', 3)
-    SEARCH_XY_MAX = reg_params.get('search_xy_max', 50)
-    SEARCH_Z_DEFAULT = reg_params.get('search_z_default', 2)
-    SEARCH_Z_CASCADE_FINE = reg_params.get('search_z_cascade_fine', 1)
-
     # Local tile cascade: auto-computed defaults, configurable stages
     CASCADE_STAGES = reg_params.get('cascade_stages', [300, 100, 50])
+    if not (isinstance(CASCADE_STAGES, list) and len(CASCADE_STAGES) >= 1
+            and all(isinstance(s, int) and s > 0 for s in CASCADE_STAGES)
+            and all(a > b for a, b in zip(CASCADE_STAGES, CASCADE_STAGES[1:]))):
+        raise ValueError(
+            "params.twop_to_hcr_registration.cascade_stages must be a non-empty "
+            f"list of strictly-decreasing positive integers; got {CASCADE_STAGES!r}")
     TILE_DEFAULTS = {ts: compute_tile_defaults(ts) for ts in CASCADE_STAGES}
+
+    # Cascade per-tile search sizing (manifest-overridable presets):
+    # XY_TILE_RATIO    : stage-0 search_xy = tile_size * ratio; also caps stages 1+
+    # Z_TILE_RATIO     : stage-0 search_z  = max(SEARCH_Z_MIN, round(tile_size * ratio))
+    # SEARCH_Z_MIN/MAX : floor (stage 0) and cap (stages 1+) for per-tile Z search
+    XY_TILE_RATIO = reg_params.get('xy_tile_ratio', 0.4)
+    Z_TILE_RATIO  = reg_params.get('z_tile_ratio',  0.01)
+    SEARCH_Z_MIN  = reg_params.get('search_z_min',  2)
+    SEARCH_Z_MAX  = reg_params.get('search_z_max',  8)
+
+    # Edge-correction knobs for per-tile warp synthesis. Defaults preserve the
+    # historical "snap to zero outside data envelope" behavior; set
+    # use_nn_fallback=True to bleed to nearest-tile shift instead, eliminating
+    # the rigid warp front at the FOV edge (Voronoi seams are bounded by the
+    # per-tile IoU + MAD validation the accepted tiles already passed).
+    USE_NN_FALLBACK        = bool(reg_params.get('use_nn_fallback', False))
+    DATA_SIGMA_MULT        = float(reg_params.get('data_sigma_mult', 1.0))
+    BORDER_DECAY_MULT      = float(reg_params.get('border_decay_mult', 2.0))
+    BORDER_WEIGHT_FLOOR    = float(reg_params.get('border_weight_floor', 0.0))
+    DISABLE_BORDER_ANCHORS = bool(reg_params.get('disable_border_anchors', False))
 
     # Print configuration (compact)
     rprint(f"[dim]Parameters: erosion={EROSION}, Z={Z_RANGE_GLOBAL}, "
@@ -804,8 +829,10 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
     output_folder.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load and prepare reference landmarks (HCR resolution from manifest)
-    hcr_resolution = full_manifest['data']['HCR_confocal_imaging']['rounds'][0]['resolution']
+    # HCR resolution: TIFF metadata is the source of truth; manifest entry is an
+    # optional override that emits a loud warning on mismatch.
+    manifest_resolution = full_manifest['data']['HCR_confocal_imaging']['rounds'][0].get('resolution')
+    hcr_resolution = resolve_hcr_resolution(hcr_ref_round_path, manifest_resolution)
     landmarks_df = load_landmarks(landmarks_path, hcr_resolution)
     rprint(f"[dim]Loaded {len(landmarks_df)} landmarks[/dim]")
 
@@ -967,6 +994,21 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
         df_coarse = pd.DataFrame(cell_results_coarse)
         ny_c, nx_c = twop_crop_binary.shape
 
+        # DIAGNOSTIC: per-cell residual distribution from the affine matcher (pre-RANSAC).
+        # Tells us whether the affine search window was the bottleneck (P95 saturated near
+        # SEARCH_XY_COARSE/SEARCH_Z_COARSE) or whether residuals are small and the weak
+        # affine fit is a model-mismatch problem (P95 << search window).
+        if len(df_coarse) > 0:
+            _hc = df_coarse[df_coarse.peak_ratio >= MIN_PEAK_RATIO]
+            if len(_hc) > 0:
+                _resid_xy = np.sqrt(_hc.dy.values**2 + _hc.dx.values**2)
+                _resid_z = np.abs(_hc.dz.values)
+                rprint(f"  [dim]Post-global per-cell residuals (n={len(_hc)}): "
+                       f"XY P50={np.median(_resid_xy):.0f}px / P95={np.percentile(_resid_xy, 95):.0f}px"
+                       f" (search +/-{SEARCH_XY_COARSE}px), "
+                       f"|dz| P50={np.median(_resid_z):.1f} / P95={np.percentile(_resid_z, 95):.1f}"
+                       f" (search +/-{SEARCH_Z_COARSE})[/dim]")
+
         # Filter and fit RANSAC
         df_A = df_coarse[df_coarse.peak_ratio >= MIN_PEAK_RATIO].copy()
         df_A = df_A[df_A.cell_iou > 0.0]
@@ -1047,26 +1089,17 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
             td = TILE_DEFAULTS[tile_size]
             prev_iou = cascade_state['iou']
 
-            # Skip later stages if previous stage did not improve over affine
-            if prev_iou <= iou_affine and tile_size != CASCADE_STAGES[0]:
-                rprint(f"  [dim]Skipping {tile_size}px tiles (no improvement from previous stage)[/dim]")
-                continue
+            # Stages run independently — each attempts from the current state and
+            # reverts itself if IoU drops. Don't skip based on prior-stage outcome.
 
-            # Compute adaptive matching params (v13)
-            if _si == 0 or df_post_rematch is None:
-                # First stage: tile-proportional defaults
-                patch_r = int(tile_size * PATCH_TILE_RATIO)
-                search_xy = int(tile_size * SEARCH_XY_TILE_RATIO)
-                search_z = SEARCH_Z_DEFAULT
-            else:
-                # Subsequent stages: adaptive from post-correction residuals
-                patch_r, search_xy, search_z = compute_adaptive_matching_params(
-                    df_post_rematch, tile_size, stage_idx=_si,
-                    percentile=SEARCH_XY_PERCENTILE, multiplier=SEARCH_XY_MULTIPLIER,
-                    tile_ratio=SEARCH_XY_TILE_RATIO, patch_ratio=PATCH_SEARCH_RATIO,
-                    patch_tile_ratio=PATCH_TILE_RATIO,
-                    search_xy_min=SEARCH_XY_MIN, search_xy_max=SEARCH_XY_MAX,
-                    search_z_default=SEARCH_Z_DEFAULT, search_z_fine=SEARCH_Z_CASCADE_FINE)
+            # Compute adaptive matching params (v13).
+            # Function returns tile-proportional defaults when stage_idx==0
+            # or cell_df is empty; adaptive residual-based sizing otherwise.
+            patch_r, search_xy, search_z = compute_adaptive_matching_params(
+                df_post_rematch if df_post_rematch is not None else pd.DataFrame(),
+                tile_size, stage_idx=_si,
+                tile_ratio=XY_TILE_RATIO, z_tile_ratio=Z_TILE_RATIO,
+                search_z_min=SEARCH_Z_MIN, search_z_max=SEARCH_Z_MAX)
 
             rprint(f"  [dim]Tiles {tile_size}px: {2 * patch_r}px patches, +/-{search_xy}px search, z+/-{search_z}[/dim]")
             centroids_cur = extract_centroids(cascade_state['twop_labels'])
@@ -1095,7 +1128,12 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
                 min_cells_affine=td.get('min_cells_affine', 3),
                 min_iou=MIN_IOU_LOCAL, min_gain=MIN_GAIN_LOCAL,
                 border_anchor_spacing=td['border_spacing'],
-                smoothing=td['rbf_smoothing'])
+                smoothing=td['rbf_smoothing'],
+                use_nn_fallback=USE_NN_FALLBACK,
+                data_sigma_mult=DATA_SIGMA_MULT,
+                border_decay_mult=BORDER_DECAY_MULT,
+                border_weight_floor=BORDER_WEIGHT_FLOOR,
+                disable_border_anchors=DISABLE_BORDER_ANCHORS)
 
             # Displacement clamping
             _accepted = [t for t in tile_res if t['accepted']]
@@ -1150,20 +1188,28 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
             # Post-correction re-match: measure actual remaining residuals
             # This feeds accurate adaptive params to the next cascade stage.
             if _si < len(CASCADE_STAGES) - 1:  # no need after last stage
-                _rematch_search = max(SEARCH_XY_MIN, min(15, int(tile_size * 0.3)))
+                _rematch_search = max(3, min(15, int(tile_size * 0.3)))
                 _rematch_patch = max(_rematch_search + 5, _rematch_search * 2)
+                # search_z >= SEARCH_Z_MAX so the rematch can actually measure residual
+                # z-curvature; otherwise the next stage's adaptive search_z saturates at
+                # whatever the rematch could see (was hardcoded =1, which masked all real
+                # z residual and pinned subsequent stages to z+/-1).
+                _rematch_search_z = max(2, SEARCH_Z_MAX)
                 _rematch_results = find_cell_displacements(
                     cascade_state['twop_binary'], cascade_state['twop_labels'],
                     hcr_crop_3d, cascade_state['z_map'], centroids_cur,
                     patch_radius=_rematch_patch, search_xy=_rematch_search,
-                    search_z=SEARCH_Z_CASCADE_FINE, fov_dilation=FOV_DILATION,
+                    search_z=_rematch_search_z, fov_dilation=FOV_DILATION,
                     min_peak_ratio=MIN_PEAK_RATIO)
                 df_post_rematch = pd.DataFrame(_rematch_results)
                 df_post_rematch = df_post_rematch[df_post_rematch.peak_ratio >= MIN_PEAK_RATIO].copy()
                 if len(df_post_rematch) > 0:
                     _post_resid = np.sqrt(df_post_rematch.dy.values**2 + df_post_rematch.dx.values**2)
-                    rprint(f"  [dim]Post-correction residuals: median={np.median(_post_resid):.1f}px, "
-                           f"P95={np.percentile(_post_resid, 95):.1f}px[/dim]")
+                    _post_dz = np.abs(df_post_rematch.dz.values)
+                    rprint(f"  [dim]Post-correction residuals: "
+                           f"XY median={np.median(_post_resid):.1f}px / P95={np.percentile(_post_resid, 95):.1f}px, "
+                           f"|dz| median={np.median(_post_dz):.1f} / P95={np.percentile(_post_dz, 95):.1f}"
+                           f" (rematch z+/-{_rematch_search_z})[/dim]")
 
         iou_final = cascade_state['iou']
         rprint(f"  [bold]Final: IoU {iou_baseline:.3f}→{iou_final:.3f} ({iou_final - iou_baseline:+.3f})[/bold]")
@@ -1224,8 +1270,9 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
             (y1, x1), max_dist=QUAD_BLEND_DIST)
         z_map_local = z_map_base_full + g_dz + cumulative_dz
 
-        # Compute final IoU in full space for QA
-        hcr_final_full = sample_hcr_binary_at_zmap(hcr_ref_masks > 0, z_map_local)
+        # Sample HCR at the exact interpolated z-plane (no ±1 MIP) for the QA overlay.
+        # IoU is taken from cascade_state['iou'] above, not recomputed here.
+        hcr_final_full = sample_hcr_binary_at_zmap(hcr_ref_masks > 0, z_map_local, z_expand=0)
         twop_final_binary = twop_final_labels > 0
         fov_final = create_fov_mask_convex_hull(twop_final_binary, margin=30)
         hcr_local = hcr_final_full  # for QA overlay
@@ -1260,7 +1307,7 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
         qa_folder = output_root(full_manifest) / '2P' / 'registered' / 'QualityCheck'
         qa_folder.mkdir(parents=True, exist_ok=True)
 
-        hcr_baseline_full = sample_hcr_binary_at_zmap(hcr_ref_masks > 0, z_map_base_full)
+        hcr_baseline_full = sample_hcr_binary_at_zmap(hcr_ref_masks > 0, z_map_base_full, z_expand=0)
         twop_binary_full = (twop_warped > 0).astype(np.uint16)
         overlay_before = np.stack([hcr_baseline_full.astype(np.uint16), twop_binary_full], axis=0)
         qa_before_path = qa_folder / f'plane{plane}_BEFORE_registration_overlay.tiff'
@@ -1331,6 +1378,11 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
             # Metadata
             erosion=EROSION,
             erosion_hcr=EROSION_HCR,
+            use_nn_fallback=np.array(USE_NN_FALLBACK),
+            data_sigma_mult=DATA_SIGMA_MULT,
+            border_decay_mult=BORDER_DECAY_MULT,
+            border_weight_floor=BORDER_WEIGHT_FLOOR,
+            disable_border_anchors=np.array(DISABLE_BORDER_ANCHORS),
             hcr_shape=np.array(hcr_ref_masks.shape),
             # v9: erode_labels with cell-cell boundaries, wider coarse search
             algorithm_version=np.array(10),
@@ -1341,6 +1393,52 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
         )
         with open(str(params_path), 'wb') as f:
             f.write(buf.getvalue())
+
+        # ---- SAVE PER-STAGE 2-CHANNEL LABEL TIFFs (CYX uint16) ----
+        # For each alignment stage already captured in `cascade_snapshots`
+        # (baseline = TPS-only, global = TPS+rigid, affine, tile_300, tile_100,
+        # tile_50), write a 2-channel TIFF padded to the full HCR (Y, X) field:
+        #   ch0 = HCR labels nearest-neighbor-sampled at THAT stage's z_map
+        #   ch1 = 2P labels at that stage's transform
+        # Padded so all stages share one frame and co-register with z_map_local
+        # in {twop_plane{N}_registration_params.npz}. Figure notebooks (e.g.
+        # panel_gene_mask_strip_*.ipynb) consume these directly instead of the
+        # v18 aligned-masks NPZ.
+        _inner_origin_full = (bb_y0 + cy0, bb_x0 + cx0)
+        _outer_origin_full = (bb_y0, bb_x0)
+        for _stage_name, _snap in cascade_snapshots.items():
+            _frame = _snap['frame']
+            _oy, _ox = (_outer_origin_full if _frame == 'outer_crop'
+                        else _inner_origin_full)
+            _tp_stage = _snap['twop_labels']            # uint16, stage crop frame
+            _zm_stage = _snap['z_map']                  # float32, stage crop frame
+            _sh = _tp_stage.shape
+
+            _hcr_3d_in = hcr_ref_masks[:, _oy:_oy + _sh[0], _ox:_ox + _sh[1]]
+            _zz = np.clip(np.round(_zm_stage).astype(int),
+                          0, _hcr_3d_in.shape[0] - 1)
+            _yi, _xi = np.mgrid[0:_sh[0], 0:_sh[1]]
+            _hp_stage = _hcr_3d_in[_zz, _yi, _xi].astype(np.uint16)
+
+            _tp_full = np.zeros((y1, x1), dtype=np.uint16)
+            _hp_full = np.zeros((y1, x1), dtype=np.uint16)
+            _tp_full[_oy:_oy + _sh[0], _ox:_ox + _sh[1]] = _tp_stage
+            _hp_full[_oy:_oy + _sh[0], _ox:_ox + _sh[1]] = _hp_stage
+
+            _stack = np.stack([_hp_full, _tp_full], axis=0)
+            _stage_path = qa_folder / f'plane{plane}_stage_{_stage_name}.tiff'
+            _meta = {
+                'axes': 'CYX',
+                'Labels': ['HCR_labels_at_zmap', '2P_labels'],
+                'Description': (
+                    f'plane={plane} stage={_stage_name} '
+                    f'iou={_snap["iou"]:.4f} frame={_frame} '
+                    f'crop_origin_yx=({_oy},{_ox})'
+                ),
+            }
+            tif_imwrite(str(_stage_path), _stack, imagej=True, metadata=_meta)
+        rprint(f"[dim]  Saved {len(cascade_snapshots)} per-stage label TIFFs "
+               f"in QualityCheck/[/dim]")
 
     # --- SAVE PER-PLANE AUTO LANDMARKS ---
     orig_landmarks = pd.read_csv(landmarks_path, header=None)

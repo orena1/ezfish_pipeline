@@ -9,3 +9,17 @@ HCR_selected_registrations:{
 
     ]
 }
+
+// 2P -> HCR registration: commonly tuned knobs.
+// Lower-tier params (RANSAC, FFT-IoU thresholds, coarse-match patches) are read
+// from this same block but fall through to defaults if not specified.
+// Full tiered guide: agent_docs/parameter_tuning.md.
+twop_to_hcr_registration:{
+    "cascade_stages":[400, 200, 100],   // strictly-decreasing tile sizes (px); default [300, 100, 50]
+    "erosion":2,                        // 2P mask shrink (px); 0 for cp4-SAM masks
+    "erosion_hcr":0,                    // HCR mask shrink (px); try 1 if HCR cells bleed
+    "z_range_global":[-15, 15],         // z-offset search range (slices); widen to [-25, 25] for large z offset
+    "xy_max_global":500,                // xy search range (px); raise to 600 if landmarks coarse
+    "hull_margin":-100,                 // inward hull erosion (px, negative); less negative (-50) for poor landmark coverage
+    "flip_z":false                      // true when HCR acquisition has inverted z-axis
+}
