@@ -36,23 +36,23 @@ def load_functional_mean(full_manifest: dict, session: dict):
             full_manifest, session, combine_with_red=has_red)
 
 
-def _segmentation_source(full_manifest: dict, session: dict) -> str:
-    """'compute' (cellpose, default — reproduces the paper) or 'accept' (reuse the
-    user's Suite2p ROIs). Read from session then params; anything else -> 'compute'
-    so existing runs are unchanged until a manifest opts in with
-    ``segmentation_source: accept``."""
-    src = session.get('segmentation_source') or full_manifest.get('params', {}).get('segmentation_source')
-    return src if src in ('compute', 'accept') else 'compute'
+def _mask_source(full_manifest: dict, session: dict) -> str:
+    """Where the 2P cell masks come from: ``'cellpose'`` (segment ourselves; default,
+    reproduces the paper) or ``'suite2p'`` (reuse the user's Suite2p ROIs). Read from
+    the session's ``masks`` field, then params; anything else -> ``'cellpose'`` so
+    existing runs are unchanged until a manifest opts in with ``masks: suite2p``."""
+    src = session.get('masks') or full_manifest.get('params', {}).get('masks')
+    return src if src in ('cellpose', 'suite2p') else 'cellpose'
 
 
 def load_functional_masks(full_manifest: dict, session: dict):
     """Return the 2P segmentation ``_seg.npy`` for the current plane.
 
-    compute (default): cellpose on the mean image.
-    accept: rasterize the user's Suite2p ROIs into the SAME ``_seg.npy`` artifact,
-    so matching/registration/merge are untouched.
+    ``masks: cellpose`` (default): cellpose on the mean image.
+    ``masks: suite2p``: rasterize the user's Suite2p ROIs into the SAME ``_seg.npy``
+    artifact, so matching/registration/merge are untouched.
     """
-    if _segmentation_source(full_manifest, session) == 'accept':
+    if _mask_source(full_manifest, session) == 'suite2p':
         return accept_suite2p_masks(full_manifest, session)
     from . import segmentation as sg  # lazy to avoid any import cycle
     return sg.extract_2p_cellpose_masks(full_manifest, session)

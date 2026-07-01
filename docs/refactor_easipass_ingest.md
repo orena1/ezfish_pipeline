@@ -124,15 +124,16 @@ so they never enter the stitch/unwarp path.
 - Follow conventions: manifest-driven config, pathlib, `rprint`/`track` from `src.meta`,
   fail-fast with file paths.
 
-## 6. Segmentation source: compute vs accept (settled)
+## 6. Mask source: cellpose vs suite2p (settled)
 
-A second axis alongside the movie source. Defaults per importer; overridable.
+A second axis alongside the movie source, exposed to users as a manifest field
+**`masks: cellpose | suite2p`** (default `cellpose`; overridable per session or in params).
 
-- **`compute`** (cellpose masks + traces averaged over them) — default for TIFF; **the path that
+- **`masks: cellpose`** (cellpose masks + traces averaged over them) — default; **the path that
   reproduces the paper figures**. Unchanged from today.
-- **`accept`** (reuse the user's Suite2p output) — default for the Suite2p importer: rasterize
-  `stat.npy` ROIs (filtered by `iscell.npy`) into a labeled mask image, take traces from `F.npy`.
-  No cellpose, no re-extraction.
+- **`masks: suite2p`** (reuse the user's Suite2p ROIs) — rasterize `stat.npy` ROIs (filtered by
+  `iscell.npy`) into a labeled mask image at cellpose's output path. **No traces handled** — the
+  mask label is the Suite2p ROI id (+1), so the user joins their own `F.npy` by id.
 
 **Rasterize with single ownership (cellpose-style, no overlaps)** — a shared pixel goes to the
 ROI with the higher `lam` (Suite2p's per-pixel footprint weight):
@@ -161,7 +162,7 @@ is one `is not None` check, not a format branch.
 | Stills vs video | **Auto-detect from TIFF shape**: 2D/CYX ⇒ stills; `(T,Y,X)` ⇒ movie. No new flag. | `importers.py` |
 | Default = stills | `_get_input_format` default `'sbx' → 'tiff'`. | `functional.py:62` |
 | Movie source | `MovieSource.mask_trace(ys,xs)->(T,)`: Suite2p wraps `BinaryFile`, TIFF wraps `tifffile.memmap`. | `importers.py` |
-| Accept (suite2p) | Rasterize ROIs (§6) → cellpose's output path; load `F.npy`. Skip cellpose. | `importers.py` + `process_plane` gate |
+| `masks: suite2p` | Rasterize ROIs (§6) → cellpose's output path (label = ROI id+1). Skip cellpose. No traces. | `importers.py` + `process_plane` gate |
 | Traces for all | Replace `:121` format check with `if traces: use; elif movie: compute; else: skip`. | `master_pipeline.py:120` |
 | Hi-res | Already works; retarget stitch gate `!= 'tiff'` → raw-sbx-tiles-present. | `master_pipeline.py:164` |
 | SBX pre-proc | No code — legacy stitcher stays gated on sbx tiles, *produces* the hires TIFF. | (none) |
