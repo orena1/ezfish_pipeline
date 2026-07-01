@@ -107,9 +107,39 @@ def unwarp_tiles(full_manifest: dict, session: dict):
                     unwarp_path)
         
 
+def _apply_tmats_and_mean(plane, tmats, sr):
+    """Streaming mean of `sr.transform_stack(plane, tmats=tmats)` via cv2.warpAffine.
+
+    pystackreg tmats follow scipy's (row, col) inverse-map convention. cv2 uses
+    (x, y) — swap rows/cols of the linear block and offset components to convert.
+    Sanity-checks on frame 0 against pystackreg; falls back if disagreement >1 pixel.
+    """
+    T, H, W = plane.shape
+    if T == 0:
+        return np.zeros((H, W), dtype=np.float32)
+    flags = cv2.INTER_LINEAR
+    border = cv2.BORDER_CONSTANT
+    def to_cv2(M):
+        return np.array([[M[1, 1], M[1, 0], M[1, 2]],
+                         [M[0, 1], M[0, 0], M[0, 2]]], dtype=np.float64)
+    # Verify convention on frame 0.
+    ref0 = sr.transform_stack(plane[:1].astype(np.float32), tmats=tmats[:1])[0]
+    test0 = cv2.warpAffine(plane[0].astype(np.float32), to_cv2(tmats[0]), (W, H),
+                           flags=flags, borderMode=border, borderValue=0)
+    if np.median(np.abs(test0 - ref0)) > 1.0:
+        return sr.transform_stack(plane.astype(np.float32), tmats=tmats).mean(0).astype(np.float32)
+    acc = test0.astype(np.float64)
+    for f in range(1, T):
+        warped = cv2.warpAffine(plane[f].astype(np.float32), to_cv2(tmats[f]), (W, H),
+                                flags=flags, borderMode=border, borderValue=0)
+        acc += warped
+    return (acc / T).astype(np.float32)
+
+
 def _hires_sbx_channel_mean(sbx_path: Path, channel: int, register: bool,
                             subsample: int = 1, tmats_per_z=None,
-                            return_tmats: bool = False):
+                            return_tmats: bool = False,
+                            tmat_subsample: int = 4):
     '''
     Return the time-mean of one channel of an SBX file as a (Z, Y, X) array.
 
@@ -145,21 +175,47 @@ def _hires_sbx_channel_mean(sbx_path: Path, channel: int, register: bool,
     skip = 3 if n_planes == 1 else 2
 
     # Single contiguous read of (T', Z, Y, X) for this channel.
+    t_io_start = time.perf_counter()
     stack = np.array(dat[skip::max(int(subsample), 1), :, ch, :, :])
+    t_io = time.perf_counter() - t_io_start
+    n_frames = stack.shape[0]
+    rprint(f"    [dim]ch{ch}: load done ({n_frames}f×{n_planes}z, {t_io:.1f}s) — starting stackreg[/dim]")
 
     sr = StackReg(StackReg.RIGID_BODY)
     plane_means = []
     out_tmats = [] if (return_tmats or tmats_per_z is not None) else None
+    t_fit, t_apply = 0.0, 0.0
+    tm_step = max(int(tmat_subsample), 1)
     for z in range(n_planes):
         plane = stack[:, z]  # (T', Y, X)
-        if tmats_per_z is not None:
+        T = plane.shape[0]
+        # Reuse donor (green) tmats only when they structurally match this channel's
+        # frames. Back-to-back green/red runs are normally identical length, but a
+        # mis-entered run can differ — re-fit that plane rather than crash/misapply.
+        if tmats_per_z is not None and z < len(tmats_per_z) and len(tmats_per_z[z]) == T:
             tmats = tmats_per_z[z]
         else:
-            tmats = sr.register_stack(plane[:, 50:-50, 50:-50], reference='mean', verbose=False)
-        registered = sr.transform_stack(plane, tmats=tmats)
-        plane_means.append(registered.mean(0))
+            if tmats_per_z is not None:
+                _donor_n = len(tmats_per_z[z]) if z < len(tmats_per_z) else 0
+                rprint(f"    [yellow]hi-res tmat reuse mismatch for {sbx_path.name} z{z}: "
+                       f"donor {_donor_n} tmats vs {T} frames — re-fitting this plane[/yellow]")
+            tf0 = time.perf_counter()
+            if tm_step > 1 and T >= 2 * tm_step:
+                # Fit on every tm_step'th frame; non-fit frames inherit the nearest fit tmat.
+                fit_idx = np.arange(0, T, tm_step)
+                tmats_sub = sr.register_stack(plane[fit_idx][:, 50:-50, 50:-50], reference='mean', verbose=False)
+                nn = np.clip(np.round(np.arange(T) / tm_step).astype(int), 0, len(fit_idx) - 1)
+                tmats = tmats_sub[nn]
+            else:
+                tmats = sr.register_stack(plane[:, 50:-50, 50:-50], reference='mean', verbose=False)
+            t_fit += time.perf_counter() - tf0
+        ta0 = time.perf_counter()
+        plane_means.append(_apply_tmats_and_mean(plane, tmats, sr))
+        t_apply += time.perf_counter() - ta0
         if out_tmats is not None and tmats_per_z is None:
             out_tmats.append(tmats)
+    rprint(f"    [dim]ch{ch}: read {n_frames}f×{n_planes}z {t_io:.1f}s | "
+           f"stackreg fit {t_fit:.1f}s | apply+mean {t_apply:.1f}s[/dim]")
     out = np.stack(plane_means, axis=0)  # (Z, Y, X)
     if return_tmats:
         return out, (out_tmats if tmats_per_z is None else tmats_per_z)
@@ -188,10 +244,10 @@ def process_session_sbx(full_manifest: dict , session:dict):
     input_format = session.get('input_format', 'sbx')
     params = full_manifest.get('params', {})
     register_hires = params.get('hires_sbx_registration', True) and input_format != 'tiff'
-    # Frame subsampling for StackReg estimation+averaging. Default 4 gives ~4x
-    # speedup with negligible quality loss on anatomical hi-res tiles. Set to 1
-    # in the manifest to recover the original use-every-frame behavior.
-    hires_subsample = max(int(params.get('hires_sbx_subsample', 4)), 1)
+    # Frame subsampling for StackReg estimation+averaging. Default 1 uses every
+    # frame for the cleanest tile mean. Set higher in the manifest (e.g. 4) for
+    # a ~Nx speedup on large sessions at the cost of a slightly noisier mean.
+    hires_subsample = max(int(params.get('hires_sbx_subsample', 1)), 1)
 
     # Support variable number of tiles (not just 3)
     num_tiles = len(session['anatomical_hires_green_runs'])
@@ -223,11 +279,11 @@ def process_session_sbx(full_manifest: dict , session:dict):
         red_sbx = base_2P / f'{mouse_name}_{date}_{red_run}' / f'{mouse_name}_{date}_{red_run}.sbx'
 
         print(f'  Tile {j+1}: {green_sbx.name} + {red_sbx.name}')
-        # If green and red come from the same SBX file (typical: both channels
-        # acquired simultaneously), motion is identical — estimate tmats on green
-        # and reuse for red. Halves the StackReg work per tile.
-        same_file = register_hires and green_sbx.resolve() == red_sbx.resolve()
-        if same_file:
+        # Fit StackReg on green, reuse tmats for red. Works whether green+red are
+        # in the same SBX or back-to-back runs of the same FOV (typical HCR setup):
+        # for fixed tissue acquired sequentially the motion profiles are nearly
+        # identical, so red benefits from green's correction at zero extra fit cost.
+        if register_hires:
             green_mean, tmats_per_z = _hires_sbx_channel_mean(
                 green_sbx, 0, True, subsample=hires_subsample, return_tmats=True
             )
@@ -236,10 +292,10 @@ def process_session_sbx(full_manifest: dict , session:dict):
             )
         else:
             green_mean = _hires_sbx_channel_mean(
-                green_sbx, 0, register_hires, subsample=hires_subsample
+                green_sbx, 0, False, subsample=hires_subsample
             )
             red_mean = _hires_sbx_channel_mean(
-                red_sbx, -1, register_hires, subsample=hires_subsample
+                red_sbx, -1, False, subsample=hires_subsample
             )
         green_stack = np.expand_dims(green_mean, 1)
         red_stack = np.expand_dims(red_mean, 1)

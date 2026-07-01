@@ -1,3 +1,35 @@
+// ===== HCR round-to-round registration =====
+// When a `global` and `local` block are present (and both method:"centroid"), the pipeline
+// computes the registration IN-PROCESS using cellpose nucleus centroids (no notebook farming),
+// shows a ranked review, and on your selection WRITES HCR_selected_registrations below for you.
+// Omit the global/local blocks (or set either method:"blob") to fall back to the legacy
+// notebook scan workflow. See agent_docs/registration_guide.md.
+HCR_to_HCR_registration:{
+    "downsampling":[3, 3, 2]            // [x,y,z] downsample for the global (lowres) stage
+
+    "global":{
+        "method":"centroid"            // "centroid" (in-pipeline) | "blob" (legacy notebook)
+        "context_radius_um":[40, 60, 80, 100, 150]  // a few values; fast, best auto-picked. ~60um is near-universal
+        "match_threshold":0.3          // context-correlation cutoff for a centroid match
+        "select_metric":"mi"           // pick best radius: "mi" (default) | "median_resid" | "above_chance" (all guarded vs worse-than-chance)
+        // no rotation cap: the RANSAC affine is used as-is
+    }
+    "local":{
+        "method":"centroid"            // "centroid" | "blob"
+        "blocksize":[[400,400,20], [300,300,15], [200,200,10]]  // tried; best (lowest residual) picked
+        "overlap":0.5
+        "context_radius":[12, 12, 2]   // block context window in VOXELS (current local style)
+        // "context_radius_um":60       // OPT-IN: use a um-window for blocks instead (experiment)
+        "match_threshold":0.3
+        "max_spot_match_distance_um":60
+        "count_floor":8                // loosened spot-count floor for centroids (blob era was 100)
+        "match_floor":4                // loosened point-matches floor (blob era was 50)
+        "adaptive_edges":true          // bounds-safe edge/thin-z context padding
+    }
+}
+
+// Selected registrations. In centroid mode this is written automatically after the review
+// pause; in legacy mode you paste the winner's path here yourself.
 HCR_selected_registrations:{
     "rounds":[
        {"round":"02",
@@ -22,4 +54,27 @@ twop_to_hcr_registration:{
     "xy_max_global":500,                // xy search range (px); raise to 600 if landmarks coarse
     "hull_margin":-100,                 // inward hull erosion (px, negative); less negative (-50) for poor landmark coverage
     "flip_z":false                      // true when HCR acquisition has inverted z-axis
+}
+
+// Measure cellpose + mRNA/neuropil on the un-warped HCR rounds, warping only the
+// DAPI labels into the HCR01 frame for matching (IDs preserved). Avoids the
+// per-channel warp and the signal loss it causes on sparse probes. Default off.
+HCR_native_extraction:{
+    "enabled":false
+}
+
+// HCR round-to-round cell matching: a two-stage hybrid that re-pairs cells across
+// rounds and feeds round_{R}_mask in the merged table. Stage 1 = best-plane IoU
+// overlap (the well-registered bulk); stage 2 = pinned soma-print repair (recovers
+// partners in locally mis-registered patches that overlap alone misses). The merged
+// table gains round_{R}_match_source ('overlap'|'somaprint'|'iou') and the soma
+// score columns. Default ON; set enabled:false to fall back to pure IoU best-match.
+// Validated on JS082 HCR02->HCR01 (81.4% overlap -> 88.2% hybrid).
+somaprint_hcr:{
+    "enabled":true
+    // "overlap_tau":0.5      // min best-single-plane IoU to seed a stage-1 anchor
+    // "search_xy_um":126.0   // soma candidate-box half-width (XY, microns)
+    // "search_z_um":37.0     // soma candidate-box half-height (Z, microns)
+    // "plane_band":2         // 2d_plane fingerprint: neighbours within +/-band planes
+    // "lr_threshold":0.05    // soma gate likelihood-ratio threshold
 }

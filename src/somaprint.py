@@ -26,12 +26,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+import numba
 import numpy as np
 import tifffile
 from scipy import stats
 from scipy.ndimage import map_coordinates
 from scipy.spatial import cKDTree
-from skimage.measure import regionprops
 from sklearn.mixture import GaussianMixture
 from tqdm.auto import tqdm
 
@@ -47,20 +47,21 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 DEFAULTS = dict(
     enabled=True,
-    # Algorithm mode:
-    #   '3d' = TRU-FACT 3D Soma-print (Schnitzer et al., bioRxiv 2026.04.28).
-    #          Runs the full 2D somaprint at each HCR z-slice within a per-cell
-    #          curved band (z_map(centroid) +/- z_band), then picks the
-    #          (slice, HCR cell) with the highest score per 2P cell. The paper
-    #          explicitly verifies precision/recall of this "best match in 3D"
-    #          is equivalent to the full pipeline with TPS manifold refit +
-    #          slab projection (those are for downstream visualisation).
-    #   '2d' = legacy single-plane mode: sample HCR at z_map then run 2D
-    #          somaprint once. Cheaper, but underestimates matches when the
-    #          cascade's z_map has local error > ~1 plane (see
-    #          figure_4_cortex/somaprint_tests/ analyses).
-    mode='3d',
-    z_band=2,                       # per-cell curved z-window for '3d' mode
+    # TRU-FACT 3D Soma-print (Schnitzer et al., bioRxiv 2026.04.28).
+    # 'curved' (default): sample HCR along z_map(y,x)+d for d in [-z_band,+z_band],
+    #   run full somaprint on all 2P cells per d, argmax score per cell. Adapts the
+    #   paper's flat-slice z-search to tilted-2P geometry — the warp surface IS
+    #   the paper's "flat plane" in HCR coordinates.
+    # '3d': legacy flat-slice TRU-FACT (fragments local HCR neighborhoods under
+    #   tilted 2P; kept for backwards comparison).
+    # '2d': single pass at z_map, no z-search.
+    mode='curved',
+    z_band=1,                       # +/- z-range for 'curved'/'3d' search.
+                                    # Production standard is curved +/-1 (~7.5 um,
+                                    # ~one soma; least neighbor-aliasing) per the
+                                    # cohort band investigation. Was +/-2 through
+                                    # 2026-06; switched to +/-1 and all PBN/cortex
+                                    # merged tables re-run (see rerun_somaprint_pm1.py).
     m_2p=15,
     m_hcr=30,
     n_pairs=10,
@@ -170,12 +171,24 @@ class _RoundResult:
 
 
 def _extract_centroids(labels_2d: np.ndarray):
-    props = regionprops(labels_2d.astype(np.int32))
-    if not props:
+    """Per-label (y, x) centroid + label id via bincount — same result as regionprops
+    (labels ascending) but ~20x faster on full-FOV label images, which matters because
+    curved/3d modes re-extract HCR centroids on every z-offset/slice."""
+    lab = np.asarray(labels_2d)
+    flat = lab.ravel()
+    idx = np.flatnonzero(flat)
+    if idx.size == 0:
         return np.zeros((0, 2)), np.zeros(0, dtype=np.int64)
-    cents = np.array([[p.centroid[0], p.centroid[1]] for p in props])
-    ids = np.array([p.label for p in props], dtype=np.int64)
-    return cents, ids
+    lbl = flat[idx]
+    ys, xs = np.unravel_index(idx, lab.shape)
+    n = int(lbl.max()) + 1
+    cnt = np.bincount(lbl, minlength=n)
+    sy = np.bincount(lbl, ys, minlength=n)
+    sx = np.bincount(lbl, xs, minlength=n)
+    keep = np.flatnonzero(cnt)
+    keep = keep[keep > 0]                       # drop background label 0
+    cents = np.column_stack([sy[keep] / cnt[keep], sx[keep] / cnt[keep]])
+    return cents, keep.astype(np.int64)
 
 
 def _load_inputs(twop_3d_path: Path,
@@ -230,26 +243,20 @@ def _load_inputs(twop_3d_path: Path,
 
 @dataclass
 class _SomaprintInputs3D:
-    """Inputs for 3D mode: full HCR volume + per-cell z_warp from z_map."""
+    """Inputs for 3D modes ('curved' + flat-slice '3d'): full HCR volume + warp."""
     twop_labels: np.ndarray
     twop_centroids: np.ndarray
     twop_label_ids: np.ndarray
     fov_span: int
     z_warp_per_cell: np.ndarray   # z_map sampled at each 2P centroid (n_2p,)
+    z_map: np.ndarray             # full 2D z_map(y,x); needed for 'curved' mode
     hcr_3d: np.ndarray            # full HCR label volume (Z, Y, X)
 
 
 def _load_inputs_3d(twop_3d_path: Path,
                     params_path: Path,
                     hcr_masks_path: Path) -> Optional[_SomaprintInputs3D]:
-    """Like _load_inputs but keeps HCR 3D (no per-pixel z_map sampling).
-
-    The 2D loader pre-samples HCR at z_map(y, x) and returns a single 2D
-    HCR slice. 3D mode needs the full HCR volume so the per-z somaprint
-    scan can look at slices on either side of z_map. We also pre-compute
-    each 2P cell's z_warp = z_map(centroid) so the per-z scan can quickly
-    select which cells are in-band at a given HCR slice.
-    """
+    """Like _load_inputs but keeps full HCR 3D + z_map for 'curved'/'3d' modes."""
     for p in (twop_3d_path, params_path, hcr_masks_path):
         if not Path(p).exists():
             rprint(f"  [yellow][somaprint] missing input: {p}[/yellow]")
@@ -291,6 +298,7 @@ def _load_inputs_3d(twop_3d_path: Path,
         twop_label_ids=twop_ids,
         fov_span=int(max(twop_labels.shape)),
         z_warp_per_cell=z_warp,
+        z_map=z_map.astype(np.float32),
         hcr_3d=hcr_3d,
     )
 
@@ -314,6 +322,31 @@ def _build_neighbor_vectors(centroids: np.ndarray, m: int):
     return vecs, nbr_idx
 
 
+def _radius_for(fov_span: int, params: dict) -> float:
+    return params['radius_factor'] * (fov_span / params['lambda_scale'])
+
+
+def _build_candidates(twop_cents: np.ndarray, hcr_cents: np.ndarray, radius: float):
+    """Per-2P-cell HCR candidate indices within `radius`, flattened CSR-style as
+    (cand_starts, cand_indices). Geometric — depends only on cell positions, so it is
+    IDENTICAL across the identity-refinement rounds within one sheet; build once and reuse
+    instead of rebuilding the KD-tree + query every round. query_ball_point is called once
+    on the whole (n,2) array (vectorized) rather than per cell."""
+    n_2p = len(twop_cents)
+    cand_starts = np.zeros(n_2p + 1, dtype=np.int64)
+    if n_2p == 0 or len(hcr_cents) == 0:
+        return cand_starts, np.empty(0, dtype=np.int64)
+    hcr_tree = cKDTree(hcr_cents)
+    cand_lists = hcr_tree.query_ball_point(twop_cents, r=radius)
+    for i, cl in enumerate(cand_lists):
+        cand_starts[i + 1] = cand_starts[i] + len(cl)
+    if cand_starts[-1] > 0:
+        cand_indices = np.concatenate([np.asarray(cl, dtype=np.int64) for cl in cand_lists])
+    else:
+        cand_indices = np.empty(0, dtype=np.int64)
+    return cand_starts, cand_indices
+
+
 def _greedy_match_fast(cost: np.ndarray, n: int) -> float:
     c = cost.copy()
     n_actual = min(n, c.shape[0], c.shape[1])
@@ -329,6 +362,153 @@ def _greedy_match_fast(cost: np.ndarray, n: int) -> float:
         c[ia, :] = np.inf
         c[:, ib] = np.inf
     return delta_sum / n_actual
+
+
+# No cache=True: module is dual-imported as `src.somaprint` and `somaprint`; disk cache poisons across contexts.
+@numba.njit
+def _score_one_cell_jit(vecs_a, hcr_vecs_cand, dx_arr, lam, n_pairs):
+    m_2p = vecs_a.shape[0]
+    n_cand = hcr_vecs_cand.shape[0]
+    m_hcr = hcr_vecs_cand.shape[1]
+    if n_cand < 2:
+        return np.nan, np.nan, -1
+    n_actual = min(n_pairs, m_2p, m_hcr)
+    cost = np.empty((m_2p, m_hcr), dtype=np.float64)
+    best_score = -np.inf
+    second_score = -np.inf
+    best_idx = -1
+    for k in range(n_cand):
+        for i in range(m_2p):
+            for j in range(m_hcr):
+                d0 = vecs_a[i, 0] - hcr_vecs_cand[k, j, 0]
+                d1 = vecs_a[i, 1] - hcr_vecs_cand[k, j, 1]
+                d = np.sqrt(d0 * d0 + d1 * d1)
+                if not np.isfinite(d):
+                    d = np.inf
+                cost[i, j] = d
+        n_matched = 0
+        delta_sum = 0.0
+        for _ in range(n_actual):
+            min_val = np.inf
+            ia = -1
+            ib = -1
+            for i in range(m_2p):
+                for j in range(m_hcr):
+                    if cost[i, j] < min_val:
+                        min_val = cost[i, j]
+                        ia = i
+                        ib = j
+            if not np.isfinite(min_val):
+                break
+            delta_sum += min_val
+            n_matched += 1
+            for j in range(m_hcr):
+                cost[ia, j] = np.inf
+            for i in range(m_2p):
+                cost[i, ib] = np.inf
+        if n_matched == 0:
+            continue
+        delta_bar = delta_sum / n_matched
+        pen = np.exp(-(dx_arr[k] / lam) ** 2)
+        score = (100.0 / (1.0 + delta_bar)) * pen
+        if score > best_score:
+            second_score = best_score
+            best_score = score
+            best_idx = k
+        elif score > second_score:
+            second_score = score
+    if best_idx < 0:
+        return np.nan, np.nan, -1
+    return best_score, second_score, best_idx
+
+
+@numba.njit(parallel=True)
+def _score_identity_prange(twop_cents, hcr_cents,
+                            conf_starts, conf_indices_2p, conf_indices_hcr,
+                            cand_starts, cand_indices, lam):
+    n_2p = twop_cents.shape[0]
+    best_score = np.full(n_2p, np.nan, dtype=np.float64)
+    second_score = np.full(n_2p, np.nan, dtype=np.float64)
+    best_partner = np.full(n_2p, -1, dtype=np.int64)
+    valid = np.zeros(n_2p, dtype=np.bool_)
+    for i_a in numba.prange(n_2p):
+        c_start = conf_starts[i_a]
+        c_end = conf_starts[i_a + 1]
+        n_neigh = c_end - c_start
+        if n_neigh < 5:
+            continue
+        k_start = cand_starts[i_a]
+        k_end = cand_starts[i_a + 1]
+        n_cand = k_end - k_start
+        if n_cand < 2:
+            continue
+        best = -np.inf
+        second = -np.inf
+        best_cand = -1
+        for k in range(n_cand):
+            cand_idx = cand_indices[k_start + k]
+            sum_norm = 0.0
+            for j in range(n_neigh):
+                conf_j_2p = conf_indices_2p[c_start + j]
+                conf_j_hcr = conf_indices_hcr[c_start + j]
+                va0 = twop_cents[conf_j_2p, 0] - twop_cents[i_a, 0]
+                va1 = twop_cents[conf_j_2p, 1] - twop_cents[i_a, 1]
+                vb0 = hcr_cents[conf_j_hcr, 0] - hcr_cents[cand_idx, 0]
+                vb1 = hcr_cents[conf_j_hcr, 1] - hcr_cents[cand_idx, 1]
+                d0 = va0 - vb0
+                d1 = va1 - vb1
+                sum_norm += np.sqrt(d0 * d0 + d1 * d1)
+            dbar = sum_norm / n_neigh
+            dx0 = hcr_cents[cand_idx, 0] - twop_cents[i_a, 0]
+            dx1 = hcr_cents[cand_idx, 1] - twop_cents[i_a, 1]
+            dx = np.sqrt(dx0 * dx0 + dx1 * dx1)
+            pen = np.exp(-(dx / lam) ** 2)
+            score = (100.0 / (1.0 + dbar)) * pen
+            if score >= best:
+                second = best
+                best = score
+                best_cand = cand_idx
+            elif score >= second:
+                second = score
+        if best_cand >= 0:
+            best_score[i_a] = best
+            second_score[i_a] = second
+            best_partner[i_a] = best_cand
+            valid[i_a] = True
+    return best_score, second_score, best_partner, valid
+
+
+@numba.njit(parallel=True)
+def _score_all_cells_prange(twop_vecs, hcr_vecs, twop_cents, hcr_cents,
+                             cand_starts, cand_indices, lam, n_pairs):
+    n_2p = twop_vecs.shape[0]
+    m_hcr = hcr_vecs.shape[1]
+    best_score = np.full(n_2p, np.nan, dtype=np.float64)
+    second_score = np.full(n_2p, np.nan, dtype=np.float64)
+    best_partner = np.full(n_2p, -1, dtype=np.int64)
+    for i_a in numba.prange(n_2p):
+        start = cand_starts[i_a]
+        end = cand_starts[i_a + 1]
+        n_cand = end - start
+        if n_cand < 2:
+            continue
+        hcr_vecs_cand = np.empty((n_cand, m_hcr, 2), dtype=np.float64)
+        dx_arr = np.empty(n_cand, dtype=np.float64)
+        for k in range(n_cand):
+            idx = cand_indices[start + k]
+            for j in range(m_hcr):
+                hcr_vecs_cand[k, j, 0] = hcr_vecs[idx, j, 0]
+                hcr_vecs_cand[k, j, 1] = hcr_vecs[idx, j, 1]
+            d0 = hcr_cents[idx, 0] - twop_cents[i_a, 0]
+            d1 = hcr_cents[idx, 1] - twop_cents[i_a, 1]
+            dx_arr[k] = np.sqrt(d0 * d0 + d1 * d1)
+        bs, ss, bi = _score_one_cell_jit(twop_vecs[i_a], hcr_vecs_cand,
+                                          dx_arr, lam, n_pairs)
+        best_score[i_a] = bs
+        second_score[i_a] = ss
+        if bi >= 0:
+            best_partner[i_a] = cand_indices[start + bi]
+    return best_score, second_score, best_partner
 
 
 def _gmm_density(scores: np.ndarray, gmm: GaussianMixture) -> np.ndarray:
@@ -375,16 +555,13 @@ def _curate_with_gmm(best_score: np.ndarray,
             if lr[vi] < lr_threshold and best_partner[vi] >= 0}
 
 
-def _score_round1(inputs: _SomaprintInputs, params: dict, plane: int) -> _RoundResult:
+def _score_round1(inputs: _SomaprintInputs, params: dict, plane: int, cand=None) -> _RoundResult:
     fov_span = inputs.fov_span
     lam = fov_span / params['lambda_scale']
-    radius = params['radius_factor'] * lam
     n_pairs = params['n_pairs']
-
     twop_cents = inputs.twop_centroids
     hcr_cents = inputs.hcr_centroids
     n_2p = len(twop_cents)
-
     if n_2p == 0 or len(hcr_cents) == 0:
         return _RoundResult(
             best_score=np.full(n_2p, np.nan),
@@ -392,38 +569,17 @@ def _score_round1(inputs: _SomaprintInputs, params: dict, plane: int) -> _RoundR
             best_partner=np.full(n_2p, -1, dtype=np.int64),
             confident={},
         )
-
     twop_vecs, _ = _build_neighbor_vectors(twop_cents, params['m_2p'])
     hcr_vecs, _ = _build_neighbor_vectors(hcr_cents, params['m_hcr'])
-    hcr_tree = cKDTree(hcr_cents)
-
-    best_score = np.full(n_2p, np.nan)
-    second_score = np.full(n_2p, np.nan)
-    best_partner = np.full(n_2p, -1, dtype=np.int64)
-
-    desc = f"  [somaprint] plane {plane} scoring"
-    for i_a in tqdm(range(n_2p), desc=desc, leave=False):
-        cand = hcr_tree.query_ball_point(twop_cents[i_a], r=radius)
-        if len(cand) < 2:
-            continue
-        vecs_a = twop_vecs[i_a]
-        vecs_b_batch = hcr_vecs[cand]
-        diff = vecs_a[None, :, None, :] - vecs_b_batch[:, None, :, :]
-        cost_batch = np.linalg.norm(diff, axis=-1)
-        cost_batch = np.where(np.isnan(cost_batch), np.inf, cost_batch)
-        dx_arr = np.linalg.norm(hcr_cents[cand] - twop_cents[i_a], axis=1)
-        pen_arr = np.exp(-(dx_arr / lam) ** 2)
-
-        scores = np.empty(len(cand))
-        for k, c in enumerate(cost_batch):
-            delta_bar = _greedy_match_fast(c, n_pairs)
-            scores[k] = (100.0 / (1.0 + delta_bar)) * pen_arr[k]
-
-        order = np.argsort(scores)[::-1]
-        best_score[i_a] = scores[order[0]]
-        second_score[i_a] = scores[order[1]] if len(order) > 1 else np.nan
-        best_partner[i_a] = cand[order[0]]
-
+    twop_vecs = np.ascontiguousarray(twop_vecs.astype(np.float64))
+    hcr_vecs = np.ascontiguousarray(hcr_vecs.astype(np.float64))
+    twop_cents_f = np.ascontiguousarray(twop_cents.astype(np.float64))
+    hcr_cents_f = np.ascontiguousarray(hcr_cents.astype(np.float64))
+    cand_starts, cand_indices = (cand if cand is not None
+                                 else _build_candidates(twop_cents, hcr_cents, _radius_for(fov_span, params)))
+    best_score, second_score, best_partner = _score_all_cells_prange(
+        twop_vecs, hcr_vecs, twop_cents_f, hcr_cents_f,
+        cand_starts, cand_indices, float(lam), int(n_pairs))
     valid_mask = ~np.isnan(best_score) & ~np.isnan(second_score)
     confident = _curate_with_gmm(
         best_score, second_score, best_partner, valid_mask,
@@ -436,10 +592,10 @@ def _score_round1(inputs: _SomaprintInputs, params: dict, plane: int) -> _RoundR
 
 def _score_round_identity(inputs: _SomaprintInputs,
                           params: dict,
-                          current_matches: dict):
+                          current_matches: dict,
+                          cand=None):
     fov_span = inputs.fov_span
     lam = fov_span / params['lambda_scale']
-    radius = params['radius_factor'] * lam
     n_pairs_r2 = params['n_pairs_r2']
     min_conf = params['min_confirmed_for_round2']
 
@@ -459,60 +615,52 @@ def _score_round_identity(inputs: _SomaprintInputs,
         return blank
 
     confirmed_tree = cKDTree(twop_cents[confirmed_2p_array])
-    hcr_tree = cKDTree(hcr_cents)
-
-    best_score = np.full(n_2p, np.nan)
-    second_score = np.full(n_2p, np.nan)
-    best_partner = np.full(n_2p, -1, dtype=np.int64)
-    valid = np.zeros(n_2p, dtype=bool)
     n_query = n_pairs_r2 + 2
+    k_query = min(n_query, len(confirmed_2p_array))
 
+    conf_neigh_2p_lists = []
+    conf_neigh_hcr_lists = []
     for i_a in range(n_2p):
-        k_query = min(n_query, len(confirmed_2p_array))
         d_to_conf, idxs_in_conf = confirmed_tree.query(twop_cents[i_a], k=k_query)
         d_to_conf = np.atleast_1d(d_to_conf)
         idxs_in_conf = np.atleast_1d(idxs_in_conf)
         idxs_in_conf = idxs_in_conf[d_to_conf > 1e-6][:n_pairs_r2]
-        if len(idxs_in_conf) < 5:
-            continue
+        conf_neigh_2p_lists.append(confirmed_2p_array[idxs_in_conf])
+        conf_neigh_hcr_lists.append(confirmed_hcr_array[idxs_in_conf])
+    conf_starts = np.zeros(n_2p + 1, dtype=np.int64)
+    for i, cl in enumerate(conf_neigh_2p_lists):
+        conf_starts[i + 1] = conf_starts[i] + len(cl)
+    conf_indices_2p = (np.concatenate(conf_neigh_2p_lists).astype(np.int64)
+                       if any(len(cl) for cl in conf_neigh_2p_lists)
+                       else np.empty(0, dtype=np.int64))
+    conf_indices_hcr = (np.concatenate(conf_neigh_hcr_lists).astype(np.int64)
+                        if any(len(cl) for cl in conf_neigh_hcr_lists)
+                        else np.empty(0, dtype=np.int64))
 
-        confirmed_2p_neigh = confirmed_2p_array[idxs_in_conf]
-        confirmed_hcr_neigh = confirmed_hcr_array[idxs_in_conf]
-        vecs_a = twop_cents[confirmed_2p_neigh] - twop_cents[i_a]
+    cand_starts, cand_indices = (cand if cand is not None
+                                 else _build_candidates(twop_cents, hcr_cents, _radius_for(fov_span, params)))
 
-        cands = hcr_tree.query_ball_point(twop_cents[i_a], r=radius)
-        if len(cands) < 2:
-            continue
-        cands_arr = np.array(cands)
+    twop_cents_f = np.ascontiguousarray(twop_cents.astype(np.float64))
+    hcr_cents_f = np.ascontiguousarray(hcr_cents.astype(np.float64))
 
-        b_centroids = hcr_cents[cands_arr][:, None, :]
-        b_neigh_centroids = hcr_cents[confirmed_hcr_neigh][None, :, :]
-        vecs_b_batch = b_neigh_centroids - b_centroids
-
-        diff = vecs_a[None, :, :] - vecs_b_batch
-        dbar = np.linalg.norm(diff, axis=2).mean(axis=1)
-        dx_arr = np.linalg.norm(hcr_cents[cands_arr] - twop_cents[i_a], axis=1)
-        pen_arr = np.exp(-(dx_arr / lam) ** 2)
-        scores = (100.0 / (1.0 + dbar)) * pen_arr
-
-        order = np.argsort(scores)[::-1]
-        best_score[i_a] = scores[order[0]]
-        second_score[i_a] = scores[order[1]] if len(order) > 1 else np.nan
-        best_partner[i_a] = cands_arr[order[0]]
-        valid[i_a] = True
-
-    return best_score, second_score, best_partner, valid
+    return _score_identity_prange(
+        twop_cents_f, hcr_cents_f,
+        conf_starts, conf_indices_2p, conf_indices_hcr,
+        cand_starts, cand_indices, float(lam))
 
 
 def _iterate_rounds(inputs: _SomaprintInputs,
                     params: dict,
-                    round1: _RoundResult) -> _RoundResult:
-    """Run identity-paired refinement; return the final-round result."""
+                    round1: _RoundResult,
+                    cand=None) -> _RoundResult:
+    """Run identity-paired refinement; return the final-round result. `cand` is the prebuilt
+    (cand_starts, cand_indices) for this sheet — geometric and identical every round, so we
+    pass it through instead of rebuilding the HCR KD-tree + candidate query each round."""
     current = round1
     for _ in range(params['max_rounds']):
         if len(current.confident) < params['min_confirmed_for_round2']:
             break
-        best, second, partner, valid = _score_round_identity(inputs, params, current.confident)
+        best, second, partner, valid = _score_round_identity(inputs, params, current.confident, cand=cand)
         n_valid = int(valid.sum())
         if n_valid < params['min_cells_for_gmm']:
             break
@@ -531,25 +679,82 @@ def _iterate_rounds(inputs: _SomaprintInputs,
     return current
 
 
+def _run_curved_match(inputs: _SomaprintInputs3D, params: dict, plane: int) -> dict:
+    """Curved-sheet TRU-FACT (paper-accurate for tilted-2P geometry).
+
+    For d in [-z_band, +z_band]: sample HCR along z_map(y,x)+d, run full
+    somaprint (round1 + identity rounds + GMM curation) on all 2P cells.
+    Per cell: argmax score across offsets; confidence inherits from the
+    winning offset's GMM. Returns arrays {score, second, hcr_label, offset, confident}.
+    """
+    z_band = int(params['z_band'])
+    n_2p = len(inputs.twop_centroids)
+
+    top1_score     = np.full(n_2p, -np.inf, dtype=np.float64)
+    top1_second    = np.full(n_2p, np.nan,  dtype=np.float64)
+    top1_hcr_label = np.zeros(n_2p,         dtype=np.int64)
+    top1_offset    = np.full(n_2p, np.iinfo(np.int32).min, dtype=np.int32)
+    top1_confident = np.zeros(n_2p,         dtype=bool)
+
+    if n_2p == 0:
+        return dict(score=top1_score, second=top1_second,
+                    hcr_label=top1_hcr_label, offset=top1_offset,
+                    confident=top1_confident)
+
+    z_map = inputs.z_map
+    ny, nx = z_map.shape
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    offsets = list(range(-z_band, z_band + 1))
+
+    desc = f"  [somaprint] plane {plane} curved scan (d=-{z_band}..+{z_band})"
+    for d in tqdm(offsets, desc=desc, leave=False):
+        coords = np.stack([z_map + float(d), yy, xx], axis=0)
+        hcr_2d = map_coordinates(inputs.hcr_3d, coords, order=0,
+                                 mode='constant', cval=0).astype(np.uint16)
+        if hcr_2d.max() == 0:
+            continue
+        hcr_cents, hcr_ids = _extract_centroids(hcr_2d)
+        if len(hcr_cents) < 2:
+            continue
+
+        sheet_inputs = _SomaprintInputs(
+            twop_labels=inputs.twop_labels,
+            hcr_labels=hcr_2d,
+            twop_centroids=inputs.twop_centroids,
+            hcr_centroids=hcr_cents,
+            twop_label_ids=inputs.twop_label_ids,
+            hcr_label_ids=hcr_ids,
+            fov_span=inputs.fov_span,
+        )
+        cand = _build_candidates(sheet_inputs.twop_centroids, sheet_inputs.hcr_centroids,
+                                 _radius_for(sheet_inputs.fov_span, params))
+        round1 = _score_round1(sheet_inputs, params, plane, cand=cand)
+        final = _iterate_rounds(sheet_inputs, params, round1, cand=cand)
+
+        # Per-cell argmax aggregation; confidence inherits from winning offset.
+        for i_a in range(n_2p):
+            s = final.best_score[i_a]
+            bp = int(final.best_partner[i_a])
+            if not np.isfinite(s) or bp < 0:
+                continue
+            if s > top1_score[i_a]:
+                top1_score[i_a]     = s
+                top1_second[i_a]    = final.second_score[i_a]
+                top1_hcr_label[i_a] = int(hcr_ids[bp])
+                top1_offset[i_a]    = d
+                top1_confident[i_a] = i_a in final.confident
+
+    return dict(score=top1_score, second=top1_second,
+                hcr_label=top1_hcr_label, offset=top1_offset,
+                confident=top1_confident)
+
+
 def _run_3d_match(inputs: _SomaprintInputs3D, params: dict, plane: int) -> dict:
-    """Per-slice full 2D somaprint + per-cell max-score aggregation across z.
+    """Flat-slice TRU-FACT (legacy; 'curved' mode is the default for tilted 2P).
 
-    Implements the TRU-FACT 3D Soma-print algorithm:
-      1. For each HCR z-slice in the outer range
-         [floor(z_warp.min()) - z_band, ceil(z_warp.max()) + z_band], run
-         the full 2D somaprint (round 1 + identity rounds + GMM curation)
-         on the 2P cells whose own z_warp is within z_band of z (curved
-         per-cell band that follows the folded sheet).
-      2. For each 2P cell, pick the (z, HCR cell) with the highest final-
-         round somaprint score across all slices it was scored at.
-
-    The paper's downstream TPS-manifold refit + slab projection are skipped
-    because their purpose is to produce a coherent 2D HCR reference image
-    for visualisation; the paper explicitly verifies match precision/recall
-    are unchanged when you stop at the per-cell argmax-z stage.
-
-    Returns a dict of n_2p-length arrays:
-      score, second, hcr_label, z, confident.
+    For each absolute HCR z in [floor(zwarp.min())-z_band, ceil(zwarp.max())+z_band]:
+    run full somaprint on the z-local subset of 2P cells (|z - z_warp| <= z_band).
+    Per cell: argmax score across slices. Returns {score, second, hcr_label, z, confident}.
     """
     z_band = int(params['z_band'])
     n_2p = len(inputs.twop_centroids)
@@ -592,8 +797,10 @@ def _run_3d_match(inputs: _SomaprintInputs3D, params: dict, plane: int) -> dict:
             hcr_label_ids=hcr_ids,
             fov_span=inputs.fov_span,
         )
-        round1 = _score_round1(slice_inputs, params, plane)
-        final = _iterate_rounds(slice_inputs, params, round1)
+        cand = _build_candidates(slice_inputs.twop_centroids, slice_inputs.hcr_centroids,
+                                 _radius_for(slice_inputs.fov_span, params))
+        round1 = _score_round1(slice_inputs, params, plane, cand=cand)
+        final = _iterate_rounds(slice_inputs, params, round1, cand=cand)
 
         # Aggregate winners. final.* arrays are indexed against the in-band
         # subset; map back to full-array indices via in_band_idx.
@@ -640,9 +847,9 @@ def run_for_plane(full_manifest: dict, session: dict, hcr_round: str) -> dict:
     hcr_masks_path = output_root(full_manifest) / 'HCR' / 'cellpose' / f'HCR{hcr_round}_masks.tiff'
 
     t0 = time.time()
-    mode = str(params.get('mode', '3d')).lower()
+    mode = str(params.get('mode', 'curved')).lower()
 
-    if mode == '3d':
+    if mode in ('curved', '3d'):
         inputs3d = _load_inputs_3d(twop_3d_path, params_path, hcr_masks_path)
         if inputs3d is None:
             return {}
@@ -651,9 +858,12 @@ def run_for_plane(full_manifest: dict, session: dict, hcr_round: str) -> dict:
         if n_2p == 0:
             rprint(f"  [yellow][somaprint] plane {plane}: no 2P cells; skipping[/yellow]")
             return {}
-        rprint(f"  [somaprint] plane {plane}: {n_2p} 2P cells, 3D mode "
+        rprint(f"  [somaprint] plane {plane}: {n_2p} 2P cells, '{mode}' mode "
                f"(z_band=+/-{params['z_band']}, HCR z={n_z}), scoring...")
-        result = _run_3d_match(inputs3d, params, plane)
+        if mode == 'curved':
+            result = _run_curved_match(inputs3d, params, plane)
+        else:
+            result = _run_3d_match(inputs3d, params, plane)
 
         out = {}
         for i_a in range(n_2p):
@@ -667,7 +877,7 @@ def run_for_plane(full_manifest: dict, session: dict, hcr_round: str) -> dict:
             out[twop_lbl] = (hcr_lbl, bs, ss, confident)
         n_conf = sum(1 for v in out.values() if v[3])
         rprint(f"  [somaprint] plane {plane}: {n_conf}/{n_2p} cells confidently matched "
-               f"(3D mode, {time.time() - t0:.1f}s)")
+               f"('{mode}' mode, {time.time() - t0:.1f}s)")
         return out
 
     # mode == '2d' (legacy single-plane sample at z_map)
@@ -680,8 +890,10 @@ def run_for_plane(full_manifest: dict, session: dict, hcr_round: str) -> dict:
         return {}
 
     rprint(f"  [somaprint] plane {plane}: {n_2p} 2P + {n_hcr} HCR cells, 2D mode, scoring...")
-    round1 = _score_round1(inputs, params, plane)
-    final = _iterate_rounds(inputs, params, round1)
+    cand = _build_candidates(inputs.twop_centroids, inputs.hcr_centroids,
+                             _radius_for(inputs.fov_span, params))
+    round1 = _score_round1(inputs, params, plane, cand=cand)
+    final = _iterate_rounds(inputs, params, round1, cand=cand)
 
     # Build per-2P-label output. Index space → label space happens here so
     # downstream code only sees cellpose label IDs.

@@ -8,20 +8,23 @@ import numpy as np
 from pathlib import Path
 
 try:
-    from .meta import parse_json, get_hcr_to_hcr_registration_config, get_rotation_config, rprint, track  # Relative import (for running as part of a package)
+    from .meta import (parse_json, get_hcr_to_hcr_registration_config, get_rotation_config, rprint, track,
+                       get_round_folder_name)  # Relative import (for running as part of a package)
     from . import automation as auto
 except ImportError:
-    from meta import parse_json, get_hcr_to_hcr_registration_config, get_rotation_config, rprint, track  # Absolute import (for running in Jupyter Notebook)
+    from meta import (parse_json, get_hcr_to_hcr_registration_config, get_rotation_config, rprint, track,
+                      get_round_folder_name)  # Absolute import (for running in Jupyter Notebook)
     import automation as auto
 
 try:
     from .registrations_utils import (
         # Existing functions (still used by other workflows)
         load_landmarks, build_z_map, tps_warp_2p_to_hcr, erode_labels,
-        sample_hcr_binary_at_zmap, compute_iou, apply_shift_fields,
+        sample_hcr_binary_at_zmap, compute_iou, compute_containment, apply_shift_fields,
         shift_2d, rotate_2d,
         register_lowres_to_hires_single_plane, apply_lowres_to_hires_transform,
-        refine_lowres_to_hires_with_tiles, prompt_overwrite_per_plane,
+        refine_lowres_to_hires_with_tiles, refine_lowres_to_hires_with_flow,
+        prompt_overwrite_per_plane,
         # v8/v10 registration functions
         global_search_moving_iou, create_landmark_hull_mask, create_fov_mask_convex_hull,
         build_z_quad_blend, extract_centroids, find_cell_displacements,
@@ -32,10 +35,11 @@ try:
 except ImportError:
     from registrations_utils import (
         load_landmarks, build_z_map, tps_warp_2p_to_hcr, erode_labels,
-        sample_hcr_binary_at_zmap, compute_iou, apply_shift_fields,
+        sample_hcr_binary_at_zmap, compute_iou, compute_containment, apply_shift_fields,
         shift_2d, rotate_2d,
         register_lowres_to_hires_single_plane, apply_lowres_to_hires_transform,
-        refine_lowres_to_hires_with_tiles, prompt_overwrite_per_plane,
+        refine_lowres_to_hires_with_tiles, refine_lowres_to_hires_with_flow,
+        prompt_overwrite_per_plane,
         global_search_moving_iou, create_landmark_hull_mask, create_fov_mask_convex_hull,
         build_z_quad_blend, extract_centroids, find_cell_displacements,
         fit_affine_ransac, run_local_tile_ransac,
@@ -56,6 +60,8 @@ sys.path = [fr'{os.getcwd()}/bigstream_v2_andermann'] + sys.path
 sys.path = ["/mnt/nasquatch/data/2p/jonna/Code_Python/Notebooks_Jonna/BigStream/bigstream_v2_andermann"] + sys.path 
 
 from bigstream.piecewise_transform import distributed_apply_transform
+from ClusterWrap import cluster as cluster_constructor
+import dask.array as da
 
 try:
     from .meta import output_root
@@ -125,108 +131,90 @@ def HCR_confocal_imaging(manifest, only_paths=False):
     # register the rounds
 
 def registration_apply(full_manifest):
-    """
-    Register the rounds in the manifest that was selected in params.hjson
-    """
-    manifest = full_manifest['data']
-    round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered = True, print_rounds = True, print_registered = True)
+    """Materialise the reference round's full stack for the 2P->HCR step.
 
-    # Pre-load fix image path (optimization: avoid reloading per round)
-    HCR_fix_image_path = reference_round['image_path']
-    HCR_fix_round = None  # Lazy load on first use
+    HCR intensities are measured on the acquired (un-warped) rounds and mask
+    alignment is handled by align_masks_to_reference, so no per-channel probe
+    warp is produced — only the reference round is copied into
+    full_registered_stacks/, which the 2P->HCR registration reads."""
+    _, reference_round, _ = verify_rounds(full_manifest, parse_registered=True, print_rounds=True, print_registered=True)
 
-    for HCR_round_to_register in register_rounds:
-        mov_round = round_to_rounds[HCR_round_to_register]
-        HCR_mov_image_path = mov_round['image_path']
-
-        round_folder_name = f"HCR{HCR_round_to_register}_to_HCR{reference_round['round']}"
-
-        reg_path =  output_root(full_manifest) / 'HCR' / 'registrations'/ round_folder_name / round_to_rounds[HCR_round_to_register]['registrations'][0]
-        full_stack_path =  output_root(full_manifest) / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
-        if full_stack_path.exists():
-            continue
-        full_stack_path.parent.mkdir(exist_ok=True, parents=True)
-        rprint(f"[bold]Applying Registration to round {HCR_round_to_register}[/bold]")
-
-
-        # resolution of the images
-        fix_image_spacing = np.array(reference_round['resolution']) # X,Y,Z
-        mov_image_spacing = np.array(mov_round['resolution']) # X,Y,Z
-
-
-        # spatial down-sampling, probably no need to test. (Changed x and y from 3 to 2 for CIM round 5)
-        hcr_reg_config = get_hcr_to_hcr_registration_config(full_manifest.get('params', {}))
-        downsampling = hcr_reg_config['downsampling']  # [x, y, z]
-        red_mut_x, red_mut_y, red_mut_z = downsampling[0], downsampling[1], downsampling[2]
-
-        fix_lowres_spacing = fix_image_spacing * np.array([red_mut_x, red_mut_y, red_mut_z])
-        mov_lowres_spacing = mov_image_spacing * np.array([red_mut_x, red_mut_y, red_mut_z])
-
-
-        # get block size from the registration file
-        blocksize_match = re.findall(r'bs(\d+)_(\d+)_(\d+)', Path(round_to_rounds[HCR_round_to_register]['registrations'][0]).name)
-        blocksize = [int(num) for num in blocksize_match[0]]
-
-        # Load fix image only once (lazy load on first round that needs processing)
-        if HCR_fix_round is None:
-            HCR_fix_round = tif_imread(HCR_fix_image_path)[:, 0]
-        HCR_mov_round = tif_imread(HCR_mov_image_path)
-
-        # load the registration files
-        affine = np.loadtxt(fr"{reg_path}/_affine.mat")
-        deform = zarr.load(fr"{reg_path}/deform.zarr")
-        fix_highres = HCR_fix_round.transpose(2, 1, 0) # from Z,X,Y to Y,X,Z
-
-        # Build full_stack incrementally (optimization: avoid double zarr loads)
-        full_stack = []
-
-        # Loop through channels starting with 1, which ignores the first channel which has already been registered
-        for channel in track(range(HCR_mov_round.shape[1]), description="Registering channels"):
-            output_channel_path = Path(fr"{reg_path}/out_c{channel}.zarr")
-            output_channel_tiff_path = output_channel_path.parent / output_channel_path.name.replace('.zarr','.tiff')
-            if os.path.exists(output_channel_path) and os.path.exists(output_channel_tiff_path):
-                # Load existing data for full_stack (unavoidable - wasn't processed this run)
-                full_stack.append(zarr.load(output_channel_path))
-                continue
-
-            HCR_mov_round_C = HCR_mov_round[:,channel]
-
-            # mov Image
-            mov_highres = HCR_mov_round_C.transpose(2,1,0)
-
-            # Interpolation:
-            # - Channel 0 (DAPI): use linear ('1') for smooth cell boundaries in segmentation
-            # - Other channels (HCR probes): use nearest neighbor ('0') to preserve signal intensity
-            if channel == 0:
-                interpolator = '1'  # Linear for DAPI
-            else:
-                interpolator = '0'  # Nearest neighbor for HCR probes
-
-            # register the images - returns zarr array reference (already written to disk)
-            output_zarr = distributed_apply_transform(
-                fix_highres, mov_highres,
-                fix_image_spacing, mov_image_spacing,
-                transform_list=[affine, deform],
-                blocksize=blocksize,
-                write_path=output_channel_path,
-                interpolator=interpolator)
-
-            # Use returned zarr array directly instead of re-reading from disk
-            # output_zarr[:] reads the data that was just written, avoiding redundant I/O
-            data = np.asarray(output_zarr)
-            full_stack.append(data)
-
-            tif_imwrite(output_channel_tiff_path
-                        ,data.transpose(2,1,0))
-
-        full_stack = np.stack(full_stack)
-        tif_imwrite(full_stack_path, full_stack.transpose(3, 0, 2, 1), imagej=True, metadata={'axes': 'ZCYX'})
-
-    # Now let's also copy the reference_round to the full_registered_stacks folder
     reference_round_full_stack_path = output_root(full_manifest) / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
     if not reference_round_full_stack_path.exists():
-        shutil.copyfile(HCR_fix_image_path, reference_round_full_stack_path)
-            
+        reference_round_full_stack_path.parent.mkdir(exist_ok=True, parents=True)
+        shutil.copyfile(reference_round['image_path'], reference_round_full_stack_path)
+
+
+def _load_round_transform(full_manifest, HCR_round, round_to_rounds, reference_round):
+    """Load the affine+deform that maps an HCR round into the reference frame,
+    plus the spacing/blocksize/margin needed to apply it (the fix grid is shared
+    across rounds, so the caller supplies it)."""
+    mov_round = round_to_rounds[HCR_round]
+    fix_sp = np.array(resolve_hcr_resolution(reference_round['image_path'], reference_round.get('resolution')))
+    mov_sp = np.array(resolve_hcr_resolution(mov_round['image_path'], mov_round.get('resolution')))
+    reg_path = output_root(full_manifest) / 'HCR' / 'registrations' / get_round_folder_name(HCR_round, reference_round['round']) / mov_round['registrations'][0]
+    bs = re.findall(r'bs(\d+)[x_](\d+)[x_](\d+)', Path(mov_round['registrations'][0]).name)
+    if not bs:
+        raise ValueError(f"Could not parse blocksize from registration folder name: '{Path(mov_round['registrations'][0]).name}'")
+    # Threaded scheduler: this runs before the caller opens its cluster_constructor()
+    # Client, so don't rely on the (possibly 'distributed') global dask scheduler.
+    max_disp = float(abs(da.from_zarr(fr"{reg_path}/deform.zarr")).max().compute(scheduler='threads'))
+    return dict(affine=np.loadtxt(fr"{reg_path}/_affine.mat"),
+                deform=zarr.open(fr"{reg_path}/deform.zarr", mode='r'),
+                fix_sp=fix_sp, mov_sp=mov_sp, blocksize=[int(n) for n in bs[0]],
+                mov_margin=int(np.ceil(2.0 * max_disp / float(np.min(mov_sp)))) + 16,
+                reg_path=reg_path)
+
+
+def align_masks_to_reference(full_manifest):
+    """Warp each round's cellpose labels from its acquired frame into the HCR01
+    reference frame so the IoU + somaprint matchers see every round's cells in one
+    space. IDs are preserved through nearest-neighbour warping; intensities are
+    measured on the acquired masks (cellpose/) and joined by mask_id, so these
+    reference-aligned masks (cellpose_aligned/) serve matching only."""
+    round_to_rounds, reference_round, register_rounds = verify_rounds(
+        full_manifest, parse_registered=True, print_rounds=False, print_registered=False, func='align-masks')
+    ref = reference_round['round']
+    src_dir = output_root(full_manifest) / 'HCR' / 'cellpose'
+    out_dir = output_root(full_manifest) / 'HCR' / 'cellpose_aligned'
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Reference round is the fix: acquired frame == reference frame, so just publish it.
+    ref_name = get_round_folder_name(ref, ref)
+    ref_src, ref_out = src_dir / f"{ref_name}_masks.tiff", out_dir / f"{ref_name}_masks.tiff"
+    if ref_src.exists() and not ref_out.exists():
+        shutil.copyfile(ref_src, ref_out)
+
+    pending = [r for r in register_rounds
+               if not (out_dir / f"{get_round_folder_name(r, ref)}_masks.tiff").exists()]
+    if not pending:
+        return
+    # Reference DAPI grid, widened to int32 so warped label IDs aren't clipped to
+    # the uint8 range (the values are unused; only the grid shape defines the output).
+    fix_int32 = tif_imread(reference_round['image_path'])[:, 0].transpose(2, 1, 0).astype(np.int32)
+
+    for HCR_round in pending:
+        name = get_round_folder_name(HCR_round, ref)
+        src_path, out_path = src_dir / f"{name}_masks.tiff", out_dir / f"{name}_masks.tiff"
+        labels = tif_imread(src_path).astype(np.int32)
+        n_src = int(labels.max())
+        tx = _load_round_transform(full_manifest, HCR_round, round_to_rounds, reference_round)
+        write_path = tx['reg_path'] / 'aligned_labels_warp.zarr'
+        shutil.rmtree(write_path, ignore_errors=True)
+        with cluster_constructor() as _clu:
+            out_zarr = distributed_apply_transform(
+                fix_int32, labels.transpose(2, 1, 0),
+                tx['fix_sp'], tx['mov_sp'], transform_list=[tx['affine'], tx['deform']],
+                blocksize=tx['blocksize'], overlap=0, mov_margin=tx['mov_margin'],
+                cluster=_clu, write_path=write_path, interpolator='0')
+        warped = np.rint(np.asarray(out_zarr)).astype(np.int32).transpose(2, 1, 0)
+        shutil.rmtree(write_path, ignore_errors=True)
+        n_warped = int(warped.max())
+        if n_warped <= 255 < n_src:
+            raise ValueError(f"{name}: warped labels clipped to {n_warped} (expected ~{n_src}); fix grid not int32?")
+        tif_imwrite(out_path, warped)
+        rprint(f"  {name}: {n_warped}/{n_src} labels aligned into HCR{ref} frame")
+
 
 def verify_rounds(full_manifest, parse_registered = False, print_rounds = False, print_registered = False, func='registering-apply'):
     '''
@@ -293,7 +281,6 @@ def register_rounds(full_manifest):
     rprint("[bold green] HCR Rounds Registrations[bold green]")
     rprint("="*80)
     rprint(f"Found {len(manifest['HCR_confocal_imaging']['rounds'])} HCR rounds in manifest")
-    rprint("Registration process uses step-by-step jupyter notebooks\n")
 
     # Ensure reference round is copied in case user has only Rounds = 1
     reference_round_full_stack_path = output_root(full_manifest) / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
@@ -303,29 +290,52 @@ def register_rounds(full_manifest):
         shutil.copyfile(reference_round['image_path'], reference_round_full_stack_path)
         rprint(f"[green]✓ Reference round HCR{reference_round['round']} ready in full_registered_stacks[/green]")
 
+    # Choose method. Centroid (in-pipeline compute + review) when the manifest's
+    # HCR_to_HCR_registration has a centroid global+local block; otherwise fall back to the
+    # legacy notebook workflow (blob lives there for now -- removing blob later is one branch).
+    try:
+        from .hcr_centroid_registration import get_centroid_config
+    except ImportError:
+        from hcr_centroid_registration import get_centroid_config
+    gcfg, lcfg, _ds = get_centroid_config(parse_json(full_manifest['manifest_path'])['params'])
+    centroid_mode = (gcfg is not None
+                     and gcfg.get('method', 'centroid') == 'centroid'
+                     and lcfg.get('method', 'centroid') == 'centroid')
 
-    # Step A
+    if centroid_mode:
+        _register_rounds_centroid(full_manifest, round_to_rounds, reference_round, gcfg, lcfg, _ds)
+    else:
+        _register_rounds_legacy(full_manifest)
+
+    # Clean footer
+    rprint("\n" + "="*80)
+    rprint("[bold green] HCR Rounds Registrations COMPLETE[/bold green]")
+    rprint("="*80 + "\n")
+
+
+def _register_rounds_legacy(full_manifest):
+    """The original notebook-driven workflow: user runs the scan notebooks, hand-edits
+    HCR_selected_registrations, then the pipeline applies. Used for blob method and for
+    manifests with no centroid global/local block (backward compatible)."""
+    rprint("Registration process uses step-by-step jupyter notebooks\n")
+
     rprint("[bold cyan] Step 1): Configure Low-Resolution Parameters[/bold cyan]")
     rprint("   Notebook: [blue]ezfish_pipeline/src/processing_notebooks/HCR_rounds/1_scan_lowres_parameters.ipynb[/blue]")
     rprint(f"   Manifest: [yellow]{full_manifest['manifest_path']}[/yellow]\n")
 
-    # Step B  
     rprint("[bold cyan] Step 2): Configure High-Resolution Parameters[/bold cyan]")
     rprint("   Notebook: [blue]ezfish_pipeline/src/processing_notebooks/HCR_rounds/2_scan_highres_parameters.ipynb[/blue]")
     rprint(f"   Manifest: [yellow]{full_manifest['manifest_path']}[/yellow]\n")
-    
-    # Step C
+
     rprint("[bold cyan] Step 3): Select Registration Rounds[/bold cyan]")
     rprint(f"   • Add 'HCR_selected_registrations' to: [yellow]{full_manifest['manifest_path']}[/yellow]")
     rprint("   • This will specify which rounds you want to register")
     rprint("\n[bold]Press [green]Enter[/green] when configuration is complete...[/bold]")
     input()
 
-    # Reload and verify
-    round_to_rounds, reference_round, ready_to_apply = verify_rounds(full_manifest, parse_registered = True)
+    _, _, ready_to_apply = verify_rounds(full_manifest, parse_registered=True)
     rprint("[green]✅ Configuration loaded successfully[/green]\n")
 
-    # Step D
     rprint("[bold cyan] Step 4): Apply Registration[/bold cyan]")
     if ready_to_apply:
         rprint(f"    Rounds ready for registration: [green]{', '.join(ready_to_apply)}[/green]")
@@ -335,11 +345,162 @@ def register_rounds(full_manifest):
         rprint("\n[green]✅ Registration applied successfully[/green]")
     else:
         rprint("   [yellow]⚠️  No rounds ready for registration[/yellow]")
-    
-    # Clean footer
-    rprint("\n" + "="*80)
-    rprint("[bold green] HCR Rounds Registrations COMPLETE[/bold green]")
-    rprint("="*80 + "\n")
+
+
+def _register_rounds_centroid(full_manifest, round_to_rounds, reference_round, gcfg, lcfg, ds):
+    """In-pipeline centroid registration: compute global+local candidates, show a ranked review
+    per round, auto-suggest the winner, write the chosen tag into the manifest, then apply."""
+    try:
+        from .hcr_centroid_registration import run_hcr_centroid_registration
+    except ImportError:
+        from hcr_centroid_registration import run_hcr_centroid_registration
+
+    rprint("[bold]Computing centroid global + local registration (this runs the real pipeline; "
+           "may take a while per round)...[/bold]")
+    results = run_hcr_centroid_registration(full_manifest, round_to_rounds, reference_round, gcfg, lcfg, ds)
+
+    chosen = {}   # round -> "global_tag/local_tag"
+    for rnd, res in results.items():
+        cands = res.get('candidates', [])
+        if not cands:
+            rprint(f"[red]HCR{rnd}: no local candidates produced — skipping (check masks/logs)[/red]")
+            continue
+        rprint(f"\n[bold]HCR{rnd} → HCR{reference_round['round']} — candidates (ranked by MI):[/bold]")
+        rprint(f"  {'#':>2}  {'local config':<44}{'MI':>9}{'medResid':>10}{'frac<5':>8}{'coverage':>11}")
+        for i, c in enumerate(cands):
+            rprint(f"  {i:>2}  {c['local_tag']:<44}{c.get('mi', float('nan')):>+9.3f}{c['medResid_um']:>9.2f}u"
+                   f"{c['frac_under5']*100:>6.0f}%{c['moved']:>7}/{c['total']:<3}")
+        rprint(f"  global: [cyan]{res['global_tag']}[/cyan] (r={res['radius_um']}um)  |  "
+               f"outputs+overlays under [dim]{Path(cands[0]['dir']).parent}[/dim]")
+        # Surface the red-flag verdict so a bad registration isn't accepted blind.
+        sev = res.get('severity', 0); flags = res.get('flags', [])
+        _badge = {0: "[green]✓ OK[/green]", 1: "[yellow]⚠ WARN[/yellow]", 2: "[red]✗ RED FLAG[/red]"}[sev]
+        rprint(f"  verdict: {_badge}")
+        for f in flags:
+            rprint(f"    [{'red' if sev == 2 else 'yellow'}]• {f}[/{'red' if sev == 2 else 'yellow'}]")
+        if sev == 2:
+            rprint("  [red]↳ top pick is RED-FLAGGED — inspect the overlay before accepting.[/red]")
+        best = cands[0]
+        rprint(f"  [green]Top pick → row 0:[/green] {best['local_tag']}")
+        rprint("  Press [green]Enter[/green] to accept, or type a row # / local_tag to override:")
+        chosen_cand = _resolve_candidate(input().strip(), cands)
+        chosen[str(rnd)] = chosen_cand['tag']
+        rprint(f"  [green]selected[/green] HCR{rnd}: {chosen_cand['tag']}")
+
+    if not chosen:
+        rprint("[yellow]No registrations selected; nothing written or applied.[/yellow]")
+        return
+
+    _write_selected_registrations(full_manifest['manifest_path'], chosen)
+    rprint(f"[green]✓ wrote HCR_selected_registrations into manifest[/green] "
+           f"(backup at [dim]{full_manifest['manifest_path']}.bak[/dim])")
+
+    verify_rounds(full_manifest, parse_registered=True, print_registered=True)
+    registration_apply(full_manifest)
+    rprint("\n[green]✅ Registration applied[/green]")
+
+
+def _resolve_candidate(sel, cands):
+    """Map a user review reply to a candidate: empty -> top pick; a digit -> that row;
+    otherwise match against local_tag / full tag (suffix-tolerant)."""
+    if not sel:
+        return cands[0]
+    if sel.isdigit() and int(sel) < len(cands):
+        return cands[int(sel)]
+    for c in cands:
+        if sel in (c['local_tag'], c['tag']) or c['tag'].endswith(sel) or sel.endswith(c['local_tag']):
+            return c
+    rprint(f"  [yellow]'{sel}' not recognised — using top pick[/yellow]")
+    return cands[0]
+
+
+# --------------------------------------------------------------------------- #
+#  Comment-safe manifest write-back for HCR_selected_registrations.
+#  HJSON has unquoted keys / comments / trailing commas, so we NEVER json-dump it
+#  (that destroys formatting). We surgically replace or insert just this one block,
+#  after backing the file up to <manifest>.bak. parse_json (read) is safe to use.
+# --------------------------------------------------------------------------- #
+def _match_brace(text, open_idx):
+    """Index of the '}' matching the '{' at open_idx (naive depth count; the block has no
+    braces inside strings/comments)."""
+    depth = 0
+    for i in range(open_idx, len(text)):
+        if text[i] == '{':
+            depth += 1
+        elif text[i] == '}':
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+def _render_selected_block(chosen, quoted, indent):
+    # `q` controls KEY quoting to match the manifest's style (hjson allows unquoted keys).
+    # STRING VALUES are ALWAYS quoted: hjson quoteless strings run to end-of-line and cannot be
+    # array elements, so an unquoted path inside [...] swallows the closing bracket and corrupts
+    # the file (the round value is quoted too, matching the round: "02" convention).
+    q = '"' if quoted else ''
+    pad = ' ' * indent
+    rounds = ",\n".join(
+        f'{pad}        {{{q}round{q}: "{r}", {q}selected_registrations{q}: ["{chosen[r]}"]}}'
+        for r in sorted(chosen))
+    return (f"{pad}{q}HCR_selected_registrations{q}: {{\n"
+            f"{pad}    {q}rounds{q}: [\n"
+            f"{rounds}\n"
+            f"{pad}    ]\n"
+            f"{pad}}}")
+
+
+def _write_selected_registrations(manifest_path, chosen):
+    """Insert/replace params.HCR_selected_registrations with `chosen` (round->tag), merging any
+    rounds already present that we did not recompute. Preserves the rest of the hjson verbatim."""
+    path = Path(manifest_path)
+    text = path.read_text(encoding="utf-8")
+
+    # merge with existing selections (read is safe; only writing-back via json is forbidden)
+    try:
+        existing = parse_json(str(path))['params'].get('HCR_selected_registrations', {})
+        for r in existing.get('rounds', []):
+            rs = str(r['round'])
+            chosen.setdefault(rs, r['selected_registrations'][0])
+    except Exception:
+        pass
+
+    shutil.copyfile(str(path), str(path) + ".bak")
+    quoted = '"params"' in text or '"HCR_confocal_imaging"' in text
+    pm = re.search(r'(^[ \t]*)"?params"?\s*:\s*\{', text, re.M)
+    indent = (len(pm.group(1)) + 4) if pm else 8
+    block = _render_selected_block(chosen, quoted, indent)
+
+    km = re.search(r'[ \t]*"?HCR_selected_registrations"?\s*:\s*\{', text)
+    if km:                                            # replace the existing block in place
+        # km.start() sits at the key line's leading indent; `block` re-emits that indent,
+        # so splice [key-indent .. matching close brace] out and drop `block` in.
+        brace_open = text.index('{', km.end() - 1)
+        brace_close = _match_brace(text, brace_open)
+        new_text = text[:km.start()] + block + text[brace_close + 1:]
+    elif pm:                                          # insert right after `params: {`
+        at = pm.end()
+        new_text = text[:at] + "\n" + block + "\n" + text[at:]
+    else:
+        raise ValueError("could not locate a 'params' block to write HCR_selected_registrations into")
+
+    path.write_text(new_text, encoding="utf-8")
+
+    # Safety net: the splice above is a surgical text edit (naive brace/regex matching),
+    # so verify the result still parses AND the block we wrote round-trips. If not,
+    # restore the .bak and fail loudly rather than leave a corrupted manifest on disk.
+    try:
+        reparsed = parse_json(str(path))['params'].get('HCR_selected_registrations', {})
+        written = {str(r['round']): r['selected_registrations'][0]
+                   for r in reparsed.get('rounds', [])}
+        if any(written.get(r) != chosen[r] for r in chosen):
+            raise ValueError("HCR_selected_registrations did not round-trip after write")
+    except Exception as e:
+        shutil.copyfile(str(path) + ".bak", str(path))
+        raise ValueError(
+            f"manifest write-back would have corrupted {path}; restored from {path}.bak "
+            f"(no changes applied). Cause: {e}")
 
 
 def create_rotated_masks_for_standard_mode(full_manifest, session):
@@ -538,34 +699,17 @@ def register_lowres_to_hires(full_manifest, session):
         output_masks_path = output_dir / f'lowres_plane{plane_idx}_masks_in_hires_space.tiff'
         tif_imwrite(str(output_masks_path), hires_masks.astype(np.uint16))
 
-        # --- TILE-BASED REFINEMENT ---
-        # Tiles cover only the lores FOV region (not the full hires canvas).
-        # At high scale factors (>3x), lores covers only a fraction of the hires
-        # stitched image. Tiling the full hires wastes tiles on empty regions.
-        tile_refinement_enabled = sift_config.get('tile_refinement', True)
-        lowres_final = lowres_aligned  # Default to global-only if tile refinement disabled/fails
+        # --- NONLINEAR REFINEMENT (dense optical-flow field; legacy per-tile available) ---
+        # The lores FOV carries residual nonlinear warp (stitched-hires distortion +
+        # imperfect lowres unwarp) that the global affine can't model. We refine within
+        # the lores FOV crop only (lores covers a fraction of the hires canvas).
+        #   'flow'  (default): one smooth, fold-free dense field (DIS optical flow)
+        #   'tiles' (legacy):  per-tile SIFT affines — can fold on sparse edge tiles
+        refinement_enabled = sift_config.get('tile_refinement', True)
+        refinement_method = sift_config.get('refinement_method', 'flow')
+        lowres_final = lowres_aligned  # global-only if refinement disabled/fails
 
-        if tile_refinement_enabled:
-            scale_factor = hires_2d.shape[0] / lowres_2d.shape[0]
-
-            # Tile size in lowres pixels. Bigger tiles → more SIFT features per tile
-            # → more robust fits, especially at edges. 200 lowres ≈ 700-900 hires
-            # at typical scale factors (3-4.5x), still fine-grained enough to
-            # capture local nonlinear distortion.
-            tile_size_lores = sift_config.get('tile_size_lores', 200)
-            tile_size_hires = int(tile_size_lores * scale_factor)
-
-            tile_config = {
-                'tile_size': tile_size_hires, 'tile_overlap': 0.3, 'blend_width': 10,
-                'max_shift': max(60, int(tile_size_hires * 0.20)),
-                'scale_tol': 0.35,
-                'n_features': sift_config.get('tile_n_features', 500),  # was 100, bumped to handle bigger tiles
-                'min_matches': 3, 'ratio_threshold': 0.8, 'ransac_reproj_threshold': 5.0,
-                'min_feature_size': 8, 'max_spatial_distance': 0,
-                'percentile_norm': (2, 98),
-                'require_ncc_improvement': False, 'min_overlap_fraction': 0.3,
-            }
-
+        if refinement_enabled:
             # Find where lores content sits in hires space via the global affine
             M = np.array(transform_params['affine_matrix'])
             lr_h, lr_w = lowres_2d.shape
@@ -590,18 +734,44 @@ def register_lowres_to_hires(full_manifest, session):
             coverage = (lr_y_max - lr_y_min) * (lr_x_max - lr_x_min) / (hr_h * hr_w)
             rprint(f"  [dim]Lores FOV: y=[{lr_y_min},{lr_y_max}] x=[{lr_x_min},{lr_x_max}] ({coverage:.0%} of hires)[/dim]")
 
-            # Crop both images to lores FOV and run tile refinement on the crop
+            # Crop both images to the lores FOV and refine within the crop
             lr_crop = lowres_aligned[lr_y_min:lr_y_max, lr_x_min:lr_x_max]
             hr_crop = hires_2d[lr_y_min:lr_y_max, lr_x_min:lr_x_max]
             masks_crop = hires_masks[lr_y_min:lr_y_max, lr_x_min:lr_x_max]
 
-            masks_refined_crop, lowres_refined_crop, tile_info = refine_lowres_to_hires_with_tiles(
-                lr_crop, hr_crop, masks_crop, config=tile_config
-            )
-
-            actual_tiles = [t for t in tile_info if 'cy' in t]
-            n_success = sum(1 for t in actual_tiles if t.get('success'))
-            rprint(f"  [dim]Tile refinement: {n_success}/{len(actual_tiles)} tiles ({tile_size_lores}px lores tiles)[/dim]")
+            if refinement_method == 'flow':
+                masks_refined_crop, lowres_refined_crop, ref_info = refine_lowres_to_hires_with_flow(
+                    lr_crop, hr_crop, masks_crop, config=sift_config
+                )
+                _fi = ref_info[0] if ref_info else {}
+                n_success = 1 if _fi.get('success') else 0
+                rprint(f"  [dim]Flow refinement: jac_min={_fi.get('jac_min', float('nan')):.3f}, "
+                       f"guard_iters={_fi.get('guard_iters', 0)} (smooth no-fold dense field)[/dim]")
+                if not n_success:
+                    rprint(f"  [yellow]Flow refinement rejected (field still folds after guard, "
+                           f"jac_min={_fi.get('jac_min', float('nan')):.3f}); keeping global-only "
+                           f"alignment for plane {plane_idx}[/yellow]")
+            else:
+                # Legacy per-tile SIFT. Tile size in lowres px; 200 lores ≈ 700-900 hires.
+                scale_factor = hires_2d.shape[0] / lowres_2d.shape[0]
+                tile_size_lores = sift_config.get('tile_size_lores', 200)
+                tile_size_hires = int(tile_size_lores * scale_factor)
+                tile_config = {
+                    'tile_size': tile_size_hires, 'tile_overlap': 0.3, 'blend_width': 10,
+                    'max_shift': max(60, int(tile_size_hires * 0.20)),
+                    'scale_tol': 0.35,
+                    'n_features': sift_config.get('tile_n_features', 500),
+                    'min_matches': 3, 'ratio_threshold': 0.8, 'ransac_reproj_threshold': 5.0,
+                    'min_feature_size': 8, 'max_spatial_distance': 0,
+                    'percentile_norm': (2, 98),
+                    'require_ncc_improvement': False, 'min_overlap_fraction': 0.3,
+                }
+                masks_refined_crop, lowres_refined_crop, tile_info = refine_lowres_to_hires_with_tiles(
+                    lr_crop, hr_crop, masks_crop, config=tile_config
+                )
+                actual_tiles = [t for t in tile_info if 'cy' in t]
+                n_success = sum(1 for t in actual_tiles if t.get('success'))
+                rprint(f"  [dim]Tile refinement: {n_success}/{len(actual_tiles)} tiles ({tile_size_lores}px lores tiles)[/dim]")
 
             if n_success >= 1:
                 # Put refined crops back into full images
@@ -622,9 +792,10 @@ def register_lowres_to_hires(full_manifest, session):
         overlay_global = np.stack([hires_2d.astype(np.float32), lowres_aligned.astype(np.float32)])
         tif_imwrite(str(qa_dir / f'plane{plane_idx}_AFTER_global_overlay.tiff'), overlay_global, imagej=True, metadata={'axes': 'CYX'})
 
-        # After tiling: hires vs tile-refined lowres
-        overlay_tiled = np.stack([hires_2d.astype(np.float32), lowres_final.astype(np.float32)])
-        tif_imwrite(str(qa_dir / f'plane{plane_idx}_AFTER_tiling_overlay.tiff'), overlay_tiled, imagej=True, metadata={'axes': 'CYX'})
+        # After refinement: hires vs refined lowres (flow or legacy tiles).
+        # Filename keeps the legacy 'AFTER_tiling' tag so existing QA tooling still finds it.
+        overlay_refined = np.stack([hires_2d.astype(np.float32), lowres_final.astype(np.float32)])
+        tif_imwrite(str(qa_dir / f'plane{plane_idx}_AFTER_tiling_overlay.tiff'), overlay_refined, imagej=True, metadata={'axes': 'CYX'})
 
     rprint(f"[green]Low-res to high-res registration complete.[/green] QA: {qa_dir.name}/")
 
@@ -662,12 +833,24 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
     EROSION = reg_params.get('erosion', 2)
     EROSION_HCR = reg_params.get('erosion_hcr', 0)
 
-    # Global search: moving-mask IoU with inward hull (no rotation search)
+    # Global search: moving-mask IoU with inward hull (no rotation search).
+    # XY cap tightened 2026-06-02 from 500 -> 100: empirical analysis of saved cascade
+    # snapshots across 20 plane runs shows healthy planes shift 1-51 px in XY; broken
+    # runs (SRC110/CIM132 plane 0) shift 400-700 px to find spurious dense-cluster
+    # overlap. 100 px is well above the healthy ceiling without enabling the failure mode.
+    # Z left permissive: non-reference planes legitimately need 5-15 slice dz to find
+    # their depth relative to the reference plane's landmarked surface.
     HULL_MARGIN = reg_params.get('hull_margin', -100)
     Z_RANGE_GLOBAL = tuple(reg_params.get('z_range_global', [-15, 15]))
-    XY_MAX_GLOBAL = reg_params.get('xy_max_global', 500)
+    XY_MAX_GLOBAL = reg_params.get('xy_max_global', 100)
     QUAD_BLEND_DIST = reg_params.get('quad_blend_dist', 300)
     FOV_CROP_MARGIN = reg_params.get('fov_crop_margin', 150)
+
+    # Global-shift sanity check: large XY shifts must have proportionally large IoU
+    # gain to be accepted. Catches spurious dense-cluster overlap (e.g. CIM132 plane 0:
+    # 664 px shift for +0.04 IoU = 6e-5 IoU/px, vs healthy ~3e-3 IoU/px).
+    GLOBAL_SHIFT_PLAUSIBILITY = reg_params.get('global_shift_plausibility', 50)
+    GLOBAL_EFFICIENCY_FLOOR   = reg_params.get('global_efficiency_floor', 5e-4)
 
     # Single affine: coarse matching + RANSAC (v13: single pass is sufficient).
     # Defaults bumped 2026-06-02 after SRC110 plane 2 showed P95 |dz|=9 saturating the
@@ -762,7 +945,7 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
 
     # HCR paths
     hcr_ref_round_path = output_root(full_manifest) / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
-    hcr_ref_masks_path = output_root(full_manifest) / 'HCR' / 'cellpose' / f"HCR{reference_round['round']}_masks.tiff"
+    hcr_ref_masks_path = output_root(full_manifest) / 'HCR' / 'cellpose_aligned' / f"HCR{reference_round['round']}_masks.tiff"
 
     # WORKFLOW DETECTION: Choose reference image and landmarks based on has_hires
     landmarks_dir = output_root(full_manifest) / '2P' / 'registered'
@@ -935,6 +1118,7 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
         fov_mask = create_fov_mask_convex_hull(twop_binary_crop, margin=30)
         hcr_baseline = sample_hcr_binary_at_zmap(hcr_3d_bin_crop, z_map_baseline)
         iou_baseline = compute_iou(twop_binary_crop, hcr_baseline, fov_mask=fov_mask)
+        cont_baseline = compute_containment(twop_binary_crop, hcr_baseline, fov_mask=fov_mask)
 
         # Inward hull mask for global search
         inward_hull_mask = create_landmark_hull_mask(lm_crop, twop_binary_crop.shape, margin=HULL_MARGIN)
@@ -955,8 +1139,28 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
         fov_global = create_fov_mask_convex_hull(twop_global_binary, margin=30)
         hcr_global = sample_hcr_binary_at_zmap(hcr_3d_bin_crop, z_map_global)
         iou_global = compute_iou(twop_global_binary, hcr_global, fov_mask=fov_global)
-        rprint(f"  [dim]Global: IoU {iou_baseline:.3f}→{iou_global:.3f} "
+        cont_global = compute_containment(twop_global_binary, hcr_global, fov_mask=fov_global)
+        rprint(f"  [dim]Global: IoU {iou_baseline:.3f}→{iou_global:.3f} | cont {cont_baseline:.3f}→{cont_global:.3f} "
                f"(dy={g_dy:+d}, dx={g_dx:+d}, dz={g_dz:+d})[/dim]")
+
+        # Sanity check: large XY shifts must justify themselves with proportional IoU
+        # gain. If shift is large but IoU efficiency is below floor, the optimizer found
+        # spurious dense-cluster overlap — revert to TPS and proceed without global.
+        _xy_mag = float(np.hypot(g_dy, g_dx))
+        if _xy_mag > GLOBAL_SHIFT_PLAUSIBILITY:
+            _eff = (iou_global - iou_baseline) / max(_xy_mag, 1.0)
+            if _eff < GLOBAL_EFFICIENCY_FLOOR:
+                rprint(f"  [yellow][WARN] Global rejected: XY shift {_xy_mag:.0f}px > {GLOBAL_SHIFT_PLAUSIBILITY}px "
+                       f"with efficiency {_eff:.2e} IoU/px < {GLOBAL_EFFICIENCY_FLOOR:.0e}; "
+                       f"likely spurious overlap. Reverting to TPS.[/yellow]")
+                g_dy, g_dx, g_dz = 0, 0, 0
+                twop_global_labels = twop_labels_crop
+                twop_global_binary = twop_binary_crop
+                z_map_global = z_map_baseline
+                fov_global = create_fov_mask_convex_hull(twop_global_binary, margin=30)
+                hcr_global = sample_hcr_binary_at_zmap(hcr_3d_bin_crop, z_map_global)
+                iou_global = compute_iou(twop_global_binary, hcr_global, fov_mask=fov_global)
+                cont_global = compute_containment(twop_global_binary, hcr_global, fov_mask=fov_global)
 
         # Also shift the non-eroded warped labels by global offset
         twop_warped_global = shift_2d(twop_warped_crop, g_dy, g_dx)
@@ -1020,6 +1224,7 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
             min_samples=RANSAC_MIN_SAMPLES, max_trials=RANSAC_MAX_TRIALS)
 
         iou_pass1 = iou_global  # default if RANSAC fails
+        cont_pass1 = cont_global
         if affine_A is not None:
             yy_c, xx_c = np.mgrid[:ny_c, :nx_c]
             M = np.stack([yy_c.ravel(), xx_c.ravel(), np.ones(ny_c * nx_c)], axis=1)
@@ -1033,7 +1238,8 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
             fov_A = create_fov_mask_convex_hull(twop_A_binary, margin=20)
             hcr_A = sample_hcr_binary_at_zmap(hcr_crop_3d, z_map_A)
             iou_pass1 = compute_iou(twop_A_binary, hcr_A, fov_mask=fov_A)
-            rprint(f"  [dim]Affine Pass 1: IoU {iou_global:.3f}→{iou_pass1:.3f}[/dim]")
+            cont_pass1 = compute_containment(twop_A_binary, hcr_A, fov_mask=fov_A)
+            rprint(f"  [dim]Affine Pass 1: IoU {iou_global:.3f}→{iou_pass1:.3f} | cont {cont_global:.3f}→{cont_pass1:.3f}[/dim]")
         else:
             rprint(f"  [yellow]Affine Pass 1: RANSAC failed, using zero fields[/yellow]")
             dy_field_A = np.zeros((ny_c, nx_c))
@@ -1051,6 +1257,7 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
         twop_affine_binary = twop_A_binary
         z_map_affine = z_map_A
         iou_affine = iou_pass1
+        cont_affine = cont_pass1
 
         # ---- LOCAL TILE CASCADE (300 -> 100 -> 50) ----
         cascade_state = {
@@ -1058,10 +1265,58 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
             'twop_binary': twop_affine_binary,
             'z_map':       z_map_affine,
             'iou':         iou_affine,
+            'cont':        cont_affine,
             'dy_cum':      np.zeros((ny_c, nx_c)),
             'dx_cum':      np.zeros((ny_c, nx_c)),
             'dz_cum':      np.zeros((ny_c, nx_c)),
         }
+
+        # ---- PER-STAGE QC WRITER ----
+        # Defined here (not at the end of the plane) so each stage's 2-channel
+        # composite TIFF is written the moment that stage's snapshot is captured,
+        # rather than batched after the whole cascade + uncrop + volume save
+        # finishes. Same bytes, emitted incrementally as stages complete.
+        qa_folder = output_root(full_manifest) / '2P' / 'registered' / 'QualityCheck'
+        qa_folder.mkdir(parents=True, exist_ok=True)
+        _inner_origin_full = (bb_y0 + cy0, bb_x0 + cx0)
+        _outer_origin_full = (bb_y0, bb_x0)
+
+        def _save_stage_tiff(stage_name, snap):
+            """Write one alignment stage's 2-channel (HCR@zmap, 2P) label TIFF,
+            padded to the full HCR (Y, X) field so all stages share one frame and
+            co-register with z_map_local in the registration_params NPZ.
+              ch0 = HCR labels nearest-neighbor-sampled at THAT stage's z_map
+              ch1 = 2P labels at that stage's transform
+            Figure notebooks (e.g. panel_gene_mask_strip_*.ipynb) consume these."""
+            frame = snap['frame']
+            oy, ox = (_outer_origin_full if frame == 'outer_crop'
+                      else _inner_origin_full)
+            tp_stage = snap['twop_labels']            # uint16, stage crop frame
+            zm_stage = snap['z_map']                  # float32, stage crop frame
+            sh = tp_stage.shape
+
+            hcr_3d_in = hcr_ref_masks[:, oy:oy + sh[0], ox:ox + sh[1]]
+            zz = np.clip(np.round(zm_stage).astype(int), 0, hcr_3d_in.shape[0] - 1)
+            yi, xi = np.mgrid[0:sh[0], 0:sh[1]]
+            hp_stage = hcr_3d_in[zz, yi, xi].astype(np.uint16)
+
+            tp_full = np.zeros((y1, x1), dtype=np.uint16)
+            hp_full = np.zeros((y1, x1), dtype=np.uint16)
+            tp_full[oy:oy + sh[0], ox:ox + sh[1]] = tp_stage
+            hp_full[oy:oy + sh[0], ox:ox + sh[1]] = hp_stage
+
+            stack = np.stack([hp_full, tp_full], axis=0)
+            stage_path = qa_folder / f'plane{plane}_stage_{stage_name}.tiff'
+            meta = {
+                'axes': 'CYX',
+                'Labels': ['HCR_labels_at_zmap', '2P_labels'],
+                'Description': (f'plane={plane} stage={stage_name} '
+                                f'iou={snap["iou"]:.4f} frame={frame} '
+                                f'crop_origin_yx=({oy},{ox})'),
+            }
+            tif_imwrite(str(stage_path), stack, imagej=True, metadata=meta)
+            rprint(f"  [dim]stage '{stage_name}' → {stage_path.name} "
+                   f"(IoU {snap['iou']:.3f})[/dim]")
 
         # ---- CASCADE SNAPSHOTS (for cp4-eval and future regression checks) ----
         # Captures the alignment state at each named stage so a comparison
@@ -1083,6 +1338,11 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
                          'z_map': z_map_affine.astype(np.float32, copy=True),
                          'frame': 'inner_crop'},
         }
+
+        # Emit the pre-cascade stages immediately (global completes → its
+        # composite is on disk before the tile cascade even starts).
+        for _sn in ('baseline', 'global', 'affine'):
+            _save_stage_tiff(_sn, cascade_snapshots[_sn])
 
         df_post_rematch = None  # will be set after first cascade stage
         for _si, tile_size in enumerate(CASCADE_STAGES):
@@ -1156,19 +1416,21 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
             fov_new = create_fov_mask_convex_hull(twop_new_binary, margin=20)
             hcr_new = sample_hcr_binary_at_zmap(hcr_crop_3d, z_map_new)
             iou_new = compute_iou(twop_new_binary, hcr_new, fov_mask=fov_new)
+            cont_new = compute_containment(twop_new_binary, hcr_new, fov_mask=fov_new)
 
             # Safety revert if tiles made things worse
             if iou_new < cascade_state['iou']:
-                rprint(f"  [yellow]{tile_size}px tiles decreased IoU ({cascade_state['iou']:.4f}→{iou_new:.4f}), reverting[/yellow]")
+                rprint(f"  [yellow]{tile_size}px tiles decreased IoU ({cascade_state['iou']:.4f}→{iou_new:.4f} | cont {cascade_state['cont']:.4f}→{cont_new:.4f}), reverting[/yellow]")
                 dy_inc = np.zeros((ny_c, nx_c))
                 dx_inc = np.zeros((ny_c, nx_c))
                 dz_inc = np.zeros((ny_c, nx_c))
             else:
-                rprint(f"  [dim]Tiles {tile_size}px: IoU {cascade_state['iou']:.3f}→{iou_new:.3f}[/dim]")
+                rprint(f"  [dim]Tiles {tile_size}px: IoU {cascade_state['iou']:.3f}→{iou_new:.3f} | cont {cascade_state['cont']:.3f}→{cont_new:.3f}[/dim]")
                 cascade_state['twop_labels'] = twop_new_labels
                 cascade_state['twop_binary'] = twop_new_binary
                 cascade_state['z_map'] = z_map_new
                 cascade_state['iou'] = iou_new
+                cascade_state['cont'] = cont_new
 
             cascade_state['dy_cum'] += dy_inc
             cascade_state['dx_cum'] += dx_inc
@@ -1184,6 +1446,7 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
                 'frame':       'inner_crop',
                 'tile_size':   int(tile_size),
             }
+            _save_stage_tiff(f'tile_{tile_size}', cascade_snapshots[f'tile_{tile_size}'])
 
             # Post-correction re-match: measure actual remaining residuals
             # This feeds accurate adaptive params to the next cascade stage.
@@ -1212,7 +1475,9 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
                            f" (rematch z+/-{_rematch_search_z})[/dim]")
 
         iou_final = cascade_state['iou']
-        rprint(f"  [bold]Final: IoU {iou_baseline:.3f}→{iou_final:.3f} ({iou_final - iou_baseline:+.3f})[/bold]")
+        cont_final = cascade_state['cont']
+        rprint(f"  [bold]Final: IoU {iou_baseline:.3f}→{iou_final:.3f} ({iou_final - iou_baseline:+.3f}) | "
+               f"cont {cont_baseline:.3f}→{cont_final:.3f} ({cont_final - cont_baseline:+.3f})[/bold]")
 
         # ---- SAVE CASCADE SNAPSHOTS ----
         # Pickled per-stage state for offline analysis (cp3↔cp4 comparison,
@@ -1303,10 +1568,7 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
         output_path = output_root(full_manifest) / '2P' / 'registered' / f'twop_plane{plane}_aligned_3d.tiff'
         tif_imwrite(str(output_path), twop_3d.astype(np.uint16))
 
-        # Save QualityCheck overlay TIFFs
-        qa_folder = output_root(full_manifest) / '2P' / 'registered' / 'QualityCheck'
-        qa_folder.mkdir(parents=True, exist_ok=True)
-
+        # Save QualityCheck overlay TIFFs (qa_folder created above, before the cascade)
         hcr_baseline_full = sample_hcr_binary_at_zmap(hcr_ref_masks > 0, z_map_base_full, z_expand=0)
         twop_binary_full = (twop_warped > 0).astype(np.uint16)
         overlay_before = np.stack([hcr_baseline_full.astype(np.uint16), twop_binary_full], axis=0)
@@ -1394,51 +1656,8 @@ def twop_to_hcr_registration(full_manifest, session, has_hires=False, automation
         with open(str(params_path), 'wb') as f:
             f.write(buf.getvalue())
 
-        # ---- SAVE PER-STAGE 2-CHANNEL LABEL TIFFs (CYX uint16) ----
-        # For each alignment stage already captured in `cascade_snapshots`
-        # (baseline = TPS-only, global = TPS+rigid, affine, tile_300, tile_100,
-        # tile_50), write a 2-channel TIFF padded to the full HCR (Y, X) field:
-        #   ch0 = HCR labels nearest-neighbor-sampled at THAT stage's z_map
-        #   ch1 = 2P labels at that stage's transform
-        # Padded so all stages share one frame and co-register with z_map_local
-        # in {twop_plane{N}_registration_params.npz}. Figure notebooks (e.g.
-        # panel_gene_mask_strip_*.ipynb) consume these directly instead of the
-        # v18 aligned-masks NPZ.
-        _inner_origin_full = (bb_y0 + cy0, bb_x0 + cx0)
-        _outer_origin_full = (bb_y0, bb_x0)
-        for _stage_name, _snap in cascade_snapshots.items():
-            _frame = _snap['frame']
-            _oy, _ox = (_outer_origin_full if _frame == 'outer_crop'
-                        else _inner_origin_full)
-            _tp_stage = _snap['twop_labels']            # uint16, stage crop frame
-            _zm_stage = _snap['z_map']                  # float32, stage crop frame
-            _sh = _tp_stage.shape
-
-            _hcr_3d_in = hcr_ref_masks[:, _oy:_oy + _sh[0], _ox:_ox + _sh[1]]
-            _zz = np.clip(np.round(_zm_stage).astype(int),
-                          0, _hcr_3d_in.shape[0] - 1)
-            _yi, _xi = np.mgrid[0:_sh[0], 0:_sh[1]]
-            _hp_stage = _hcr_3d_in[_zz, _yi, _xi].astype(np.uint16)
-
-            _tp_full = np.zeros((y1, x1), dtype=np.uint16)
-            _hp_full = np.zeros((y1, x1), dtype=np.uint16)
-            _tp_full[_oy:_oy + _sh[0], _ox:_ox + _sh[1]] = _tp_stage
-            _hp_full[_oy:_oy + _sh[0], _ox:_ox + _sh[1]] = _hp_stage
-
-            _stack = np.stack([_hp_full, _tp_full], axis=0)
-            _stage_path = qa_folder / f'plane{plane}_stage_{_stage_name}.tiff'
-            _meta = {
-                'axes': 'CYX',
-                'Labels': ['HCR_labels_at_zmap', '2P_labels'],
-                'Description': (
-                    f'plane={plane} stage={_stage_name} '
-                    f'iou={_snap["iou"]:.4f} frame={_frame} '
-                    f'crop_origin_yx=({_oy},{_ox})'
-                ),
-            }
-            tif_imwrite(str(_stage_path), _stack, imagej=True, metadata=_meta)
-        rprint(f"[dim]  Saved {len(cascade_snapshots)} per-stage label TIFFs "
-               f"in QualityCheck/[/dim]")
+        # (Per-stage 2-channel label TIFFs are now written incrementally by
+        # _save_stage_tiff as each stage completes — see the cascade loop above.)
 
     # --- SAVE PER-PLANE AUTO LANDMARKS ---
     orig_landmarks = pd.read_csv(landmarks_path, header=None)

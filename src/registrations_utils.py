@@ -270,6 +270,28 @@ def compute_iou(mask1, mask2, fov_mask=None):
     return intersection / union if union > 0 else 0.0
 
 
+def compute_containment(mask1, mask2, fov_mask=None):
+    """2P containment in HCR: |mask1 ∩ mask2| / |mask1|.
+
+    Complement to compute_iou. The FOV-restricted hull can contain HCR-dense
+    pockets where 2P sampled sparsely; those regions inflate the IoU union
+    without contributing to the intersection, so IoU underrates registration
+    on sparse-coverage planes. Containment asks the narrower question — "what
+    fraction of the 2P footprint found an HCR partner?" — and is unaffected
+    by HCR-only regions inside the hull. fov_mask is applied to mask2 the
+    same way as in compute_iou so both metrics share the same effective HCR
+    support.
+    """
+    mask1 = np.asarray(mask1, dtype=bool)
+    mask2 = np.asarray(mask2, dtype=bool)
+    if fov_mask is not None:
+        mask2 = mask2 & np.asarray(fov_mask, dtype=bool)
+    denom = mask1.sum()
+    if denom == 0:
+        return 0.0
+    return (mask1 & mask2).sum() / denom
+
+
 def create_fov_mask(twop_mask, dilation_iterations=30):
     """
     Create a field-of-view mask from 2P data extent.
@@ -449,10 +471,13 @@ def read_tiff_resolution(tiff_path):
         return None
 
 
-def resolve_hcr_resolution(tiff_path, manifest_resolution=None, tolerance=0.01):
-    """Pick final HCR resolution. TIFF metadata is the default; manifest overrides.
+def resolve_hcr_resolution(tiff_path, manifest_resolution=None, tolerance=0.05):
+    """Pick final HCR resolution. TIFF metadata is the source of truth whenever it is
+    readable; the manifest `resolution` is only a fallback for when metadata is missing.
 
-    Warns loudly when an override disagrees with metadata by more than `tolerance`.
+    Warns only when a manifest `resolution` is also present and disagrees with the metadata
+    by more than `tolerance` (default 5%) -- a real conflict (stale manifest or bad metadata)
+    worth surfacing. Smaller disagreements are treated as rounding and pass silently.
     Raises ValueError if neither source is available.
     """
     tiff_res = read_tiff_resolution(tiff_path)
@@ -468,20 +493,17 @@ def resolve_hcr_resolution(tiff_path, manifest_resolution=None, tolerance=0.01):
               f"using manifest {manifest_resolution} unverified.")
         return list(manifest_resolution)
 
-    if manifest_resolution is None:
-        print(f"  HCR resolution from {name}: "
-              f"[{tiff_res[0]:.4f}, {tiff_res[1]:.4f}, {tiff_res[2]:.4f}] um/px")
-        return tiff_res
-
-    max_frac = max(abs((m - t) / t) for m, t in zip(manifest_resolution, tiff_res))
-    if max_frac > tolerance:
-        print(f"  [WARN] HCR resolution: manifest {list(manifest_resolution)} "
-              f"disagrees with {name} {[round(v, 4) for v in tiff_res]} "
-              f"by {max_frac*100:.1f}%. Using manifest as override "
-              f"(remove field to trust metadata).")
-    else:
-        print(f"  HCR resolution: manifest matches {name} ({list(manifest_resolution)} um/px).")
-    return list(manifest_resolution)
+    # TIFF metadata is readable -> default to it. A manifest value is consulted only to flag a
+    # large conflict; it no longer overrides the metadata.
+    if manifest_resolution is not None:
+        max_frac = max(abs((m - t) / t) for m, t in zip(manifest_resolution, tiff_res))
+        if max_frac > tolerance:
+            print(f"  [WARN] HCR resolution: manifest {list(manifest_resolution)} disagrees with "
+                  f"{name} {[round(v, 4) for v in tiff_res]} by {max_frac*100:.1f}% "
+                  f"(> {tolerance*100:.0f}%); using TIFF metadata. Fix or remove the manifest value.")
+    print(f"  HCR resolution from {name}: "
+          f"[{tiff_res[0]:.4f}, {tiff_res[1]:.4f}, {tiff_res[2]:.4f}] um/px")
+    return tiff_res
 
 
 def add_px_columns(landmarks_df, hcr_resolution):
@@ -1280,6 +1302,139 @@ def refine_lowres_to_hires_with_tiles(lowres_aligned, hires_2d, masks, config=No
                                cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0).astype(masks.dtype)
 
     return masks_refined, lowres_refined, tile_results
+
+
+def refine_lowres_to_hires_with_flow(lowres_aligned, hires_2d, masks, config=None):
+    """
+    Dense, fold-free refinement of low-res -> hi-res alignment using optical flow.
+
+    Drop-in replacement for refine_lowres_to_hires_with_tiles (identical signature and
+    return contract). Per-tile SIFT voting can fit disagreeing affines on adjacent tiles
+    and produce a non-invertible (folding) displacement field -> blocky / DUPLICATED
+    seams. This instead estimates ONE smooth dense field with DIS optical flow on
+    locally-normalized images, enforces a positive-Jacobian (no-fold) guard, and remaps
+    image + masks through a single cv2.remap.
+
+    Validated on JS082 plane 2
+    (processing_notebooks/lowres_to_hires_nonlinear_warp_JS082.ipynb): the residual
+    lowres warp is edge-concentrated (P95 ~16 px at half-res) with ~unit global scale --
+    a pure nonlinear distortion an affine cannot model and per-tile SIFT folds on.
+
+    Config (params.lowres_to_hires_registration):
+        flow_work_scale       : float (default 0.5)  -- estimate flow at this fraction of
+                                hires resolution for speed; field upscaled before remap
+        flow_smoothing        : float (default 7.0)  -- Gaussian sigma (work px) on field
+        flow_local_norm_sigma : float (default 30.0) -- local z-score window (work px);
+                                0 disables local normalization
+        percentile_norm       : (lo, hi) (default (2, 98)) -- intensity clip before match
+        flow_preset           : 'ultrafast'|'fast'|'medium' (default 'medium')
+
+    Returns
+    -------
+    masks_refined : ndarray (same dtype as `masks`)
+    lowres_refined : ndarray (float32)
+    info : list[dict]  -- single entry carrying 'cy'/'success' (gate-compatible) plus
+                          'method'/'jac_min'/'guard_iters' diagnostics
+    """
+    import cv2
+
+    config = config or {}
+    work = float(config.get('flow_work_scale', 0.5))
+    sigma_flow = float(config.get('flow_smoothing', 7.0))
+    local_sigma = float(config.get('flow_local_norm_sigma', 30.0))
+    pct = tuple(config.get('percentile_norm', (2, 98)))
+    preset = str(config.get('flow_preset', 'medium')).lower()
+
+    h, w = hires_2d.shape
+    Hs = (max(8, int(round(h * work))), max(8, int(round(w * work))))
+    hi_s = resize(hires_2d, Hs, order=1, preserve_range=True).astype(np.float32)
+    lo_s = resize(lowres_aligned, Hs, order=1, preserve_range=True).astype(np.float32)
+
+    def _to_u8(img):
+        f = img.astype(np.float64)
+        a, b = np.percentile(f, pct)
+        if b > a:
+            f = np.clip((f - a) / (b - a + 1e-8), 0, 1)
+        else:
+            f = (f - f.min()) / ((f.max() - f.min()) + 1e-8)
+        return (f * 255).astype(np.uint8)
+
+    def _prep(img):
+        if local_sigma and local_sigma > 0:
+            f = img.astype(np.float32)
+            mu = cv2.GaussianBlur(f, (0, 0), local_sigma)
+            var = cv2.GaussianBlur((f - mu) ** 2, (0, 0), local_sigma)
+            img = (f - mu) / (np.sqrt(np.maximum(var, 0)) + 1e-3)
+        return _to_u8(img)
+
+    presets = {
+        'ultrafast': getattr(cv2, 'DISOPTICAL_FLOW_PRESET_ULTRAFAST', 0),
+        'fast': getattr(cv2, 'DISOPTICAL_FLOW_PRESET_FAST', 1),
+        'medium': getattr(cv2, 'DISOPTICAL_FLOW_PRESET_MEDIUM', 2),
+    }
+    a8, b8 = _prep(hi_s), _prep(lo_s)
+    try:
+        dis = cv2.DISOpticalFlow_create(presets.get(preset, presets['medium']))
+        flow = dis.calc(a8, b8, None).astype(np.float32)
+    except Exception:
+        # Fallback if the DIS optical-flow module isn't built into this OpenCV
+        flow = cv2.calcOpticalFlowFarneback(a8, b8, None, 0.5, 4, 31, 5, 7, 1.5, 0).astype(np.float32)
+
+    if sigma_flow and sigma_flow > 0:
+        flow[..., 0] = cv2.GaussianBlur(flow[..., 0], (0, 0), sigma_flow)
+        flow[..., 1] = cv2.GaussianBlur(flow[..., 1], (0, 0), sigma_flow)
+
+    yy, xx = np.mgrid[0:Hs[0], 0:Hs[1]].astype(np.float32)
+
+    def _ncc(p, q):
+        p = p.astype(np.float32).ravel() - p.mean()
+        q = q.astype(np.float32).ravel() - q.mean()
+        d = np.linalg.norm(p) * np.linalg.norm(q)
+        return float(p @ q / d) if d > 0 else 0.0
+
+    def _warp_small(fx, fy):
+        return cv2.remap(lo_s, (xx + fx).astype(np.float32), (yy + fy).astype(np.float32),
+                         cv2.INTER_LINEAR)
+
+    # remap-sign disambiguation: keep the orientation that better matches hires
+    if _ncc(_warp_small(-flow[..., 0], -flow[..., 1]), hi_s) > _ncc(_warp_small(flow[..., 0], flow[..., 1]), hi_s):
+        flow = -flow
+
+    def _det_min(fx, fy):
+        return float(((1.0 + np.gradient(fx, axis=1)) * (1.0 + np.gradient(fy, axis=0))
+                      - np.gradient(fx, axis=0) * np.gradient(fy, axis=1)).min())
+
+    # No-fold guard: smooth the field until the deformation Jacobian is positive everywhere
+    fx, fy = flow[..., 0].copy(), flow[..., 1].copy()
+    guard_sigma = sigma_flow if (sigma_flow and sigma_flow > 0) else 5.0
+    guard = 0
+    while _det_min(fx, fy) <= 0.0 and guard < 8:
+        fx = cv2.GaussianBlur(fx, (0, 0), guard_sigma)
+        fy = cv2.GaussianBlur(fy, (0, 0), guard_sigma)
+        guard += 1
+    jac_min = _det_min(fx, fy)
+
+    # Upscale field to full hires resolution (displacement scales with resolution)
+    fx_full = cv2.resize(fx, (w, h), interpolation=cv2.INTER_LINEAR) * (w / float(Hs[1]))
+    fy_full = cv2.resize(fy, (w, h), interpolation=cv2.INTER_LINEAR) * (h / float(Hs[0]))
+    YY, XX = np.mgrid[0:h, 0:w].astype(np.float32)
+    map_x = (XX + fx_full).astype(np.float32)
+    map_y = (YY + fy_full).astype(np.float32)
+
+    lowres_refined = cv2.remap(lowres_aligned.astype(np.float32), map_x, map_y,
+                               cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    # Labels via float (cv2.remap rejects int32); nearest-neighbour preserves IDs
+    masks_f = cv2.remap(masks.astype(np.float32), map_x, map_y, cv2.INTER_NEAREST,
+                        borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    masks_refined = np.rint(masks_f).astype(masks.dtype)
+
+    # `success` gates whether the caller applies this field. A field still folding
+    # after the no-fold guard exhausted its iterations (jac_min <= 0) is rejected so
+    # the caller falls back to the global-only alignment rather than warping masks
+    # through a folded remap.
+    info = [{'cy': h / 2.0, 'cx': w / 2.0, 'success': bool(jac_min > 0), 'method': 'flow',
+             'jac_min': jac_min, 'guard_iters': guard, 'work_scale': work}]
+    return masks_refined, lowres_refined, info
 
 
 def apply_lowres_to_hires_transform(lowres_masks, transform_params, hires_shape):

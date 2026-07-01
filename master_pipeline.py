@@ -33,14 +33,21 @@ def main(args = None):
     if automation['twop_to_hcr'] == 'auto':
         rprint(f"[bold cyan]Automation enabled:[/bold cyan] twop_to_hcr={automation['twop_to_hcr']}")
 
-    # HCR processing - runs once regardless of number of 2P planes
-    rf.register_rounds(full_manifest)
+    # HCR processing - runs once regardless of number of 2P planes.
+    # Cellpose runs first (on each acquired round), then HCR-HCR registration, then
+    # the labels are aligned into the HCR01 frame for matching, then intensities are
+    # measured on the acquired rounds.
     sg.run_cellpose(full_manifest)
-    sg.extract_probs_intensities(full_manifest)
+    rf.register_rounds(full_manifest)
+    rf.align_masks_to_reference(full_manifest)
+    sg.extract_probe_intensity(full_manifest)
 
     if args.only_hcr:
         # For HCR-only mode, just do align_masks and merge
         sg.align_masks(full_manifest, session, only_hcr=True, reference_plane=None)
+        # Hybrid HCR↔HCR matcher (best-plane IoU overlap + soma repair); augments
+        # the per-round CSVs so merge uses the consensus pick (no-op if disabled).
+        sg.align_somaprint_hcr(full_manifest, session, only_hcr=True)
         sg.merge_masks(full_manifest, session, only_hcr=True)
 
     else:
@@ -124,12 +131,17 @@ def main(args = None):
             # Augment IoU CSV with somaprint columns (geometric matcher,
             # parallel to IoU; no-op if disabled in manifest).
             sg.align_somaprint(full_manifest, session, only_hcr=args.only_hcr)
+            # Hybrid HCR↔HCR matcher → consensus round_{R}_mask. The per-round CSVs
+            # are (re)generated only on the reference-plane pass (plane_reference is
+            # None), which runs first, so populate them once here; idempotent.
+            if plane_reference is None:
+                sg.align_somaprint_hcr(full_manifest, session, only_hcr=args.only_hcr)
             sg.merge_masks(full_manifest, session, only_hcr=args.only_hcr)
 
         sg.print_match_summary(full_manifest, all_planes)
 
         rprint('\n' + '='*80)
-        rprint('[bold green]Pipeline completed successfully for all planes![/bold green]')
+        rprint(f"[bold green]Pipeline completed successfully for {full_manifest['data']['mouse_name']}![/bold green]")
         rprint('='*80)
 
 
