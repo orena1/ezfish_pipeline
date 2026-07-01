@@ -35,6 +35,8 @@ def custom_easifish_registration_pipeline(
     no_deform=False,
     no_global_affine=False,
     overwrite_lowres=False,
+    fix_spots_global=None,
+    mov_spots_global=None,
     c = {'n_workers': 10, 'threads_per_worker':2},
 ):
     """
@@ -261,6 +263,8 @@ def custom_easifish_registration_pipeline(
         static_transform_list=[affine,],
         write_path=write_directory + '/deform.zarr',
         cluster=x,
+        fix_spots_global=fix_spots_global,
+        mov_spots_global=mov_spots_global,
     )
     resample = lambda x: distributed_apply_transform(
         fix_highres, mov_highres,

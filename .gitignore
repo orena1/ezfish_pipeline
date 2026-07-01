@@ -17,3 +17,41 @@ CLAUDE.MD
 FIGURE_NOTEBOOKS.md
 agent_docs/
 .claude/
+
+# --- Scratch / local dev (not for git) ---
+archive/
+scratch/
+*.tmp.*
+*.bak*
+*.log
+
+# Retired manifests / example scratch
+examples/OLD/
+examples/archive/
+examples/praneel_paper/
+examples/*.sh
+
+# Local manuscript workspace (prose lives in Google Docs)
+manuscript/
+
+# One-off rerun / utility scripts
+/_*.txt
+/regen_traces.py
+/rerun_*.py
+/make_registered_composite.py
+/native_cellpose_bootstrap.py
+
+# HCR_rounds dev scratch (scripts, caches, sweep outputs)
+src/processing_notebooks/HCR_rounds/_*.py
+src/processing_notebooks/HCR_rounds/_*.pl
+src/processing_notebooks/HCR_rounds/gen_hcr_global_centroid_diagnostic.py
+src/processing_notebooks/HCR_rounds/overlap_ab_sweep.py
+src/processing_notebooks/HCR_rounds/*.pkl
+src/processing_notebooks/HCR_rounds/_sweep_cache/
+src/processing_notebooks/HCR_rounds/alignment_figures/
+src/processing_notebooks/HCR_rounds/edge_correction_cache/
+src/processing_notebooks/HCR_rounds/twop_to_hcr_*_outputs/
+
+# Ephemeral tool dirs
+.rudfo9b6/
+.wtd5l0tx/

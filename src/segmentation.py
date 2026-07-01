@@ -3,6 +3,7 @@ from pathlib import Path
 import shutil
 from cellpose import models
 from cellpose import io
+from cellpose import utils as _cp_utils
 
 # Cellpose 3 (cyto/cyto3 U-Net) and cellpose 4 (cellpose-SAM, ViT) share most
 # of the eval signature but differ on `channels` (cp4 is single-channel by
@@ -85,6 +86,36 @@ def _get_cached_cellpose_model(model_path: str, gpu: bool):
 HCR_STITCH_THRESHOLD = 0.3
 
 
+# cellpose's stitch3D allocates new cumulative labels at masks.dtype (uint16),
+# which overflows once pre-merge candidates across slices exceed 65535. We wrap it
+# to upcast to int32. This mutates a cellpose global, so it is applied lazily and
+# idempotently from the 3D-stitch path (see _CellposeModelWrapper.eval) rather than
+# as an import side effect — importing this module must not silently repatch cellpose
+# for unrelated consumers (figure notebooks, other scripts).
+_stitch3D_patched = False
+
+
+def _ensure_stitch3D_int32_patch():
+    """Idempotently wrap cellpose.utils.stitch3D to upcast masks to int32.
+
+    No-op if already applied, or if this cellpose build has no stitch3D (e.g. a
+    version that stitches through a different path), so it never crashes at import
+    or on cp4.
+    """
+    global _stitch3D_patched
+    if _stitch3D_patched or not hasattr(_cp_utils, 'stitch3D'):
+        return
+    _original_stitch3D = _cp_utils.stitch3D
+
+    def _stitch3D_int32(masks, *args, **kwargs):
+        if hasattr(masks, 'dtype') and masks.dtype.itemsize < 4:
+            masks = masks.astype(np.int32)
+        return _original_stitch3D(masks, *args, **kwargs)
+
+    _cp_utils.stitch3D = _stitch3D_int32
+    _stitch3D_patched = True
+
+
 def _eval_kwargs(cellpose_params: dict, is_3d_stack: bool) -> dict:
     """Build kwargs for `model.eval()` that work on both cellpose 3 and 4.
 
@@ -105,6 +136,9 @@ def _eval_kwargs(cellpose_params: dict, is_3d_stack: bool) -> dict:
     diameter = cellpose_params.get('diameter')
     if diameter is not None:
         kw['diameter'] = diameter
+    # Passthrough to cellpose's normalize= API (e.g. {tile_norm_blocksize: 100}).
+    if cellpose_params.get('normalize') is not None:
+        kw['normalize'] = cellpose_params['normalize']
     if _CP_MAJOR < 4:
         kw['channels'] = [0, 0]
     return kw
@@ -201,30 +235,40 @@ class CellposeModelWrapper:
             )
 
         kw = _eval_kwargs(self.params['HCR_cellpose'], is_3d_stack=True)
+        if 'stitch_threshold' in kw:
+            _ensure_stitch3D_int32_patch()
         if progress is not None:
             kw['progress'] = progress
         return self.model.eval(raw_image, **kw)
 
 def run_cellpose(full_manifest):
-    manifest = full_manifest['data']
     params = full_manifest['params']
 
-    round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered=True,
-                                                                     print_rounds=False, print_registered=False, func='cellpose')
+    # Segmentation precedes HCR-HCR registration, so enumerate the IMAGED rounds
+    # (every non-reference round in the manifest), not the registered ones — the
+    # registration may not be computed yet (or may have been moved aside for a
+    # clean re-run). Each round is segmented on its own acquired (un-warped)
+    # volume into cellpose/; align_masks_to_reference later warps those labels
+    # into the HCR01 frame (cellpose_aligned/) for matching.
+    round_to_rounds, reference_round, _ = verify_rounds(
+        full_manifest, parse_registered=False,
+        print_rounds=False, print_registered=False, func='cellpose')
 
     cellpose_channel_index = params['HCR_cellpose']['cellpose_channel']
-    all_rounds = register_rounds + [reference_round['round']]
+    all_rounds = list(round_to_rounds.keys()) + [reference_round['round']]
 
-    # Check which rounds need processing
+    # Which rounds still need segmenting
     skipped = []
     to_process = []
-    for HCR_round_to_register in all_rounds:
-        round_folder_name = get_round_folder_name(HCR_round_to_register, reference_round['round'])
+    for HCR_round in all_rounds:
+        round_folder_name = get_round_folder_name(HCR_round, reference_round['round'])
         output_path = output_root(full_manifest) / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
+        mov = reference_round if HCR_round == reference_round['round'] else round_to_rounds[HCR_round]
+        source_path = mov['image_path']
         if output_path.exists():
             skipped.append(round_folder_name)
         else:
-            to_process.append((HCR_round_to_register, round_folder_name))
+            to_process.append((round_folder_name, source_path, output_path))
 
     # Print summary
     if not to_process:
@@ -237,12 +281,10 @@ def run_cellpose(full_manifest):
     # Disable the outer round-counter bar when there's only one round to process
     # (the per-slice intra-round bar below is more useful in that case).
     iterator = tqdm(to_process, desc="HCR cellpose", disable=len(to_process) <= 1)
-    for HCR_round_to_register, round_folder_name in iterator:
-        full_stack_path = output_root(full_manifest) / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
-        output_path = output_root(full_manifest) / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
+    for round_folder_name, source_path, output_path in iterator:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        raw_image = tif_imread(full_stack_path)
+        raw_image = tif_imread(source_path)
         cellpose_input = raw_image[:, cellpose_channel_index, :, :]
 
         # Per-slice progress bar (cellpose ticks once per Z-slice during 3D
@@ -447,13 +489,30 @@ def get_neuropil_mask_square(volume, radius, bound, inds):
     return all_masks_locs
 
 
-def extract_probs_intensities(full_manifest):
-    manifest = full_manifest['data']
+def extract_probe_intensity(full_manifest):
     params = full_manifest['params']
     round_to_rounds, reference_round, register_rounds = verify_rounds(full_manifest, parse_registered = True,
                                                                       print_rounds = False, print_registered = False, func='intensities-extraction')
 
     all_rounds = register_rounds + [reference_round['round']]
+
+    def _stack_source(HCR_round, round_folder_name):
+        # Intensities are measured on the acquired (un-warped) round image, so the masks MUST be
+        # that round's NATIVE-frame masks -- not the ref-warped {round_folder}_masks.tiff. On mice
+        # whose rounds were acquired at different dims (e.g. cp4 SRC110/JS082: HCR02 3624x3215 vs
+        # HCR01 1942x1944) the warped masks have the ref shape, which != the native image -> the
+        # `raw_image[:,0].shape == masks.shape` assert below fires. Native masks are written as
+        # HCR{N}_native_masks.tiff; fall back to the canonical name when absent (older mice where
+        # native == ref shape, so the pairing was harmless).
+        cellpose = output_root(full_manifest) / 'HCR' / 'cellpose'
+        if HCR_round == reference_round['round']:
+            mov = reference_round
+            masks = cellpose / f"{round_folder_name}_masks.tiff"   # ref isn't warped: canonical IS native
+        else:
+            mov = round_to_rounds[HCR_round]
+            native = cellpose / f"HCR{HCR_round}_native_masks.tiff"
+            masks = native if native.exists() else cellpose / f"{round_folder_name}_masks.tiff"
+        return Path(mov['image_path']), masks
 
     # Check which rounds need processing
     to_process = []
@@ -477,8 +536,8 @@ def extract_probs_intensities(full_manifest):
 
     # Pre-flight: check TIFF channel count vs manifest for all rounds (metadata-only, cheap)
     mismatches = []
-    for _, round_folder_name, channels_names in to_process:
-        stack_path = output_root(full_manifest) / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
+    for HCR_round_to_register, round_folder_name, channels_names in to_process:
+        stack_path, _ = _stack_source(HCR_round_to_register, round_folder_name)
         with TiffFile(stack_path) as tf:
             n_ch = tf.series[0].shape[1]
         if n_ch != len(channels_names):
@@ -504,8 +563,7 @@ def extract_probs_intensities(full_manifest):
         median_filter = np.ones((median_filter_config[0], 1, median_filter_config[1], median_filter_config[2]))
 
     for HCR_round_to_register, round_folder_name, channels_names in to_process:
-        full_stack_path = output_root(full_manifest) / 'HCR' / 'full_registered_stacks' / f"{round_folder_name}.tiff"
-        full_stack_masks_path = output_root(full_manifest) / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
+        full_stack_path, full_stack_masks_path = _stack_source(HCR_round_to_register, round_folder_name)
         output_folder = output_root(full_manifest) / 'HCR' / 'extract_intensities'
         output_folder.mkdir(parents=True, exist_ok=True)
         csv_output_path = output_folder / f"{round_folder_name}_probs_intensities.csv"
@@ -787,11 +845,13 @@ def match_masks(stack1_masks_path, stack2_masks_path):
         # z-slices the mask1 voxels occupy (used for the fair denominator).
         unique_zs = np.unique(mask1_inds[0]) if is_3d else None
 
-        # Get all unique mask2 IDs that overlap with this mask1
-        overlapping_mask2_ids = np.unique(mask2_nonzero)
+        # All overlapping mask2 IDs AND their intersection counts in one pass — the counts
+        # ARE the per-id intersections, so we avoid re-scanning mask2_at_mask1 with `== id`
+        # for every overlapping label (was O(k*n) per mask1; now O(n)).
+        overlapping_mask2_ids, overlap_counts = np.unique(mask2_nonzero, return_counts=True)
 
-        for mask2_id in overlapping_mask2_ids:
-            intersection = int(np.sum(mask2_at_mask1 == mask2_id))
+        for mask2_id, intersection in zip(overlapping_mask2_ids, overlap_counts):
+            intersection = int(intersection)
             mask2_size = int(stack2_size_lookup.get(mask2_id, 0))
             if is_3d:
                 mask2_size_at_mask1_z = int(mask2_size_per_z[unique_zs, mask2_id].sum())
@@ -992,58 +1052,34 @@ def adjust_landmarks_for_plane(reference_landmarks_path, new_landmarks_path, ref
 
 
 def print_matching_summary(df: pd.DataFrame, source_name: str, target_name: str):
-    """Print a summary of mask matching results to console."""
+    """One-glance summary: how many source cells got a unique 1:1 match, how many didn't, and
+    the median overlap of the matches (the metric that drives matching)."""
     if df.empty:
-        rprint(f"[yellow]  {source_name} → {target_name}: No matches found[/yellow]")
+        rprint(f"[yellow]  {source_name} → {target_name}: no overlapping cells found[/yellow]")
         return
 
-    # Handle old CSV format without is_best_match column
+    # Old CSV format without is_best_match column
     if 'is_best_match' not in df.columns:
-        rprint(f"  [dim]{source_name} → {target_name}: {len(df)} matches (old format, no competition data)[/dim]")
+        rprint(f"  [dim]{source_name} → {target_name}: {len(df)} matches (old format)[/dim]")
         return
 
-    total_pairs = len(df)
-    best_matches = df[df['is_best_match'] == True]
-    n_best = len(best_matches)
+    best = df[df['is_best_match'] == True]
+    n_best = len(best)
+    n_src = int(df['mask1'].nunique())            # source cells overlapping >=1 target (denominator)
+    n_unmatched = n_src - n_best                  # overlapped something but lost the greedy 1:1
+    rate = n_best / n_src if n_src else 0.0
 
-    # Count masks that had competition (multiple candidates)
-    mask1_counts = df.groupby('mask1').size()
-    mask2_counts = df.groupby('mask2').size()
-    mask1_with_competition = (mask1_counts > 1).sum()
-    mask2_with_competition = (mask2_counts > 1).sum()
+    # iou_at_mask1_z drives is_best_match: 3D IoU with mask2's denominator restricted to mask1's
+    # z-slices (built for the 2P-sheet-vs-HCR-volume case; for HCR<->HCR it's ~= the full 3D IoU).
+    iou_col = 'iou_at_mask1_z' if 'iou_at_mask1_z' in best.columns else 'iou'
+    med_iou = best[iou_col].median() if n_best else 0.0
 
-    # IoU statistics for best matches
-    if n_best > 0:
-        iou_min = best_matches['iou'].min()
-        iou_max = best_matches['iou'].max()
-        iou_median = best_matches['iou'].median()
-    else:
-        iou_min = iou_max = iou_median = 0
-
-    # Count unique source and target masks
-    n_source_masks = df['mask1'].nunique()
-    n_target_masks_matched = df['mask2'].nunique()
-
-    rprint(f"  [cyan]{source_name} → {target_name}:[/cyan]")
-    rprint(f"    Best matches: {n_best}")
-    rprint(f"    Source masks with matches: {n_source_masks}")
-    if mask1_with_competition > 0:
-        rprint(f"    [yellow]Source masks with competition: {mask1_with_competition} (multiple targets)[/yellow]")
-    if mask2_with_competition > 0:
-        rprint(f"    [yellow]Target masks with competition: {mask2_with_competition} (multiple sources)[/yellow]")
-    rprint(f"    IoU (3D) range: {iou_min:.3f} - {iou_max:.3f} (median: {iou_median:.3f})")
-
-    # Fair (z-restricted) IoU and containment — informative for 2P→HCR where
-    # the 3D-symmetric IoU is depressed by the asymmetric union.
-    if n_best > 0 and 'iou_at_mask1_z' in best_matches.columns:
-        ioz_min = best_matches['iou_at_mask1_z'].min()
-        ioz_max = best_matches['iou_at_mask1_z'].max()
-        ioz_median = best_matches['iou_at_mask1_z'].median()
-        rprint(f"    IoU @ mask1 z range: {ioz_min:.3f} - {ioz_max:.3f} "
-               f"(median: {ioz_median:.3f})")
-    if n_best > 0 and 'containment_2p' in best_matches.columns:
-        c_median = best_matches['containment_2p'].median()
-        rprint(f"    Containment (mask1 in mask2) median: {c_median:.3f}")
+    rprint(f"  [cyan]{source_name} → {target_name}:[/cyan] [b]{n_best}[/b] cells matched 1:1 "
+           f"([b]{rate*100:.0f}%[/b] of {n_src} overlapping) · {n_unmatched} unmatched (lost competition)")
+    line = f"    median IoU {med_iou:.3f}"
+    if n_best and 'containment_2p' in best.columns:
+        line += f" · median containment {best['containment_2p'].median():.3f}"
+    rprint(line)
 
 
 def align_masks(full_manifest: dict,
@@ -1065,7 +1101,8 @@ def align_masks(full_manifest: dict,
                                                                     print_rounds = False, print_registered = False)
     
     reference_round_tiff = output_root(full_manifest) / 'HCR' / 'full_registered_stacks' / f"HCR{reference_round['round']}.tiff"
-    reference_round_masks = output_root(full_manifest) / 'HCR' / 'cellpose' / f"HCR{reference_round['round']}_masks.tiff"
+    # Cross-round matching runs in the HCR01 frame, so read the reference-aligned masks.
+    reference_round_masks = output_root(full_manifest) / 'HCR' / 'cellpose_aligned' / f"HCR{reference_round['round']}_masks.tiff"
 
     output_folder = output_root(full_manifest) / 'MERGED' / 'aligned_masks'
     output_folder.mkdir(parents=True, exist_ok=True)
@@ -1079,7 +1116,7 @@ def align_masks(full_manifest: dict,
         for HCR_round_to_register in register_rounds:
             round_folder_name = get_round_folder_name(HCR_round_to_register, reference_round['round'])
 
-            mov_stack_masks = output_root(full_manifest) / 'HCR' / 'cellpose' / f"{round_folder_name}_masks.tiff"
+            mov_stack_masks = output_root(full_manifest) / 'HCR' / 'cellpose_aligned' / f"{round_folder_name}_masks.tiff"
 
             save_path = output_folder / f"{round_folder_name}.csv"
             if save_path.exists():
@@ -1101,7 +1138,8 @@ def align_masks(full_manifest: dict,
     if only_hcr:
         # Print summary for HCR-only mode
         if matching_results:
-            rprint("\n[bold cyan]Mask Matching Summary:[/bold cyan]")
+            rprint("\n[bold cyan]IoU overlap pre-pass[/bold cyan] "
+                   "[dim](stage 1; the somaprint hybrid + consensus refine this next):[/dim]")
             for source, target, df in matching_results:
                 print_matching_summary(df, source, target)
         rprint("[dim]Skipping 2P masks alignment (HCR-only mode)[/dim]")
@@ -1240,7 +1278,7 @@ def align_somaprint(full_manifest: dict, session: dict, only_hcr: bool = False):
         # informationally consistent with the rest of the CSV.
         twop_3d_path = (output_root(full_manifest) / '2P' / 'registered'
                         / f'twop_plane{plane}_aligned_3d.tiff')
-        hcr_masks_path = (output_root(full_manifest) / 'HCR' / 'cellpose'
+        hcr_masks_path = (output_root(full_manifest) / 'HCR' / 'cellpose_aligned'
                           / f'HCR{hcr_round}_masks.tiff')
         twop_3d = tif_imread(str(twop_3d_path))
         hcr_3d = tif_imread(str(hcr_masks_path))
@@ -1281,6 +1319,128 @@ def align_somaprint(full_manifest: dict, session: dict, only_hcr: bool = False):
            f"{n_conf} confident matches{extra}[/green]")
 
 
+def align_somaprint_hcr(full_manifest: dict, session: dict, only_hcr: bool = False):
+    """Run the two-stage HCR round-to-round matcher and merge its picks into each
+    round's existing IoU mask-matching CSV.
+
+    The matcher (best-plane IoU overlap → pinned 2d_plane soma repair; see
+    src/somaprint_hcr.py) re-pairs cells across HCR rounds in the HCR{reference}
+    frame, recovering partners the plain IoU best-match misses in locally
+    mis-registered patches. Its pick is denormalized as columns on each
+    {round_folder}.csv (parallel to align_somaprint's 2P columns):
+
+      somaprint_hcr_label    reference-round label the hybrid matcher picked
+      somaprint_best_score   soma best score (NaN for stage-1 overlap anchors)
+      somaprint_second_score soma within-plane null (separability companion)
+      somaprint_confident    True for every hybrid match
+      somaprint_source       'overlap' (stage-1 IoU) | 'somaprint' (stage-2 repair)
+
+    For the rare moving cell the matcher picks but which has no IoU overlap with
+    any reference mask (a recovered cell), one synthetic row is appended (IoU=0,
+    is_best_match=False) so the pick propagates into the merged table.
+
+    Runs in both full and only_hcr modes (HCR↔HCR has no 2P dependency). No-ops
+    when params.somaprint_hcr.enabled is False, there are no non-reference rounds,
+    or a CSV already carries the somaprint columns.
+    """
+    from . import somaprint_hcr as sph_lib
+    from .registrations_utils import resolve_hcr_resolution
+
+    params = sph_lib.get_params(full_manifest)
+    if not params.get('enabled', True):
+        rprint("[dim]Somaprint-HCR disabled (params.somaprint_hcr.enabled = false); skipping[/dim]")
+        return
+
+    _, reference_round, register_rounds = verify_rounds(
+        full_manifest, parse_registered=True, print_rounds=False, print_registered=False)
+    if not register_rounds:
+        return
+
+    ref = reference_round['round']
+    res_xyz = resolve_hcr_resolution(reference_round['image_path'],
+                                     reference_round.get('resolution'))
+
+    aligned_dir = output_root(full_manifest) / 'MERGED' / 'aligned_masks'
+    cellpose_aligned = output_root(full_manifest) / 'HCR' / 'cellpose_aligned'
+    ref_masks_path = cellpose_aligned / f"HCR{ref}_masks.tiff"
+
+    rprint("\n" + "="*80)
+    rprint(f"[bold green] Somaprint-HCR Matching (HCR rounds -> HCR{ref})[/bold green]")
+    rprint("="*80)
+
+    for HCR_round in register_rounds:
+        round_folder = get_round_folder_name(HCR_round, ref)
+        csv_path = aligned_dir / f"{round_folder}.csv"
+        if not csv_path.exists():
+            rprint(f"  [yellow]{round_folder}: IoU CSV missing; align_masks must run first[/yellow]")
+            continue
+
+        df = pd.read_csv(csv_path)
+        df = df.loc[:, ~df.columns.str.match(r'^Unnamed: \d+$')]
+        if 'somaprint_confident' in df.columns:
+            rprint(f"  [dim]{round_folder}: somaprint columns present; skipping[/dim]")
+            continue
+
+        mov_masks_path = cellpose_aligned / f"{round_folder}_masks.tiff"
+        sph_stats = {}
+        matches = sph_lib.run_for_round(mov_masks_path, ref_masks_path, res_xyz,
+                                        params, round_label=round_folder, stats=sph_stats)
+        if not matches:
+            continue
+
+        # Denormalize per-mask1 (moving cell). Cells the matcher didn't return stay NaN.
+        df['somaprint_hcr_label'] = df['mask1'].map({m1: v[0] for m1, v in matches.items()}).astype('Int64')
+        df['somaprint_best_score'] = df['mask1'].map({m1: v[1] for m1, v in matches.items()})
+        df['somaprint_second_score'] = df['mask1'].map({m1: v[2] for m1, v in matches.items()})
+        df['somaprint_confident'] = df['mask1'].map({m1: v[3] for m1, v in matches.items()}).fillna(False).astype(bool)
+        df['somaprint_source'] = df['mask1'].map({m1: v[4] for m1, v in matches.items()})
+
+        # Recovered cells with no IoU overlap row at all — append synthetic rows so
+        # the pick carries into the merged table (mirror align_somaprint's orphans).
+        existing_mask1 = set(df['mask1'].astype(int).unique()) if not df.empty else set()
+        orphan_m1s = [int(m1) for m1 in matches.keys() if int(m1) not in existing_mask1]
+        if orphan_m1s:
+            mov_3d = tif_imread(str(mov_masks_path))
+            ref_3d = tif_imread(str(ref_masks_path))
+            mv_ids, mv_counts = np.unique(mov_3d, return_counts=True)
+            rf_ids, rf_counts = np.unique(ref_3d, return_counts=True)
+            mov_size = dict(zip(map(int, mv_ids), map(int, mv_counts)))
+            ref_size = dict(zip(map(int, rf_ids), map(int, rf_counts)))
+            orphan_rows = []
+            for m1 in orphan_m1s:
+                ref_lbl, bs, ss, conf, src = matches[m1]
+                orphan_rows.append({
+                    'mask1': int(m1), 'mask2': int(ref_lbl),
+                    'intersection': 0,
+                    'mask1_size': mov_size.get(int(m1), 0),
+                    'mask2_size': ref_size.get(int(ref_lbl), 0),
+                    'mask2_size_at_mask1_z': 0,
+                    'iou': 0.0, 'iou_at_mask1_z': 0.0,
+                    'containment_2p': 0.0, 'containment_hcr_at_z': 0.0,
+                    'is_best_match': False,
+                    'somaprint_hcr_label': int(ref_lbl),
+                    'somaprint_best_score': float(bs) if np.isfinite(bs) else np.nan,
+                    'somaprint_second_score': float(ss) if np.isfinite(ss) else np.nan,
+                    'somaprint_confident': bool(conf),
+                    'somaprint_source': src,
+                })
+            df = pd.concat([df, pd.DataFrame(orphan_rows)], ignore_index=True)
+            df['somaprint_hcr_label'] = df['somaprint_hcr_label'].astype('Int64')
+
+        df = df.sort_values(['mask1', 'iou_at_mask1_z'],
+                            ascending=[True, False]).reset_index(drop=True)
+        df.to_csv(csv_path, index=False)
+
+        n_repair = sum(1 for v in matches.values() if v[4] == 'somaprint')
+        extra = f", +{len(orphan_m1s)} non-IoU recoveries" if orphan_m1s else ""
+        n_mov = sph_stats.get('n_mov', len(matches))      # total moving cells the matcher saw
+        n_unmatched = max(0, n_mov - len(matches))
+        rate = len(matches) / n_mov if n_mov else 0.0
+        rprint(f"  [green]✓ {round_folder}:[/green] [b]{len(matches)}/{n_mov}[/b] cells matched "
+               f"([b]{rate*100:.0f}%[/b]) · {n_unmatched} unmatched · "
+               f"{len(matches) - n_repair} overlap + {n_repair} soma-repair{extra}")
+
+
 def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     rprint("\n" + "="*80)
     rprint("[bold green] Match Aligned Masks[bold green]")
@@ -1304,7 +1464,7 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     intensity_config = get_intensity_extraction_config(params)
     median_filter = intensity_config.get('stack_median_filter')
     median_filter_label = None
-    if median_filter is not None:
+    if median_filter:
         median_filter_label = f'medflt_{median_filter[0]}x{median_filter[1]}x{median_filter[2]}'
 
     # get available features to create merged table for
@@ -1377,23 +1537,29 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
 
     def _build_somaprint_lookups(matching_df):
         """Return (somaprint_hcr_label → mask1) plus {metric: {label → value}}
-        for confident somaprint matches. Keyed on the somaprint pick
-        (parallel to the IoU lookup's mask2 key) so each HCR cell row in
-        the reference intensities table can fetch its somaprint partner.
+        for every somaprint pick (confident and not). Keyed on the somaprint
+        pick (parallel to the IoU lookup's mask2 key) so each HCR cell row
+        in the reference intensities table can fetch its somaprint partner;
+        confidence is exposed as a metric so downstream code can still
+        filter on it.
 
         Somaprint denormalizes per-mask1 across IoU candidate rows; we
-        dedupe on mask1 first. Returns empty dicts on legacy CSVs that
-        predate the somaprint columns.
+        first reduce to one row per 2P cell, then dedupe on the HCR-label
+        key with a score-sorted tiebreak so non-confident collisions
+        resolve deterministically. Returns empty dicts on legacy CSVs
+        that predate the somaprint columns.
         """
         if not {'somaprint_confident', 'somaprint_hcr_label'}.issubset(matching_df.columns):
             return {}, {}
-        soma = (matching_df[matching_df['somaprint_confident'] == True]  # noqa: E712
-                .drop_duplicates('mask1'))
+        soma = (matching_df.dropna(subset=['somaprint_hcr_label'])
+                .drop_duplicates('mask1')
+                .sort_values('somaprint_best_score', ascending=False)
+                .drop_duplicates('somaprint_hcr_label'))
         if soma.empty:
             return {}, {}
         soma_lbls = soma['somaprint_hcr_label'].astype(int)
         mapping = dict(zip(soma_lbls, soma['mask1'].astype(int)))
-        # mask1_size on a somaprint_confident row is the 2P partner's size
+        # mask1_size on a somaprint row is the 2P partner's size
         # (match_masks fills it on IoU rows; align_somaprint fills it on
         # orphan rows from a fresh tiff read — both definitions are 3D
         # voxel counts in the registered 2P volume, which equals the 2P
@@ -1402,8 +1568,70 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
             'somaprint_best_score': dict(zip(soma_lbls, soma['somaprint_best_score'].astype(float))),
             'somaprint_second_score': dict(zip(soma_lbls, soma['somaprint_second_score'].astype(float))),
             'somaprint_mask_size': dict(zip(soma_lbls, soma['mask1_size'].astype(int))),
+            'somaprint_confident': dict(zip(soma_lbls, soma['somaprint_confident'].astype(bool))),
         }
         return mapping, metrics
+
+    def _build_consensus_lookups(matching_df):
+        """HCR↔HCR partner per reference cell, consensus of the two matchers: the
+        hybrid somaprint pick where present, else the IoU best-match. Returns
+
+          mapping        {ref_label → mov_label}   (drives round_{R}_mask / gene join)
+          metrics        {METRIC_COLUMN → {ref → value}}  IoU/containment/size of the
+                         CHOSEN pair (not the IoU best-match row — so a soma-recovered
+                         pair carries its own low overlap, the recovery signal)
+          extras         {match_source / somaprint_best_score / somaprint_second_score
+                          → {ref → value}}; empty when the CSV predates somaprint.
+
+        Falls back to pure IoU best-match (empty extras) on legacy CSVs, so disabling
+        params.somaprint_hcr reproduces the historical table exactly.
+        """
+        if 'is_best_match' in matching_df.columns:
+            iou_best = matching_df[matching_df['is_best_match'] == True]
+        else:
+            iou_best = matching_df
+        iou_map = {int(m2): int(m1) for m1, m2 in iou_best[['mask1', 'mask2']].values}
+
+        has_soma = {'somaprint_confident', 'somaprint_hcr_label'}.issubset(matching_df.columns)
+        extras = {}
+        if not has_soma:
+            mapping = dict(iou_map)
+        else:
+            # one row per moving cell, then dedupe to 1:1 on the reference label
+            # (highest soma score wins; overlap anchors carry NaN and lose ties).
+            soma = (matching_df.dropna(subset=['somaprint_hcr_label'])
+                    .drop_duplicates('mask1')
+                    .sort_values('somaprint_best_score', ascending=False)
+                    .drop_duplicates('somaprint_hcr_label'))
+            soma_keys = soma['somaprint_hcr_label'].astype(int)
+            soma_map = dict(zip(soma_keys, soma['mask1'].astype(int)))
+            soma_bs = dict(zip(soma_keys, soma['somaprint_best_score'].astype(float)))
+            soma_ss = dict(zip(soma_keys, soma['somaprint_second_score'].astype(float)))
+            soma_src = (dict(zip(soma_keys, soma['somaprint_source']))
+                        if 'somaprint_source' in soma.columns else {})
+            mapping, src_map = {}, {}
+            for ref in set(iou_map) | set(soma_map):
+                if ref in soma_map:
+                    mapping[ref] = soma_map[ref]
+                    src_map[ref] = soma_src.get(ref, 'somaprint')
+                else:
+                    mapping[ref] = iou_map[ref]
+                    src_map[ref] = 'iou'
+            extras = {'match_source': src_map,
+                      'somaprint_best_score': soma_bs,
+                      'somaprint_second_score': soma_ss}
+
+        # IoU/containment/size of the CHOSEN (mov, ref) pair, looked up per-pair so a
+        # consensus that differs from the IoU best-match still reports its own overlap.
+        pair = list(zip(matching_df['mask1'].astype(int), matching_df['mask2'].astype(int)))
+        metrics = {}
+        for col in METRIC_COLUMNS:
+            if col in matching_df.columns:
+                pair_val = dict(zip(pair, matching_df[col].values))
+                metrics[col] = {ref: pair_val.get((mov, ref)) for ref, mov in mapping.items()}
+            else:
+                metrics[col] = {}
+        return mapping, metrics, extras
 
     # ========== PRE-LOAD ALL DATA ONCE (optimization: avoid reloading per feature) ==========
 
@@ -1442,13 +1670,14 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
     except FileNotFoundError:
         raise FileNotFoundError(
             f"Reference round intensities not found: {ref_intensities_path}\n"
-            f"Please ensure extract_probs_intensities() has completed for HCR round {reference_round['round']}."
+            f"Please ensure extract_probe_intensity() has completed for HCR round {reference_round['round']}."
         )
 
     # Pre-load HCR round mappings and intensities (feature-independent)
     HCR_rounds_names = register_rounds
     HCR_round_mapping_dict = []
     HCR_round_metrics_dict = []
+    HCR_round_extra_dict = []
     preloaded_round_intensities = {}
 
     for HCR_round_to_register in register_rounds:
@@ -1463,11 +1692,13 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
                 f"HCR round mapping file not found: {round_mapping_file_path}\n"
                 f"Please ensure align_masks() has completed for HCR round {HCR_round_to_register}."
             )
-        if 'is_best_match' in round_mapping_df.columns:
-            round_mapping_df = round_mapping_df[round_mapping_df['is_best_match'] == True]
-        round_mapping, round_metrics = _build_lookup_dicts(round_mapping_df)
+        # Consensus of the IoU and somaprint matchers: round_{R}_mask follows the
+        # hybrid pick where somaprint matched, else the IoU best-match. Built from
+        # the FULL df (somaprint rows include is_best_match=False recoveries).
+        round_mapping, round_metrics, round_extra = _build_consensus_lookups(round_mapping_df)
         HCR_round_mapping_dict.append(round_mapping)
         HCR_round_metrics_dict.append(round_metrics)
+        HCR_round_extra_dict.append(round_extra)
 
         # Load intensities
         round_intensities_path = HCR_intensities_path / f"{round_file_name}_probs_intensities.pkl"
@@ -1476,7 +1707,7 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
         except FileNotFoundError:
             raise FileNotFoundError(
                 f"HCR round intensities not found: {round_intensities_path}\n"
-                f"Please ensure extract_probs_intensities() has completed for HCR round {HCR_round_to_register}."
+                f"Please ensure extract_probe_intensity() has completed for HCR round {HCR_round_to_register}."
             )
 
     # ========== PROCESS EACH FEATURE (now only pivots, no file I/O) ==========
@@ -1569,9 +1800,12 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
 
         # 2P columns — somaprint side (geometric matcher, independent of
         # IoU). For each HCR cell, twoP_somaprint_mask is the 2P cell that
-        # somaprint confidently matched here (None if no somaprint match
-        # landed on this HCR cell). twoP_mask and twoP_somaprint_mask can
-        # disagree; downstream consumers pick which matcher to filter on.
+        # somaprint picked here, confident or not (None if no somaprint
+        # match landed on this HCR cell). twoP_somaprint_confident exposes
+        # the confidence flag so downstream code can filter; scores are
+        # populated whether or not the pick was confident. twoP_mask and
+        # twoP_somaprint_mask can disagree; downstream consumers pick
+        # which matcher to filter on.
         reference_round_intensities_pivot['twoP_somaprint_mask'] = _lookup_column(
             ref_mask_ids, twoP_soma_mapping_dict)
         reference_round_intensities_pivot['twoP_somaprint_best_score'] = _lookup_column(
@@ -1580,6 +1814,8 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
             ref_mask_ids, twoP_soma_metrics_dict.get('somaprint_second_score', {}))
         reference_round_intensities_pivot['twoP_somaprint_mask_size'] = _lookup_column(
             ref_mask_ids, twoP_soma_metrics_dict.get('somaprint_mask_size', {}))
+        reference_round_intensities_pivot['twoP_somaprint_confident'] = _lookup_column(
+            ref_mask_ids, twoP_soma_metrics_dict.get('somaprint_confident', {}))
 
         # HCR round columns
         for j in range(len(HCR_round_mapping_dict)):
@@ -1591,6 +1827,16 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
             for src_col in METRIC_COLUMNS:
                 reference_round_intensities_pivot[_round_col(src_col, round_name)] = _lookup_column(
                     ref_mask_ids, round_metrics.get(src_col, {}))
+            # Hybrid-matcher provenance (only when somaprint_hcr ran for this round):
+            # which matcher produced round_{R}_mask and the soma scores behind a repair.
+            extra = HCR_round_extra_dict[j]
+            if extra:
+                reference_round_intensities_pivot[f'round_{round_name}_match_source'] = _lookup_column(
+                    ref_mask_ids, extra.get('match_source', {}))
+                reference_round_intensities_pivot[f'round_{round_name}_somaprint_score'] = _lookup_column(
+                    ref_mask_ids, extra.get('somaprint_best_score', {}))
+                reference_round_intensities_pivot[f'round_{round_name}_somaprint_second_score'] = _lookup_column(
+                    ref_mask_ids, extra.get('somaprint_second_score', {}))
 
         ####       ####
         ###  MERGE  ###
@@ -1655,7 +1901,17 @@ def print_match_summary(full_manifest: dict, all_planes: list):
             denom = "?"
 
         df = pd.read_pickle(merged_files[0])
-        soma_matched = df['twoP_somaprint_mask'].notna() if 'twoP_somaprint_mask' in df.columns else None
+        # twoP_somaprint_mask is populated for confident AND non-confident
+        # picks (so non-confident scores are still visible in the table);
+        # the summary count is the confident subset, matching the historical
+        # meaning of this line.
+        if 'twoP_somaprint_mask' in df.columns:
+            if 'twoP_somaprint_confident' in df.columns:
+                soma_matched = df['twoP_somaprint_mask'].notna() & df['twoP_somaprint_confident'].fillna(False).astype(bool)
+            else:
+                soma_matched = df['twoP_somaprint_mask'].notna()
+        else:
+            soma_matched = None
         n_soma = int(soma_matched.sum()) if soma_matched is not None else 0
         n_iou = int(df['twoP_mask'].notna().sum()) if 'twoP_mask' in df.columns else 0
 

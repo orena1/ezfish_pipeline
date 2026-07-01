@@ -97,109 +97,76 @@ def compute_overlap_correlation(img1, img2, dy, dx, noise_floor=15.0):
     return np.mean(o1_norm * o2_norm)
 
 
-def find_best_shift_phase(img1, img2, expected_dx, noise_floor=15.0, dy_range=150):
+def find_best_shift_phase(img1, img2, expected_dx, noise_floor=15.0, dy_range=150, k=5):
     """
-    Find optimal (dy, dx) shift using phase correlation (FFT-based).
-
-    Much faster than grid search — single FFT pass per overlap strip.
-    Falls back to grid search if phase correlation gives implausible results.
-
-    Args:
-        img1, img2: 2D tile images
-        expected_dx: Expected horizontal shift based on overlap_fraction
-        noise_floor: Minimum pixel value for signal
-        dy_range: Maximum vertical shift to search (±dy_range pixels)
-
-    Returns:
-        (best_dy, best_dx, best_correlation) or (None, None, -inf) if failed
+    Top-K phase-corr peaks scored by honest NCC on the actual non-dark overlap.
+    Robust against wrong-period lock-on from repetitive features.
     """
-    try:
-        from skimage.registration import phase_cross_correlation
-    except ImportError:
-        # skimage not available, use grid search
-        return find_best_shift_grid(img1, img2, expected_dx, noise_floor, dy_range)
-
     h, w = img1.shape
     expected_overlap = w - expected_dx
-
     if expected_overlap <= 20:
         return find_best_shift_grid(img1, img2, expected_dx, noise_floor, dy_range)
 
-    # Extract overlap strips — use 1.5x the expected overlap width.
-    # Some margin beyond the exact overlap helps phase correlation lock onto features,
-    # while keeping the matching fraction high enough to avoid spurious peaks.
     strip_width = min(int(expected_overlap * 1.5), w)
-
     strip1 = img1[:, w - strip_width:].astype(np.float64)
     strip2 = img2[:, :strip_width].astype(np.float64)
 
-    # Check for sufficient signal in both strips
     if (strip1 > noise_floor).sum() < 1000 or (strip2 > noise_floor).sum() < 1000:
         return find_best_shift_grid(img1, img2, expected_dx, noise_floor, dy_range)
 
     try:
-        # Phase correlation: finds shift to apply to strip2 to match strip1
-        shift, error, phasediff = phase_cross_correlation(
-            strip1, strip2, upsample_factor=10
-        )
-        dy_phase = shift[0]   # row shift
-        dx_phase = shift[1]   # col shift
-
-        # Phase correlation is cyclic (FFT-based), so shifts can wrap around.
-        # For dx: a shift of -189 in a 497px strip is equivalent to +308.
-        # For dy: a shift of -1900 in a 2000px strip is equivalent to +100.
-        # Try both raw and wrapped, pick whichever gives total_dx closer to expected.
-        strip_h, strip_w = strip1.shape
-        dx_candidates = [dx_phase, dx_phase + strip_w, dx_phase - strip_w]
-        dy_candidates = [dy_phase, dy_phase + strip_h, dy_phase - strip_h]
-
-        # Convert strip-relative shift to tile-relative shift
-        # strip1 starts at tile1 column (w - strip_width)
-        # tile2 origin in tile1 coords: (w - strip_width) + dx_phase
-        best_candidate = None
-        best_dist = np.inf
-        dx_margin = max(100, int(expected_dx * 0.5))
-
-        for dx_c in dx_candidates:
-            for dy_c in dy_candidates:
-                total_dx_c = (w - strip_width) + dx_c
-                total_dy_c = dy_c
-                # Score by distance to expected (dx near expected_dx, dy near 0)
-                dist = abs(total_dx_c - expected_dx) + abs(total_dy_c) * 0.5
-                if dist < best_dist:
-                    # Check plausibility
-                    if abs(total_dy_c) <= dy_range and \
-                       max(10, expected_dx - dx_margin) <= total_dx_c <= expected_dx + dx_margin:
-                        best_dist = dist
-                        best_candidate = (total_dy_c, total_dx_c)
-
-        if best_candidate is None:
-            warnings.warn(f"Phase correlation shifts not plausible (raw dy={dy_phase:.1f}, dx={dx_phase:.1f}), falling back to grid search")
-            return find_best_shift_grid(img1, img2, expected_dx, noise_floor, dy_range)
-
-        total_dy, total_dx = best_candidate
-
-        # Fine-tune: search ±5px around phase result to find best integer-pixel correlation
-        best_corr = -np.inf
-        best_dy, best_dx = int(round(total_dy)), int(round(total_dx))
-        for dy_off in range(-5, 6):
-            for dx_off in range(-5, 6):
-                dy_test = int(round(total_dy)) + dy_off
-                dx_test = int(round(total_dx)) + dx_off
-                corr = compute_overlap_correlation(img1, img2, dy_test, dx_test, noise_floor)
-                if corr > best_corr:
-                    best_corr = corr
-                    best_dy, best_dx = dy_test, dx_test
-
-        if best_corr < 0.1:
-            warnings.warn(f"Phase correlation shift ({total_dy:.1f}, {total_dx:.1f}) has low correlation {best_corr:.3f}, falling back to grid search")
-            return find_best_shift_grid(img1, img2, expected_dx, noise_floor, dy_range)
-
-        return best_dy, best_dx, best_corr
-
+        # Phase-correlation surface (no fftshift — wrap-index below).
+        F1 = np.fft.fft2(strip1)
+        F2 = np.fft.fft2(strip2)
+        R = F1 * np.conj(F2)
+        surface = np.fft.ifft2(R / (np.abs(R) + 1e-10)).real
     except Exception as e:
         warnings.warn(f"Phase correlation failed ({e}), falling back to grid search")
         return find_best_shift_grid(img1, img2, expected_dx, noise_floor, dy_range)
+
+    sh, sw = surface.shape
+    dx_margin = max(100, int(expected_dx * 0.5))
+    dx_lo, dx_hi = max(10, expected_dx - dx_margin), expected_dx + dx_margin
+
+    # Pull more than K from the surface — most won't pass plausibility filtering.
+    flat = surface.ravel()
+    pool = np.argpartition(flat, -min(k * 8, flat.size))[-min(k * 8, flat.size):]
+    pool = pool[np.argsort(flat[pool])[::-1]]
+
+    candidates = []
+    seen = set()
+    for idx in pool:
+        ri, ci = np.unravel_index(idx, (sh, sw))
+        dy_p = ri - sh if ri >= sh // 2 else ri
+        dx_p = ci - sw if ci >= sw // 2 else ci
+        # Wrap-around variants in case the true shift exceeds half the strip size.
+        for dx_c in (dx_p, dx_p + sw, dx_p - sw):
+            for dy_c in (dy_p, dy_p + sh, dy_p - sh):
+                total_dx = (w - strip_width) + dx_c
+                if abs(dy_c) <= dy_range and dx_lo <= total_dx <= dx_hi:
+                    key = (int(round(dy_c)), int(round(total_dx)))
+                    if key not in seen:
+                        seen.add(key)
+                        candidates.append(key)
+        if len(candidates) >= k:
+            break
+
+    if not candidates:
+        return find_best_shift_grid(img1, img2, expected_dx, noise_floor, dy_range)
+
+    # Score each candidate by honest NCC on the actual overlap, ±5 px refine.
+    best_corr, best_dy, best_dx = -np.inf, None, None
+    for cy, cx in candidates:
+        for dy_off in range(-5, 6):
+            for dx_off in range(-5, 6):
+                dy_t, dx_t = cy + dy_off, cx + dx_off
+                corr = compute_overlap_correlation(img1, img2, dy_t, dx_t, noise_floor)
+                if corr > best_corr:
+                    best_corr, best_dy, best_dx = corr, dy_t, dx_t
+
+    if best_corr < 0.1:
+        return find_best_shift_grid(img1, img2, expected_dx, noise_floor, dy_range)
+    return best_dy, best_dx, best_corr
 
 
 def find_best_shift_grid(img1, img2, expected_dx, noise_floor=15.0, dy_range=150):
@@ -245,12 +212,42 @@ def find_best_shift_grid(img1, img2, expected_dx, noise_floor=15.0, dy_range=150
     return best_shift[0], best_shift[1], best_corr
 
 
+def find_best_shift_wide_ncc(img1, img2, noise_floor=15.0, dy_range=150,
+                             dx_frac=(0.70, 0.97), coarse_step=10):
+    """Wide NCC grid search — overlap ∈ [3%, 30%], dy ∈ ±150 px. No manifest prior.
+
+    Each pair finds its own true shift independently. NCC is computed only on
+    the actual non-dark overlap rectangle at each candidate shift, so wrong-period
+    candidates lose to the true peak even with thin overlaps or repetitive features.
+    """
+    h, w = img1.shape
+    dx_lo = max(10, int(w * dx_frac[0]))
+    dx_hi = int(w * dx_frac[1])
+    dy_step = max(coarse_step // 2, 5)
+    best_corr, best_dy, best_dx = -np.inf, None, None
+    # Coarse sweep
+    for dx in range(dx_lo, dx_hi + 1, coarse_step):
+        for dy in range(-dy_range, dy_range + 1, dy_step):
+            corr = compute_overlap_correlation(img1, img2, dy, dx, noise_floor)
+            if corr > best_corr:
+                best_corr, best_dy, best_dx = corr, dy, dx
+    if best_dy is None:
+        return None, None, -np.inf
+    # 1-px refine around coarse winner
+    for dx in range(best_dx - coarse_step, best_dx + coarse_step + 1):
+        for dy in range(best_dy - dy_step, best_dy + dy_step + 1):
+            corr = compute_overlap_correlation(img1, img2, dy, dx, noise_floor)
+            if corr > best_corr:
+                best_corr, best_dy, best_dx = corr, dy, dx
+    if best_corr < 0.1:
+        return None, None, -np.inf
+    return best_dy, best_dx, best_corr
+
+
 def find_best_shift(img1, img2, expected_dx, noise_floor=15.0, dy_range=150):
-    """
-    Find optimal (dy, dx) shift. Tries phase correlation first (fast),
-    falls back to grid search if it fails.
-    """
-    return find_best_shift_phase(img1, img2, expected_dx, noise_floor, dy_range)
+    """Primary matcher: wide NCC grid search. `expected_dx` kept for signature
+    compatibility but ignored — the matcher derives its own prior from the data."""
+    return find_best_shift_wide_ncc(img1, img2, noise_floor=noise_floor, dy_range=dy_range)
 
 
 def compute_pairwise_shifts(
@@ -306,15 +303,16 @@ def compute_pairwise_shifts(
 
         per_plane_shifts[(t1, t2)] = shifts_by_z
 
-        # Consensus across z-planes
+        # Consensus across z-planes — median (not mean) so a single wrong-peak
+        # lockon on one z doesn't drag the consensus off the true shift.
         if shifts_by_z:
             shifts_array = np.array([s['shift'] for s in shifts_by_z.values()])
             corrs = [s['correlation'] for s in shifts_by_z.values()]
-            mean_shift = shifts_array.mean(axis=0)
+            median_shift = np.median(shifts_array, axis=0)
             std_shift = shifts_array.std(axis=0) if len(shifts_array) > 1 else np.zeros(2)
 
             consensus_shifts[(t1, t2)] = {
-                'shift': mean_shift,
+                'shift': median_shift,
                 'std': std_shift,
                 'n_good_z': len(shifts_by_z),
                 'mean_correlation': np.mean(corrs)
@@ -326,6 +324,70 @@ def compute_pairwise_shifts(
             }
 
     return consensus_shifts, per_plane_shifts
+
+
+def warn_if_shifts_nonuniform(consensus_shifts, tolerance=0.20):
+    """Warn if pairwise shifts deviate from the median by >tolerance. Returns True if fired."""
+    valid = [s['shift'] for s in consensus_shifts.values() if s['shift'] is not None]
+    if len(valid) < 2:
+        return False
+    dx_med = float(np.median([s[1] for s in valid]))
+    dy_med = float(np.median([s[0] for s in valid]))
+    if dx_med <= 0:
+        return False
+    abs_tol = tolerance * dx_med
+    bad = [(p, s['shift']) for p, s in consensus_shifts.items()
+           if s['shift'] is not None
+           and (abs(s['shift'][1] - dx_med) / dx_med > tolerance
+                or abs(s['shift'][0] - dy_med) > abs_tol)]
+    if not bad:
+        return False
+    rprint(f"[bold red]WARNING:[/bold red] non-uniform shifts "
+           f"(median dy={dy_med:.1f}, dx={dx_med:.1f}px; ±{tolerance*100:.0f}%):")
+    for pair, (dy, dx) in bad:
+        rprint(f"  [yellow]pair {pair}: dy={dy:.1f}, dx={dx:.1f}[/yellow]")
+    return True
+
+
+def warn_if_cross_slice_shifts_vary(per_plane_shifts, consensus_shifts, tolerance=0.20):
+    """Warn if a pair's shifts vary across z by >tolerance × median dx. Returns True if fired."""
+    valid = [s['shift'] for s in consensus_shifts.values() if s['shift'] is not None]
+    if not valid:
+        return False
+    dx_med = float(np.median([s[1] for s in valid]))
+    if dx_med <= 0:
+        return False
+    abs_tol = tolerance * dx_med
+    bad = []
+    for pair, by_z in per_plane_shifts.items():
+        if len(by_z) < 2:
+            continue
+        dys = [s['shift'][0] for s in by_z.values()]
+        dxs = [s['shift'][1] for s in by_z.values()]
+        dy_range = max(dys) - min(dys)
+        dx_range = max(dxs) - min(dxs)
+        if dx_range > abs_tol or dy_range > abs_tol:
+            bad.append((pair, dy_range, dx_range, len(by_z)))
+    if not bad:
+        return False
+    rprint(f"[bold red]WARNING:[/bold red] cross-slice shift spread "
+           f"(>{tolerance*100:.0f}% of median dx={dx_med:.1f}px):")
+    for pair, dy_r, dx_r, n_z in bad:
+        rprint(f"  [yellow]pair {pair}: dy range={dy_r:.1f}px, dx range={dx_r:.1f}px (across {n_z} z)[/yellow]")
+    return True
+
+
+def warn_if_overlap_fraction_off(consensus_shifts, manifest_overlap, tile_width, tolerance=0.10):
+    """Warn if manifest overlap_fraction disagrees with observed median dx. Returns True if fired."""
+    valid = [s['shift'][1] for s in consensus_shifts.values() if s['shift'] is not None]
+    if not valid or manifest_overlap <= 0:
+        return False
+    obs_overlap = 1.0 - float(np.median(valid)) / tile_width
+    if abs(obs_overlap - manifest_overlap) <= tolerance * manifest_overlap:
+        return False
+    rprint(f"[bold red]WARNING:[/bold red] manifest overlap_fraction={manifest_overlap:.2f} "
+           f"vs observed ≈{obs_overlap:.2f} — update manifest to match acquisition")
+    return True
 
 
 def compute_global_positions(
@@ -368,8 +430,15 @@ def compute_global_positions_per_plane(
 ) -> Dict[int, Dict[int, Tuple[float, float]]]:
     """
     Compute global positions for each z-plane independently.
-    Falls back to consensus if per-plane shift is missing.
+    Falls back to consensus if per-plane shift is missing OR if the per-plane
+    shift looks like a phase-corr lock-on error (outlier vs the cross-pair
+    median). Outlier threshold matches warn_if_cross_slice_shifts_vary().
     """
+    # Cross-pair median dx — reference scale for the outlier threshold.
+    valid_consensus = [s['shift'] for s in consensus_shifts.values() if s['shift'] is not None]
+    cross_pair_dx_med = float(np.median([s[1] for s in valid_consensus])) if valid_consensus else 0.0
+    outlier_tol_px = 0.20 * cross_pair_dx_med  # 20% of median dx
+
     positions_by_z = {}
 
     for z in z_planes:
@@ -379,18 +448,28 @@ def compute_global_positions_per_plane(
             pair = (i-1, i)
             prev_y, prev_x = positions[i-1]
 
-            # Try per-plane shift first, then consensus
+            consensus = consensus_shifts.get(pair, {}).get('shift')
             shift = None
             if pair in per_plane_shifts and z in per_plane_shifts[pair]:
-                shift = per_plane_shifts[pair][z]['shift']
-            elif pair in consensus_shifts and consensus_shifts[pair]['shift'] is not None:
-                shift = consensus_shifts[pair]['shift']
+                this_z = per_plane_shifts[pair][z]['shift']
+                # Replace this-z shift with consensus if it's an outlier vs the
+                # consensus median (>20% of cross-pair median dx on either axis).
+                if (consensus is not None and outlier_tol_px > 0
+                        and max(abs(this_z[0] - consensus[0]),
+                                abs(this_z[1] - consensus[1])) > outlier_tol_px):
+                    shift = consensus
+                else:
+                    shift = this_z
+            elif consensus is not None:
+                shift = consensus
 
             if shift is not None:
                 dy, dx = shift
                 positions[i] = (prev_y + dy, prev_x + dx)
             else:
-                nominal_dx = tile_width * 0.6
+                # Fall back to the cross-pair median dx if we have one (matches
+                # observed spacing); else nominal 60% of tile width.
+                nominal_dx = cross_pair_dx_med if cross_pair_dx_med > 0 else tile_width * 0.6
                 positions[i] = (prev_y, prev_x + nominal_dx)
 
         positions_by_z[z] = positions
@@ -575,6 +654,18 @@ def auto_stitch_tiles(
         tile_data, pairs, z_planes, overlap_fraction, noise_floor,
         stitch_channel=stitch_channel,
     )
+
+    # Informational: matcher doesn't depend on manifest overlap_fraction anymore.
+    warn_if_overlap_fraction_off(consensus_shifts, overlap_fraction, tile_width)
+    # Gating: these two indicate something the matcher couldn't resolve cleanly.
+    alarms = (
+        warn_if_shifts_nonuniform(consensus_shifts, tolerance=0.20)
+        | warn_if_cross_slice_shifts_vary(per_plane_shifts, consensus_shifts, tolerance=0.20)
+    )
+    if alarms:
+        resp = input("Continue stitching despite warnings? [y/N] ").strip().lower()
+        if resp != 'y':
+            raise StitchingError("User aborted after stitching warnings")
 
     # Compute positions
     positions_by_z = compute_global_positions_per_plane(
