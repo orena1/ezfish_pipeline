@@ -173,9 +173,10 @@ def process_plane(full_manifest, session, has_hires):
     # Dispatch lives in src/importers.py (behavior-identical across formats).
     im.load_functional_mean(full_manifest, session)
 
-    # Extract cellpose masks from 2p images. Returns the seg.npy path so the
-    # caller can collect across planes and prompt once at the end.
-    return sg.extract_2p_cellpose_masks(full_manifest, session)
+    # 2P segmentation → seg.npy path (collected across planes; verified once after
+    # the loop). Source is 'compute' (cellpose, default) or 'accept' (rasterize the
+    # user's Suite2p ROIs); dispatch lives in src/importers.py.
+    return im.load_functional_masks(full_manifest, session)
 
 if __name__ == "__main__":
 
