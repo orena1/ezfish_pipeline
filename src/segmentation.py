@@ -739,7 +739,61 @@ def bigwarp_pixel_adjustment(stack1, stack2, name1="Stack1", name2="Stack2"):
     return pad_if_needed(stack1, max_dims), pad_if_needed(stack2, max_dims)
 
 
-def match_masks(stack1_masks_path, stack2_masks_path):
+def _neighborhood_foreground_iou(stack1_masks, stack2_masks, mask1_inds, window_px):
+    '''
+    Neighborhood-agreement term for a source cell: the IoU of the binary
+    any-cell foreground (all labels merged) of stack1 vs stack2 in a
+    window_px-by-window_px XY window centered on the source cell's centroid,
+    restricted in Z to the slices the source cell occupies (same fairness
+    logic as iou_at_mask1_z). High when the local cellular landscape agrees
+    across modalities (well-registered region); low when only the candidate
+    cell coincidentally overlaps (partial alignment). Reported alongside the
+    per-cell IoU as a registration-quality signal — it does NOT gate matches;
+    thresholding is left to the user.
+    '''
+    src_3d = (len(mask1_inds) == 3)
+    if src_3d:
+        zc, yc, xc = mask1_inds
+        zs = np.unique(zc)
+    else:
+        yc, xc = mask1_inds
+        zs = None
+
+    cy = int(round(float(yc.mean())))
+    cx = int(round(float(xc.mean())))
+    h = int(window_px) // 2
+    sy, sx = stack1_masks.shape[-2], stack1_masks.shape[-1]
+    y0, y1 = max(0, cy - h), min(sy, cy + h + 1)
+    x0, x1 = max(0, cx - h), min(sx, cx + h + 1)
+
+    if stack1_masks.ndim == 3:
+        z1 = zs if zs is not None else np.arange(stack1_masks.shape[0])
+        sub1 = stack1_masks[z1][:, y0:y1, x0:x1] > 0
+    else:
+        sub1 = stack1_masks[y0:y1, x0:x1] > 0
+
+    if stack2_masks.ndim == 3:
+        z2 = zs if zs is not None else np.arange(stack2_masks.shape[0])
+        z2 = z2[z2 < stack2_masks.shape[0]]  # defensive; aligned stacks share depth
+        sub2 = stack2_masks[z2][:, y0:y1, x0:x1] > 0
+    else:
+        sub2 = stack2_masks[y0:y1, x0:x1] > 0
+
+    # If dimensionalities disagree (source 3D vs target 2D or vice versa),
+    # collapse to a 2D projection so the boolean windows are comparable.
+    if sub1.shape != sub2.shape:
+        if sub1.ndim == 3:
+            sub1 = sub1.any(axis=0)
+        if sub2.ndim == 3:
+            sub2 = sub2.any(axis=0)
+
+    union = int(np.count_nonzero(sub1 | sub2))
+    if union == 0:
+        return 0.0
+    return float(np.count_nonzero(sub1 & sub2)) / union
+
+
+def match_masks(stack1_masks_path, stack2_masks_path, neighborhood_window_px=None):
     '''
     Match masks between two registered stacks and record several overlap
     metrics per pair.
@@ -787,9 +841,26 @@ def match_masks(stack1_masks_path, stack2_masks_path):
       is_best_match
           True for the pair that wins the greedy 1:1 match, ranked by
           iou_at_mask1_z.
+      neighborhood_iou, neighborhood_window_px
+          Present only when ``neighborhood_window_px`` is passed. Per source
+          cell (identical across all of that mask1's rows): the any-cell
+          foreground IoU in a window around the cell (see
+          _neighborhood_foreground_iou). A registration-quality signal
+          REPORTED alongside the per-cell IoU; it never gates the match set,
+          so is_best_match and all match counts are unchanged whether or not
+          it is computed. Thresholding is left to the user.
 
     For 2D inputs mask2_size_at_mask1_z == mask2_size and iou_at_mask1_z
     == iou.
+
+    Parameters
+    ----------
+    neighborhood_window_px : int or None
+        XY window side length (px) for the neighborhood-IoU term. None
+        (default) skips it entirely — output is byte-identical to the
+        historical schema. Threaded from
+        ``params.twop_to_hcr_registration.neighborhood_window_px`` for the
+        cross-modal (2P→HCR) matcher; left None for HCR↔HCR.
     '''
     stack1_masks = tif_imread(stack1_masks_path)
     stack2_masks = tif_imread(stack2_masks_path)
@@ -883,6 +954,9 @@ def match_masks(stack1_masks_path, stack2_masks_path):
     if df.empty:
         # No matches found - return empty DataFrame with expected columns
         df['is_best_match'] = pd.Series(dtype=bool)
+        if neighborhood_window_px:
+            df['neighborhood_iou'] = pd.Series(dtype=float)
+            df['neighborhood_window_px'] = pd.Series(dtype=int)
         return df
 
     # Greedy 1:1 best-match, ranked by the fair (z-restricted) IoU.
@@ -894,6 +968,23 @@ def match_masks(stack1_masks_path, stack2_masks_path):
     df_best['is_best_match'] = True
     df = df.merge(df_best[['mask1', 'mask2', 'is_best_match']], on=['mask1', 'mask2'], how='left')
     df['is_best_match'] = df['is_best_match'].fillna(False)
+
+    # Neighborhood-agreement term (reported, never gated). Computed once per
+    # source cell — it depends only on the cell's location + the local
+    # foreground — and mapped onto every one of that mask1's rows so the
+    # value survives the mask2-keyed merge into the final table regardless of
+    # which row wins. None window → column absent → historical schema.
+    if neighborhood_window_px:
+        nbhd = {}
+        for m1 in df['mask1'].unique():
+            m1 = int(m1)
+            inds = stack1_masks_inds[m1]
+            if len(inds[0]) == 0:
+                continue
+            nbhd[m1] = _neighborhood_foreground_iou(
+                stack1_masks, stack2_masks, inds, int(neighborhood_window_px))
+        df['neighborhood_iou'] = df['mask1'].map(nbhd)
+        df['neighborhood_window_px'] = int(neighborhood_window_px)
 
     # Sort by mask1, then by fair IoU descending for readability
     df = df.sort_values(['mask1', 'iou_at_mask1_z'], ascending=[True, False])
@@ -1154,6 +1245,13 @@ def align_masks(full_manifest: dict,
     rprint("[bold green] Match 2P Masks to HCR[/bold green]")
     rprint("="*80)
 
+    # Neighborhood-IoU reporting for the cross-modal (2P→HCR) matcher. On by
+    # default (window 50px); set report_neighborhood_iou:false to skip. It only
+    # adds a reported column — match counts are unchanged either way.
+    _reg_params = params.get('twop_to_hcr_registration', {})
+    _nbhd_win = (int(_reg_params.get('neighborhood_window_px', 50))
+                 if _reg_params.get('report_neighborhood_iou', True) else None)
+
     plane = session['functional_plane'][0]
     reg_save_path = output_root(full_manifest) / '2P' / 'registered'
 
@@ -1177,14 +1275,16 @@ def align_masks(full_manifest: dict,
             print(f"  2P plane {plane} mapping: stale format, regenerating...")
             save_path.unlink()
             rprint(f"[cyan]Matching 2P plane {plane} masks to HCR using automated registration...[/cyan]")
-            mask1_to_mask2_df = match_masks(masks_2p_aligned_3d_path, reference_round_masks)
+            mask1_to_mask2_df = match_masks(masks_2p_aligned_3d_path, reference_round_masks,
+                                            neighborhood_window_px=_nbhd_win)
             mask1_to_mask2_df.to_csv(save_path)
             rprint(f"[green]✓ Saved mask matching to {save_path}[/green]")
             matching_results.append((f"2P plane {plane}", f"HCR{reference_round['round']}", mask1_to_mask2_df))
     else:
         # Match masks using automated registration output
         rprint(f"[cyan]Matching 2P plane {plane} masks to HCR using automated registration...[/cyan]")
-        mask1_to_mask2_df = match_masks(masks_2p_aligned_3d_path, reference_round_masks)
+        mask1_to_mask2_df = match_masks(masks_2p_aligned_3d_path, reference_round_masks,
+                                        neighborhood_window_px=_nbhd_win)
         mask1_to_mask2_df.to_csv(save_path)
         rprint(f"[green]✓ Saved mask matching to {save_path}[/green]")
         matching_results.append((f"2P plane {plane}", f"HCR{reference_round['round']}", mask1_to_mask2_df))
@@ -1533,6 +1633,12 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
                 # merged table is schema-stable; users see missing data
                 # rather than a hard failure.
                 metrics[col] = {}
+        # Neighborhood IoU is cross-modal-only (2P→HCR) and lives outside the
+        # shared METRIC_COLUMNS so the HCR-round schema is untouched. Extract
+        # it here where the 2P table is built; absent on legacy/HCR CSVs.
+        if 'neighborhood_iou' in matching_df.columns:
+            metrics['neighborhood_iou'] = dict(zip(matching_df['mask2'].values,
+                                                   matching_df['neighborhood_iou'].values))
         return mapping, metrics
 
     def _build_somaprint_lookups(matching_df):
@@ -1762,6 +1868,9 @@ def merge_masks(full_manifest: dict, session: dict, only_hcr: bool = False):
             'containment_2p':         'twoP_containment',
             'containment_hcr_at_z':   'HCR_containment',
             'mask1_size':             'twoP_mask_size',
+            # Reported neighborhood-agreement term (2P→HCR only; None on legacy
+            # CSVs → column of None, schema-stable). User thresholds on this.
+            'neighborhood_iou':       'twoP_neighborhood_iou',
         }
 
         def _round_col(metric, round_name):

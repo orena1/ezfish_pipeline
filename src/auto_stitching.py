@@ -1,5 +1,5 @@
 """
-Automated tile stitching for ezfish pipeline.
+Automated tile stitching for EASI-PASS.
 
 Replaces manual BigStitcher workflow for high-resolution 2P tiled imaging.
 

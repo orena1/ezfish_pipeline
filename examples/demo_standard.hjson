@@ -1,6 +1,6 @@
 {
     // =========================================================================
-    // EASIFISH — FULL PIPELINE, STANDARD (LOW-RES) MODE
+    // EASI-PASS — FULL PIPELINE, STANDARD (LOW-RES) MODE
     //
     // Use when you have both 2P and HCR data, but NO high-resolution
     // anatomical tile runs. The pipeline uses the Suite2p mean image directly

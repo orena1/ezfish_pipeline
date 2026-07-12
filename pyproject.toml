@@ -1,9 +1,9 @@
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
-name = "ezfish-pipeline"
+name = "easipass"
 version = "0.1.0"
 description = "Automated image processing pipeline for 2-photon microscopy and HCR confocal imaging"
 requires-python = ">=3.12"
@@ -13,7 +13,8 @@ license-files = ["LICENSE"]
 # Core dependencies — needed for the main pipeline (master_pipeline.py + src/)
 dependencies = [
     # Scientific stack
-    "numpy>=1.26,<2",
+    # cellpose 4 (cellpose-SAM) runs on the numpy 2.x line; no upper cap.
+    "numpy>=1.26",
     "scipy>=1.9",
     "pandas>=2.0",
     "scikit-image>=0.21",
@@ -28,8 +29,8 @@ dependencies = [
     # Registration
     "SimpleITK==2.3.1",
 
-    # Segmentation
-    "cellpose>=3.1",
+    # Segmentation — cellpose 4 (cellpose-SAM / cpsam) is the assumed backend
+    "cellpose>=4.0",
 
     # Visualization (used in core pipeline for QC outputs)
     "matplotlib>=3.9",
@@ -96,11 +97,11 @@ analysis = [
 
 # Everything
 all = [
-    "ezfish-pipeline[twop,bigstream,notebooks,analysis]",
+    "easipass[twop,bigstream,notebooks,analysis]",
 ]
 
 [project.scripts]
-ezfish = "master_pipeline:main"
+easipass = "master_pipeline:main"
 
 [tool.setuptools]
 py-modules = ["master_pipeline"]

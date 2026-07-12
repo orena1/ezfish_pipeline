@@ -1,6 +1,6 @@
 {
     // =========================================================================
-    // EASIFISH PIPELINE MANIFEST — TEMPLATE
+    // EASI-PASS PIPELINE MANIFEST — TEMPLATE
     //
     // Copy this file, fill in your values, and run:
     //   python master_pipeline.py --manifest your_file.hjson
@@ -94,7 +94,6 @@
         }
 
         // ----- 2P→HCR registration -----
-        // See agent_docs/parameter_tuning.md for the full tiered guide.
         // Lower-tier knobs (RANSAC, FFT-IoU thresholds, etc.) are read from
         // the same block but fall through to defaults when unset.
         twop_to_hcr_registration: {

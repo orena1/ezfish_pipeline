@@ -1,6 +1,28 @@
-# EASI-FISH Pipeline
+# EASI-PASS
 
 Automated image processing pipeline for **2-photon (2P) microscopy** and **HCR confocal imaging** of mouse brain experiments. Takes raw imaging data and a manifest file, and produces merged cell-identity tables matching 2P functional recordings to HCR molecular markers.
+
+## Installation
+
+Requires **Linux** with an **NVIDIA GPU (CUDA)** and [conda](https://docs.conda.io/). The segmentation backend is **Cellpose 4 (cellpose-SAM)**.
+
+```bash
+conda env create -f environment.yml   # conda-only packages (Python 3.12, PyTorch + CUDA)
+conda activate easipass
+pip install -e ".[all]"               # the pipeline + all Python dependencies
+```
+
+`environment.yml` installs only what must come from conda channels; everything else is declared in `pyproject.toml` and installed by the `pip` step. Install a subset instead of `[all]` if you don't need every stage:
+
+| Command | Adds |
+|---------|------|
+| `pip install -e "."` | Core pipeline only |
+| `pip install -e ".[twop]"` | 2-photon ingest (Suite2p, ScanBox reader) |
+| `pip install -e ".[bigstream]"` | BigStream registration deps |
+| `pip install -e ".[notebooks]"` | Jupyter + interactive plotting |
+| `pip install -e ".[analysis]"` | ML/stats for the analysis notebooks |
+
+> **BigStream fork:** HCR round-to-round registration uses a fork installed from git by `[bigstream]`/`[all]`. To use a local checkout instead: `pip install -e /path/to/bigstream`.
 
 ## Quickstart
 

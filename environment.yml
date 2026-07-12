@@ -1,4 +1,4 @@
-# ezfish_pipeline — conda environment
+# EASI-PASS — conda environment
 #
 # This installs ONLY the packages that require conda channels (GPU support, etc.).
 # After creating this env, install the pipeline and all Python deps with:
@@ -17,9 +17,9 @@
 #   pip install -e /path/to/bigstream_v2_andermann
 #
 # FULL SETUP (one-liner):
-#   conda env create -f environment.yml && conda activate ezfish && pip install -e ".[all]"
+#   conda env create -f environment.yml && conda activate easipass && pip install -e ".[all]"
 
-name: ezfish
+name: easipass
 
 channels:
   - pytorch

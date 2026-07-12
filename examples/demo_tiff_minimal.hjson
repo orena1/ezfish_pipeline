@@ -27,7 +27,6 @@
 
         two_photon_imaging: {
             sessions: [{
-                date: "250101"               // free-form date string; not used to locate files in tiff mode
                 input_format: "tiff"         // --tiff_only forces this; harmless to leave set
                 functional_planes: ["0"]     // list each plane number you have a plane_{N}.tiff for
             }]
@@ -68,7 +67,6 @@
 
         // ----- 2P -> HCR registration -----
         // Defaults work for most cases; tune these first if alignment is off.
-        // See agent_docs/parameter_tuning.md for the full tiered guide.
         twop_to_hcr_registration: {
             cascade_stages: [300, 100, 50]   // local tile sizes (px); [400, 200, 100] for sparse cells, [200, 100, 50] for dense
             erosion: 2                       // 2P mask shrink (px); 0 for cp4-SAM masks

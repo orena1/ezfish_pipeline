@@ -55,3 +55,9 @@ src/processing_notebooks/HCR_rounds/twop_to_hcr_*_outputs/
 # Ephemeral tool dirs
 .rudfo9b6/
 .wtd5l0tx/
+
+# Demo: ship the scaffold (manifest, scripts, README, golden CSV); the heavy
+# imaging data in to_run/ is hosted on Zenodo and fetched by fetch_demo_data.py
+demo/to_run/
+# Local test manifest with a concrete base_path (the shipped one keeps a placeholder)
+demo/*.local.hjson

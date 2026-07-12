@@ -1,1 +1,1 @@
-# ezfish_pipeline source package
+# EASI-PASS source package

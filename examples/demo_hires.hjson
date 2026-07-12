@@ -1,6 +1,6 @@
 {
     // =========================================================================
-    // EASIFISH — FULL PIPELINE, HI-RES STITCHED MODE
+    // EASI-PASS — FULL PIPELINE, HI-RES STITCHED MODE
     //
     // Use when you have both 2P and HCR data, and your 2P session includes
     // high-resolution anatomical tile runs that need stitching + unwarping.
